@@ -1,0 +1,6 @@
+[package]
+name = "chat-render"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

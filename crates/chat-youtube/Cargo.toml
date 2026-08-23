@@ -1,0 +1,6 @@
+[package]
+name = "chat-youtube"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

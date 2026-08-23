@@ -1,0 +1,6 @@
+[package]
+name = "chat-rplay"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

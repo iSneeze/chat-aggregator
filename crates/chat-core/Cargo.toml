@@ -1,0 +1,6 @@
+[package]
+name = "chat-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
