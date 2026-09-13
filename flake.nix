@@ -41,12 +41,9 @@
             cargo-nextest
             rustlings
             taplo
-            openssl        # likely needed for reqwest/tungstenite (TLS)
+            protobuf       # required by youtube gRPC connection
             cmake          # some crates need it transitively
           ];
-
-          # helps openssl-sys / other -sys crates find system libs
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
 
           shellHook = ''
             echo "chat-aggregator dev shell — $(rustc --version)"

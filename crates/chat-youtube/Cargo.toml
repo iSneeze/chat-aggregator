@@ -4,3 +4,15 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+chat-core = { path = "../chat-core" }
+tonic = { version = "0.13", features = ["tls-ring", "tls-webpki-roots"] }
+prost = "0.13"
+prost-types = "0.13"
+serde.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+
+[build-dependencies]
+tonic-build = "0.13"
