@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
             MessageKind::Special { .. } => "special".to_string(),
             MessageKind::MembershipJoin { .. } => "SUB".to_string(),
             MessageKind::MembershipGift { amount } => format!("GIFT x{amount}"),
-            MessageKind::SystemNotice => "notice".to_string(),
+            MessageKind::SystemNotice { info } => format!("notice: {info}"),
         };
         println!(
             "[{}] {} ({}): {} <{}> emotes: {}",

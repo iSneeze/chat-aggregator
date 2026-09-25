@@ -1,0 +1,64 @@
+{#-
+  One chat message. Rendered once per message and inserted into the overlay.
+  Everything is HTML-escaped automatically; style it via overlay.css.
+
+  Variables:
+    id, platform ("twitch" | "youtube" | "rplay")
+    kind         "text" | "emote-only" | "donation" | "special"
+                 | "membership" | "gift" | "notice"
+    paid         true for donation and special
+    author       .id  .name  .color (e.g. "#7f5af0", or none)
+                 .badges (list of names)  .avatar_url (or none)
+    timestamp    ISO 8601, for machines;  time: "18:40", for humans
+    body         list of parts, each either
+                   { type: "text",  text }  or
+                   { type: "emote", code, url }
+    amount       donation, special: "€5.00", "100 bits", "10 jewels"
+    count        gift: number of gifted subs/memberships
+    info         membership, notice: the platform's description
+                 special: name/description of the sticker or gift
+    sticker_url  special: image, if the platform provides one
+
+  The overlay script relies on the root element keeping the class "msg"
+  and the data-id / data-platform / data-author attributes.
+-#}
+<article class="msg msg--{{ kind }} msg--{{ platform }}{% if paid %} msg--paid{% endif %}" data-id="{{ id }}" data-platform="{{ platform }}" data-author="{{ author.id }}">
+  <header class="msg__meta">
+    <span class="msg__platform" title="{{ platform }}"></span>
+    {% if author.avatar_url %}
+    <img class="msg__avatar" src="{{ author.avatar_url }}" alt="">
+    {% endif %}
+    {% for badge in author.badges %}
+    <span class="badge badge--{{ badge }}">{{ badge }}</span>
+    {% endfor %}
+    <span class="msg__author"{% if author.color %} style="--author-color: {{ author.color }}"{% endif %}>{{ author.name }}</span>
+    <time class="msg__time" datetime="{{ timestamp }}">{{ time }}</time>
+  </header>
+  {% if kind == "donation" %}
+  <p class="msg__event"><data class="msg__amount">{{ amount }}</data></p>
+  {% elif kind == "gift" %}
+  <p class="msg__event">gifted <data class="msg__count" value="{{ count }}">{{ count }}</data> {{ "membership" if platform == "youtube" else "sub" }}{{ "s" if count != 1 }}</p>
+  {% elif kind in ["membership", "notice"] and info %}
+  <p class="msg__event">{{ info }}</p>
+  {% elif kind == "special" %}
+  <p class="msg__event">
+    {%- if amount %}<data class="msg__amount">{{ amount }}</data>{% endif %}
+    {%- if amount and info %} {% endif %}
+    {%- if info %}<span class="msg__info">{{ info }}</span>{% endif -%}
+  </p>
+  {% if sticker_url %}
+  <img class="msg__sticker" src="{{ sticker_url }}" alt="{{ info }}">
+  {% endif %}
+  {% endif %}
+  {% if body %}
+  <p class="msg__body">
+    {%- for part in body -%}
+      {%- if part.type == "emote" -%}
+        <img class="emote" src="{{ part.url }}" alt="{{ part.code }}" title="{{ part.code }}">
+      {%- else -%}
+        {{ part.text }}
+      {%- endif -%}
+    {%- endfor -%}
+  </p>
+  {% endif %}
+</article>

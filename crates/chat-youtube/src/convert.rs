@@ -75,7 +75,11 @@ pub fn convert(
 
     let author = item.author_details.unwrap_or_default();
 
-    let kind = match snippet.displayed_content {
+    // YouTube's own rendering of the event; for plain chat it is the text.
+    let display = snippet.display_message.unwrap_or_default();
+
+    // `text` is only what the user typed; event descriptions go in `kind`.
+    let (kind, text) = match snippet.displayed_content {
         // Moderation, not a message: the author here is the moderator.
         Some(DisplayedContent::UserBannedDetails(d)) => {
             return d
@@ -86,42 +90,64 @@ pub fn convert(
                     user_id,
                 });
         }
-        Some(DisplayedContent::SuperChatDetails(sc)) => MessageKind::Donation {
-            amount: sc.amount_display_string.unwrap_or_default(),
-        },
-        Some(DisplayedContent::SuperStickerDetails(_)) => {
-            MessageKind::Special { emote_url: None } // TODO: API gives no sticker URL
-        }
-        Some(DisplayedContent::GiftDetails(gift)) => MessageKind::Special {
-            emote_url: gift.gift_url,
-        },
-        Some(DisplayedContent::NewSponsorDetails(d)) => MessageKind::MembershipJoin {
-            info: d.member_level_name.unwrap_or_else(|| "member".into()),
-        },
-        Some(DisplayedContent::MemberMilestoneChatDetails(d)) => MessageKind::MembershipJoin {
-            info: format!(
-                "{} month{} member{}",
-                d.member_month(),
-                if d.member_month() == 1 { "" } else { "s" },
-                d.user_comment
-                    .filter(|c| !c.is_empty())
-                    .map(|c| format!(": {c}"))
-                    .unwrap_or_default()
-            ),
-        },
-        Some(DisplayedContent::MembershipGiftingDetails(d)) => MessageKind::MembershipGift {
-            amount: d.gift_memberships_count().max(0) as usize,
-        },
+        Some(DisplayedContent::SuperChatDetails(sc)) => (
+            MessageKind::Donation {
+                amount: sc.amount_display_string.unwrap_or_default(),
+            },
+            sc.user_comment.unwrap_or_default(),
+        ),
+        Some(DisplayedContent::SuperStickerDetails(d)) => (
+            MessageKind::Special {
+                emote_url: None, // the API gives no sticker image URL
+                amount: d.amount_display_string,
+                info: d.super_sticker_metadata.and_then(|m| m.alt_text),
+            },
+            String::new(),
+        ),
+        Some(DisplayedContent::GiftDetails(gift)) => (
+            MessageKind::Special {
+                emote_url: gift.gift_url,
+                amount: gift.jewels_amount.map(|j| format!("{j} jewels")),
+                info: gift.gift_name.or(gift.alt_text),
+            },
+            String::new(),
+        ),
+        Some(DisplayedContent::NewSponsorDetails(d)) => (
+            MessageKind::MembershipJoin {
+                // Prefer YouTube's own wording, like Twitch's system message.
+                info: if display.is_empty() {
+                    d.member_level_name.unwrap_or_else(|| "New member".into())
+                } else {
+                    display
+                },
+            },
+            String::new(),
+        ),
+        Some(DisplayedContent::MemberMilestoneChatDetails(d)) => (
+            MessageKind::MembershipJoin {
+                info: format!(
+                    "{} month{} member",
+                    d.member_month(),
+                    if d.member_month() == 1 { "" } else { "s" },
+                ),
+            },
+            d.user_comment.unwrap_or_default(),
+        ),
+        Some(DisplayedContent::MembershipGiftingDetails(d)) => (
+            MessageKind::MembershipGift {
+                amount: d.gift_memberships_count().max(0) as usize,
+            },
+            String::new(),
+        ),
         // Per-recipient echo of a gifting event we already counted; skip
         // to avoid double-counting gifts.
         Some(DisplayedContent::GiftMembershipReceivedDetails(_)) => return None,
         // Already filtered by type above; listed so this match stays
         // exhaustive without a `_` arm (a new proto variant = compile error).
         Some(DisplayedContent::PollDetails(_)) => return None,
-        Some(DisplayedContent::TextMessageDetails(_)) | None => MessageKind::Text,
+        Some(DisplayedContent::TextMessageDetails(_)) | None => (MessageKind::Text, display),
     };
 
-    let text = snippet.display_message.unwrap_or_default();
     let found = emojis.find(&text);
     let kind = match kind {
         MessageKind::Text if found.emote_only => MessageKind::EmoteOnly,
@@ -243,7 +269,8 @@ mod tests {
 
         let msg = convert_msg(item, &EmojiMap::default());
         assert!(matches!(msg.kind, MessageKind::Donation { .. }));
-        assert_eq!(msg.text, "€2.00 WOO");
+        // Only the user's own words; the amount lives in the kind.
+        assert_eq!(msg.text, "WOO");
     }
 
     #[test]

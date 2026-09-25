@@ -84,7 +84,7 @@ fn print_message(msg: &ChatMessage) {
         MessageKind::Special { .. } => "special".into(),
         MessageKind::MembershipJoin { .. } => "MEMBER".into(),
         MessageKind::MembershipGift { amount } => format!("GIFT x{amount}"),
-        MessageKind::SystemNotice => "notice".into(),
+        MessageKind::SystemNotice { info } => format!("notice: {info}"),
     };
     let badges = if msg.author.badges.is_empty() {
         String::new()

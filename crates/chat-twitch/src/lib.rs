@@ -119,12 +119,17 @@ fn convert_privmsg(p: PrivmsgMessage) -> ChatMessage {
 const COMMUNITY_GIFT_TAG: &str = "msg-param-community-gift-id";
 
 fn convert_user_notice(un: UserNoticeMessage) -> Option<ChatMessage> {
-    let kind = match &un.event {
+    // Matching on `un.event` by value moves individual fields out of `un`
+    // (a "partial move"): `system_message` can go into `kind` without a
+    // clone, and the untouched fields stay usable below.
+    let kind = match un.event {
         UserNoticeEvent::Raid { .. } | UserNoticeEvent::Announcement { .. } => {
-            MessageKind::SystemNotice
+            MessageKind::SystemNotice {
+                info: un.system_message,
+            }
         }
         UserNoticeEvent::SubOrResub { .. } => MessageKind::MembershipJoin {
-            info: un.system_message.clone(),
+            info: un.system_message,
         },
         // A community gift of N subs arrives as one `submysterygift` (counted
         // below) followed by N per-recipient `subgift`s: skip those, or every
@@ -139,7 +144,7 @@ fn convert_user_notice(un: UserNoticeMessage) -> Option<ChatMessage> {
         | UserNoticeEvent::AnonSubMysteryGift {
             mass_gift_count, ..
         } => MessageKind::MembershipGift {
-            amount: *mass_gift_count as usize,
+            amount: mass_gift_count as usize,
         },
         _ => return None,
     };
@@ -156,7 +161,8 @@ fn convert_user_notice(un: UserNoticeMessage) -> Option<ChatMessage> {
         },
         // Resub messages can contain emotes, just like normal chat.
         emotes: unique_emotes(&un.emotes),
-        text: un.message_text.unwrap_or(un.system_message),
+        // Only what the user typed; the system description is in `kind`.
+        text: un.message_text.unwrap_or_default(),
         timestamp: un.server_timestamp,
         kind,
     })

@@ -1,6 +1,8 @@
 use std::future::Future;
 use tokio::sync::mpsc;
 
+pub mod demo;
+
 pub trait ChatSource {
     /// Connects to the platform and pushes normalized events until
     /// the stream ends or an unrecoverable error occurs.
@@ -42,6 +44,8 @@ pub struct ChatMessage {
     pub id: String,
     pub platform: ChatPlatform,
     pub author: Author,
+    /// What the user typed; may be empty (e.g. a raid or a resub without a
+    /// message). Descriptions of the event itself live in `kind`.
     pub text: String,
     pub emotes: Vec<EmoteRef>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -80,16 +84,26 @@ pub enum MessageKind {
     Donation {
         amount: String,
     },
+    /// Paid visual items: YouTube Super Stickers and gifts, later maybe
+    /// Twitch giant emotes.
     Special {
+        /// Image, if the platform provides one (Super Stickers: no).
         emote_url: Option<String>,
-    }, // Youtube Stickers, Twitch Giant Emote
+        /// "€2.00", "10 jewels"
+        amount: Option<String>,
+        /// Name or description of the item, e.g. the sticker's alt text.
+        info: Option<String>,
+    },
     MembershipJoin {
         info: String,
     },
     MembershipGift {
         amount: usize,
     },
-    SystemNotice, // Raids, etc.
+    /// Raids, announcements, etc.; `info` is the platform's description.
+    SystemNotice {
+        info: String,
+    },
 }
 
 pub struct MockSource {

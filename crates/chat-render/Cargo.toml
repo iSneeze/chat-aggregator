@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+chat-core = { path = "../chat-core" }
+minijinja.workspace = true
+serde.workspace = true
+chrono.workspace = true
+anyhow.workspace = true

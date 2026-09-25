@@ -1,0 +1,208 @@
+/*
+ * Default chat overlay style.
+ *
+ * Most restyling only needs the variables below. The markup is documented
+ * at the top of message.html; every message is an <article class="msg">
+ * with modifier classes:
+ *   .msg--twitch / .msg--youtube                    platform
+ *   .msg--text / --emote-only / --donation / --special
+ *   .msg--membership / --gift / --notice            kind
+ *   .msg--paid                                      donation or special
+ *   .msg--deleted                                   removed by a moderator
+ */
+
+:root {
+  /* text */
+  --chat-font: "Inter", "Segoe UI", system-ui, sans-serif;
+  --chat-font-size: 20px;
+  --chat-text: #f4f4f5;
+  --chat-muted: #a1a1aa;
+
+  /* cards */
+  --chat-bg: rgb(18 18 24 / 0.72);
+  --chat-radius: 10px;
+  --chat-gap: 6px;
+  --chat-padding: 0.45em 0.7em;
+  --chat-accent-width: 4px;
+
+  /* colors */
+  --twitch: #9146ff;
+  --youtube: #ff0033;
+  --paid: #f5b700;
+  --membership: #2cb67d;
+  --notice: #3da9fc;
+
+  /* sizes */
+  --emote-size: 1.6em;
+  --emote-only-size: 3em;
+  --avatar-size: 1.4em;
+
+  /* overlay behavior (read by the overlay script) */
+  --max-messages: 20;  /* older messages are removed from the page */
+  --delete-delay: 0s;  /* time for a .msg--deleted transition before removal */
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent; /* OBS composites the page over the scene */
+}
+
+/* ---- message list ---- */
+
+.chat {
+  box-sizing: border-box;
+  height: 100vh;
+  padding: var(--chat-gap);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end; /* newest at the bottom, old ones scroll off the top */
+  gap: var(--chat-gap);
+  overflow: hidden;
+  font-family: var(--chat-font);
+  font-size: var(--chat-font-size);
+  line-height: 1.35;
+  color: var(--chat-text);
+}
+
+/* ---- one message ---- */
+
+.msg {
+  --platform-color: var(--chat-muted); /* always the platform */
+  --accent: var(--platform-color);     /* changes with the kind */
+  flex-shrink: 0;
+  padding: var(--chat-padding);
+  border-left: var(--chat-accent-width) solid var(--accent);
+  border-radius: var(--chat-radius);
+  background: var(--chat-bg);
+  animation: msg-in 0.25s ease-out;
+}
+
+.msg--twitch  { --platform-color: var(--twitch); }
+.msg--youtube { --platform-color: var(--youtube); }
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(0.5em); }
+}
+
+/* Uncomment to fade messages out 30 seconds after they arrive:
+.msg { animation: msg-in 0.25s ease-out, msg-out 0.5s ease-in 30s forwards; }
+@keyframes msg-out { to { opacity: 0; } }
+*/
+
+/* ---- header: platform, avatar, badges, name, time ---- */
+
+.msg__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35em;
+}
+
+.msg__platform {
+  width: 0.55em;
+  height: 0.55em;
+  border-radius: 50%;
+  background: var(--platform-color);
+}
+
+.msg__avatar {
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.badge {
+  padding: 0.05em 0.4em;
+  border-radius: 0.3em;
+  background: rgb(255 255 255 / 0.12);
+  color: var(--chat-muted);
+  font-size: 0.6em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.badge--broadcaster,
+.badge--owner     { background: #e53170; color: white; }
+.badge--moderator { background: #00ad03; color: white; }
+.badge--vip       { background: #e005b9; color: white; }
+.badge--verified  { background: #606060; color: white; }
+.badge--subscriber,
+.badge--member    { background: var(--membership); color: white; }
+
+.msg__author {
+  font-weight: 700;
+  color: var(--author-color, var(--chat-text));
+}
+
+.msg__time {
+  display: none; /* set to inline to show timestamps */
+  margin-left: auto;
+  color: var(--chat-muted);
+  font-size: 0.7em;
+}
+
+/* ---- event line and body ---- */
+
+.msg__event {
+  margin: 0.2em 0 0;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.msg__body {
+  margin: 0.15em 0 0;
+  overflow-wrap: anywhere; /* long spam without spaces must not overflow */
+}
+
+.emote {
+  height: var(--emote-size);
+  vertical-align: middle;
+  margin: -0.2em 0.05em;
+}
+
+.msg__info {
+  font-weight: 400;
+  color: var(--chat-text);
+}
+
+.msg__sticker {
+  display: block;
+  height: 4em;
+  margin-top: 0.3em;
+}
+
+/* ---- kinds ---- */
+
+.msg--emote-only .emote {
+  height: var(--emote-only-size);
+  margin: 0.1em 0.05em;
+}
+
+.msg--paid {
+  --accent: var(--paid);
+  background:
+    linear-gradient(90deg, rgb(245 183 0 / 0.22), transparent 70%),
+    var(--chat-bg);
+}
+
+.msg--membership,
+.msg--gift {
+  --accent: var(--membership);
+}
+
+.msg--notice {
+  --accent: var(--notice);
+  font-style: italic;
+}
+
+/* ---- moderation ---- */
+
+/* Deleted messages vanish at once by default. For a fade instead:
+   .msg--deleted { opacity: 0; transition: opacity 0.3s; }
+   and set --delete-delay: 0.3s above. */
+.msg--deleted {
+  display: none;
+}

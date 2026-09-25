@@ -13,3 +13,4 @@ serde = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13", features = ["json"] }
 anyhow = "1"
 serde_json = "1"
+minijinja = "2"
