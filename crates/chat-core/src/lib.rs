@@ -2,16 +2,44 @@ use std::future::Future;
 use tokio::sync::mpsc;
 
 pub trait ChatSource {
-    /// Connects to the platform and pushes normalized messages until
+    /// Connects to the platform and pushes normalized events until
     /// the stream ends or an unrecoverable error occurs.
     fn run(
         self: Box<Self>,
-        tx: mpsc::Sender<ChatMessage>,
+        tx: mpsc::Sender<ChatEvent>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
+/// Everything a source can report. Moderation actions are separate
+/// variants rather than message kinds: they have no author or text, and
+/// consumers must remove already-displayed messages when they arrive.
+// Clippy suggests boxing the large `Message` variant so the rare small
+// variants don't pay its size. But messages are the common case: boxing
+// would add a heap allocation per message to save memory on deletes.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, serde::Serialize)]
+pub enum ChatEvent {
+    Message(ChatMessage),
+    /// A single message was deleted by a moderator.
+    Delete {
+        platform: ChatPlatform,
+        message_id: String,
+    },
+    /// All messages by one user should go (ban or timeout).
+    ClearUser {
+        platform: ChatPlatform,
+        user_id: String,
+    },
+    /// The whole chat was cleared.
+    ClearAll {
+        platform: ChatPlatform,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChatMessage {
+    /// Platform-assigned message id; `ChatEvent::Delete` refers to it.
+    pub id: String,
     pub platform: ChatPlatform,
     pub author: Author,
     pub text: String,
@@ -47,11 +75,20 @@ pub struct Author {
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum MessageKind {
     Text,
-    EmoteOnly { emotes: Vec<String> },
-    Donation { amount: String },
-    Special { emote_url: Option<String> }, // Youtube Stickers, Twitch Giant Emote
-    MembershipJoin { info: String },
-    MembershipGift { amount: usize },
+    /// Only emotes and whitespace; which ones is in `ChatMessage::emotes`.
+    EmoteOnly,
+    Donation {
+        amount: String,
+    },
+    Special {
+        emote_url: Option<String>,
+    }, // Youtube Stickers, Twitch Giant Emote
+    MembershipJoin {
+        info: String,
+    },
+    MembershipGift {
+        amount: usize,
+    },
     SystemNotice, // Raids, etc.
 }
 
@@ -61,11 +98,12 @@ pub struct MockSource {
 }
 
 impl ChatSource for MockSource {
-    async fn run(self: Box<Self>, tx: mpsc::Sender<ChatMessage>) -> anyhow::Result<()> {
+    async fn run(self: Box<Self>, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
         for i in 0..self.count {
             tokio::time::sleep(self.delay).await;
 
             let msg = ChatMessage {
+                id: format!("mock-{i}"),
                 platform: ChatPlatform::Twitch,
                 author: Author {
                     id: format!("mock-user-{i}"),
@@ -79,10 +117,9 @@ impl ChatSource for MockSource {
                 timestamp: chrono::Utc::now(),
                 kind: MessageKind::Text,
             };
-            println!("{:?}", &msg);
             // If this errors, the receiver was dropped: nobody is
             // listening anymore, so we shut down gracefully.
-            tx.send(msg).await?;
+            tx.send(ChatEvent::Message(msg)).await?;
         }
         Ok(())
     }
@@ -107,7 +144,10 @@ mod tests {
         );
 
         let mut received = Vec::new();
-        while let Some(msg) = rx.recv().await {
+        while let Some(event) = rx.recv().await {
+            let ChatEvent::Message(msg) = event else {
+                panic!("mock source only sends messages, got {event:?}");
+            };
             received.push(msg);
         }
 

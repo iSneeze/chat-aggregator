@@ -23,7 +23,7 @@ knows what Twitch or YouTube look like, only `ChatMessage`.
 
 ## Building
 
-*Prerequisites*: a Rust toolchain (1.85+ / edition 2024) and `protoc` on
+*Prerequisites*: a Rust toolchain (1.88+ / edition 2024) and `protoc` on
 your `PATH` — `chat-youtube` compiles its protobuf schema at build time
 via a build script.
 
@@ -58,8 +58,9 @@ cargo test          # or: cargo nextest run
 See each crate's `examples/` for standalone listeners:
 
 ```sh
-cargo run -p chat-twitch --example listen -- <channel>
+cargo run -p chat-twitch --example listen_twitch -- <channel>
 YOUTUBE_API_KEY=... cargo run -p chat-youtube --example listen_youtube -- <video_id>
+# optional: YOUTUBE_EMOJIS=export.json (from scripts/yt-emoji-export.js)
 ```
 
 ## Status

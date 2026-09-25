@@ -1,9 +1,9 @@
-//! Resolves a video ID to its active live chat ID.
-//! This is the one place we still use REST: 1 quota unit per call,
-//! done once per source lifetime, not per reconnect.
+//! Finds the live chat to attach to: either a given video's active chat
+//! (`videos.list`) or the creator's own current/next broadcast
+//! (`liveBroadcasts.list`). This is the one place we still use REST:
+//! 1 quota unit per call, never per gRPC reconnect.
 
 use anyhow::Context;
-use tonic::IntoRequest;
 
 #[derive(serde::Deserialize)]
 struct VideosResponse {
@@ -22,17 +22,31 @@ struct LiveStreamingDetails {
     active_live_chat_id: Option<String>,
 }
 
-pub async fn resolve_live_chat_id(auth: &Auth, video_id: &str) -> anyhow::Result<String> {
-    let url = format!(
-        "https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id={video_id}"
-    );
-    let resp: VideosResponse = auth
-        .apply(reqwest::Client::new().get(url))
+pub async fn resolve_live_chat_id(
+    http: &reqwest::Client,
+    auth: &Auth,
+    video_id: &str,
+) -> anyhow::Result<String> {
+    // parse_with_params percent-encodes the values, so a malformed id
+    // can't inject extra query parameters.
+    let url = reqwest::Url::parse_with_params(
+        "https://www.googleapis.com/youtube/v3/videos",
+        [("part", "liveStreamingDetails"), ("id", video_id)],
+    )?;
+    let response = auth
+        .apply(http.get(url))
         .send()
         .await
-        .context("videos.list request failed")?
-        .error_for_status()
-        .context("videos.list returned an error")?
+        .context("videos.list request failed")?;
+
+    // Check the status BEFORE parsing: Google's error body says *why*.
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("videos.list failed: HTTP {status}: {body}");
+    }
+
+    let resp: VideosResponse = response
         .json()
         .await
         .context("videos.list returned invalid JSON")?;
@@ -66,18 +80,36 @@ impl Auth {
     }
 }
 
-/// A broadcast resolved to its video id, with the live chat id when the
-/// API already provides one (saves the follow-up videos.list call).
+/// A resolved broadcast, with enough information for the caller to decide
+/// what to do next.
+///
+/// - `is_live == true`: an active chat exists; attach to `live_chat_id`.
+/// - `is_live == false`: scheduled but not live yet; wait until
+///   `scheduled_start_time`, polling faster as it approaches.
 pub struct ResolvedStream {
     pub video_id: String,
     pub live_chat_id: Option<String>,
+    pub is_live: bool,
+    pub scheduled_start_time: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Resolves the creator's current (or next scheduled) broadcast.
+fn parse_time(raw: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    raw.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// Resolves the creator's current broadcast, or the soonest scheduled one.
+///
+/// Returns `Ok(None)` when nothing is live and nothing is scheduled: the
+/// caller should keep scanning rather than treat that as an error.
 /// Requires OAuth (youtube.readonly scope): `mine=true` only works for
 /// the token's own channel, and is the ONLY way to see unlisted and
 /// members-only broadcasts. Costs 1 quota unit per call.
-pub async fn resolve_own_broadcast(auth: &Auth) -> anyhow::Result<ResolvedStream> {
+pub async fn resolve_own_broadcast(
+    http: &reqwest::Client,
+    auth: &Auth,
+    log_all: bool,
+) -> anyhow::Result<Option<ResolvedStream>> {
     if !matches!(auth, Auth::Bearer(_)) {
         anyhow::bail!("OwnBroadcast requires OAuth; API keys cannot use `mine=true`");
     }
@@ -113,10 +145,10 @@ pub async fn resolve_own_broadcast(auth: &Auth) -> anyhow::Result<ResolvedStream
     // (the API rejects combinations), so fetch everything we own and
     // classify lifeCycleStatus locally.
     let url = "https://www.googleapis.com/youtube/v3/liveBroadcasts\
-               ?part=id,snippet,status&mine=true&broadcastType=all&maxResults=50";
+               ?part=id,snippet,status&mine=true&broadcastType=all&maxResults=10";
 
     let response = auth
-        .apply(reqwest::Client::new().get(url))
+        .apply(http.get(url))
         .send()
         .await
         .context("liveBroadcasts.list request failed")?;
@@ -132,24 +164,41 @@ pub async fn resolve_own_broadcast(auth: &Auth) -> anyhow::Result<ResolvedStream
         .await
         .context("liveBroadcasts.list returned unexpected JSON")?;
 
-    let total = resp.items.len();
+    // Debug aid: on the first scan poll, show every broadcast we own so the
+    // lifeCycleStatus classification is visible. Later polls stay quiet.
+    if log_all {
+        for item in &resp.items {
+            eprintln!(
+                "[youtube] own broadcast {} status={:?} scheduled={:?}",
+                item.id,
+                life_cycle(&item.status),
+                item.snippet
+                    .as_ref()
+                    .and_then(|s| s.scheduled_start_time.as_deref()),
+            );
+        }
+    }
 
-    // 1. Live now (or transitioning into live)?
+    // 1. Live now (or transitioning into live)? Attach immediately.
     if let Some(item) = resp
         .items
         .iter()
         .find(|i| matches!(life_cycle(&i.status), Some("live") | Some("liveStarting")))
     {
-        return Ok(ResolvedStream {
+        return Ok(Some(ResolvedStream {
             video_id: item.id.clone(),
             live_chat_id: item.snippet.as_ref().and_then(|s| s.live_chat_id.clone()),
-        });
+            is_live: true,
+            scheduled_start_time: None,
+        }));
     }
 
-    // 2. Otherwise the soonest scheduled broadcast.
-    //    Note: `None` sorts before `Some` in min_by_key — a broadcast with
-    //    no scheduledStartTime would win; acceptable for now.
-    resp.items
+    // 2. Otherwise the soonest scheduled broadcast, if any.
+    //    Times are parsed before comparing, and the key `(is_none, time)`
+    //    sorts broadcasts without a start time last: tuples compare field
+    //    by field and `false < true`.
+    Ok(resp
+        .items
         .into_iter()
         .filter(|i| {
             matches!(
@@ -157,16 +206,19 @@ pub async fn resolve_own_broadcast(auth: &Auth) -> anyhow::Result<ResolvedStream
                 Some("ready") | Some("testing") | Some("testStarting") | Some("created")
             )
         })
-        .min_by_key(|i| i.snippet.as_ref().and_then(|s| s.scheduled_start_time.clone()))
-        .map(|item| ResolvedStream {
+        .map(|item| {
+            let start = parse_time(
+                item.snippet
+                    .as_ref()
+                    .and_then(|s| s.scheduled_start_time.as_deref()),
+            );
+            (start, item)
+        })
+        .min_by_key(|(start, _)| (start.is_none(), *start))
+        .map(|(scheduled_start_time, item)| ResolvedStream {
             video_id: item.id,
             live_chat_id: item.snippet.and_then(|s| s.live_chat_id),
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no live or scheduled broadcasts found (liveBroadcasts.list returned {total} broadcasts, \
-                 none in a live/ready/testing state)"
-            )
-        })
+            is_live: false,
+            scheduled_start_time,
+        }))
 }
-

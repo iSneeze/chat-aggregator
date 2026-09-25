@@ -1,6 +1,5 @@
-use chat_core::{ChatSource, ChatMessage};
+use chat_core::{ChatEvent, ChatSource, MessageKind};
 use chat_twitch::TwitchSource;
-
 
 /// example to test twitch message collection on live channels - live integration test
 #[tokio::main]
@@ -9,22 +8,48 @@ async fn main() -> anyhow::Result<()> {
         .nth(1)
         .expect("usage: cargo run -p chat-twitch --example listen_twitch -- <channel>");
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatMessage>(256);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatEvent>(256);
 
     tokio::spawn(Box::new(TwitchSource { channel }).run(tx));
-    
-    while let Some(msg) = rx.recv().await {
-        let kind = match &msg.kind {
-            chat_core::MessageKind::Text => "text".to_string(),
-            chat_core::MessageKind::EmoteOnly { emotes } => format!("emote-only {emotes:?}"),
-            chat_core::MessageKind::Donation { amount } => format!("DONATION {amount}"),
-            chat_core::MessageKind::Special { .. } => "special".to_string(),
-            chat_core::MessageKind::MembershipJoin { .. } => "SUB".to_string(),
-            chat_core::MessageKind::MembershipGift { amount } => format!("GIFT x{amount}"),
-            chat_core::MessageKind::SystemNotice => "notice".to_string(),
+
+    while let Some(event) = rx.recv().await {
+        let msg = match event {
+            ChatEvent::Message(msg) => msg,
+            ChatEvent::Delete { message_id, .. } => {
+                println!("[DELETE] message {message_id}");
+                continue;
+            }
+            ChatEvent::ClearUser { user_id, .. } => {
+                println!("[CLEAR USER] {user_id}");
+                continue;
+            }
+            ChatEvent::ClearAll { .. } => {
+                println!("[CLEAR ALL]");
+                continue;
+            }
         };
-        println!("[{}] {} ({}): {} <{}> emotes: {}", kind, msg.author.name, msg.author.id, msg.text, msg.timestamp,
-            msg.emotes.iter().map(|e| e.code.as_str()).collect::<Vec<_>>().join(", "));
+        let kind = match &msg.kind {
+            MessageKind::Text => "text".to_string(),
+            MessageKind::EmoteOnly => "emote-only".to_string(),
+            MessageKind::Donation { amount } => format!("DONATION {amount}"),
+            MessageKind::Special { .. } => "special".to_string(),
+            MessageKind::MembershipJoin { .. } => "SUB".to_string(),
+            MessageKind::MembershipGift { amount } => format!("GIFT x{amount}"),
+            MessageKind::SystemNotice => "notice".to_string(),
+        };
+        println!(
+            "[{}] {} ({}): {} <{}> emotes: {}",
+            kind,
+            msg.author.name,
+            msg.author.id,
+            msg.text,
+            msg.timestamp,
+            msg.emotes
+                .iter()
+                .map(|e| e.code.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     Ok(())
 }

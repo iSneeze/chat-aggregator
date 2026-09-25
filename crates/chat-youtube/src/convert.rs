@@ -1,3 +1,9 @@
+use crate::emoji::EmojiMap;
+use crate::pb;
+use chat_core::{Author, ChatEvent, ChatMessage, ChatPlatform, MessageKind};
+use pb::live_chat_message_snippet::DisplayedContent;
+use pb::live_chat_message_snippet::type_wrapper::Type;
+
 /// Keeps first-occurrence order of seen message ids, bounded in size so a
 /// 24/7 process doesn't grow the set forever.
 pub struct BoundedIdSet {
@@ -30,43 +36,69 @@ impl BoundedIdSet {
     }
 }
 
-use crate::pb;
-use chat_core::{Author, ChatMessage, ChatPlatform, MessageKind};
+pub fn convert(
+    item: pb::LiveChatMessage,
+    dedupe: &mut BoundedIdSet,
+    emojis: &EmojiMap,
+) -> Option<ChatEvent> {
+    let snippet = item.snippet?;
 
-pub fn convert(item: pb::LiveChatMessage, dedupe: &mut BoundedIdSet) -> Option<ChatMessage> {
-    // Gift events reuse ids to update combo counts; dedupe keeps first only.
-    if let Some(id) = &item.id {
-        if !dedupe.insert(id.clone()) {
-            return None;
+    // Gate on the event type first: several types have no display content
+    // and must not fall through to the text path as empty messages.
+    // (Unknown future type values also read as `InvalidType` and are dropped.)
+    match snippet.r#type() {
+        // A tombstone replaces a deleted message and reuses its id. It must
+        // bypass dedupe (that id was already seen); repeats are harmless
+        // since deleting twice is the same as deleting once.
+        Type::Tombstone => {
+            return item.id.map(|message_id| ChatEvent::Delete {
+                platform: ChatPlatform::YouTube,
+                message_id,
+            });
         }
+        Type::ChatEndedEvent
+        | Type::SponsorOnlyModeStartedEvent
+        | Type::SponsorOnlyModeEndedEvent
+        | Type::PollEvent
+        | Type::FanFundingEvent // deprecated, superseded by Super Chat
+        | Type::InvalidType => return None,
+        _ => {}
     }
 
-    let snippet = item.snippet?;
+    // Gift events reuse ids to update combo counts; dedupe keeps first only.
+    // Reconnects without a page token also replay recent history.
+    if let Some(id) = &item.id
+        && !dedupe.insert(id.clone())
+    {
+        return None;
+    }
+
     let author = item.author_details.unwrap_or_default();
 
-    let kind = match (snippet.r#type, snippet.displayed_content) {
-        (_, Some(pb::live_chat_message_snippet::DisplayedContent::SuperChatDetails(sc))) => {
-            MessageKind::Donation {
-                amount: sc.amount_display_string.unwrap_or_default(),
-            }
+    let kind = match snippet.displayed_content {
+        // Moderation, not a message: the author here is the moderator.
+        Some(DisplayedContent::UserBannedDetails(d)) => {
+            return d
+                .banned_user_details
+                .and_then(|u| u.channel_id)
+                .map(|user_id| ChatEvent::ClearUser {
+                    platform: ChatPlatform::YouTube,
+                    user_id,
+                });
         }
-        (_, Some(pb::live_chat_message_snippet::DisplayedContent::SuperStickerDetails(_))) => {
+        Some(DisplayedContent::SuperChatDetails(sc)) => MessageKind::Donation {
+            amount: sc.amount_display_string.unwrap_or_default(),
+        },
+        Some(DisplayedContent::SuperStickerDetails(_)) => {
             MessageKind::Special { emote_url: None } // TODO: API gives no sticker URL
         }
-        (_, Some(pb::live_chat_message_snippet::DisplayedContent::GiftDetails(gift))) => {
-            MessageKind::Special {
-                emote_url: gift.gift_url,
-            }
-        }
-        (_, Some(pb::live_chat_message_snippet::DisplayedContent::NewSponsorDetails(d))) => {
-            MessageKind::MembershipJoin {
-                info: d.member_level_name.unwrap_or_else(|| "member".into()),
-            }
-        }
-        (
-            _,
-            Some(pb::live_chat_message_snippet::DisplayedContent::MemberMilestoneChatDetails(d)),
-        ) => MessageKind::MembershipJoin {
+        Some(DisplayedContent::GiftDetails(gift)) => MessageKind::Special {
+            emote_url: gift.gift_url,
+        },
+        Some(DisplayedContent::NewSponsorDetails(d)) => MessageKind::MembershipJoin {
+            info: d.member_level_name.unwrap_or_else(|| "member".into()),
+        },
+        Some(DisplayedContent::MemberMilestoneChatDetails(d)) => MessageKind::MembershipJoin {
             info: format!(
                 "{} month{} member{}",
                 d.member_month(),
@@ -77,21 +109,23 @@ pub fn convert(item: pb::LiveChatMessage, dedupe: &mut BoundedIdSet) -> Option<C
                     .unwrap_or_default()
             ),
         },
-        (_, Some(pb::live_chat_message_snippet::DisplayedContent::MembershipGiftingDetails(d))) => {
-            MessageKind::MembershipGift {
-                amount: d.gift_memberships_count().max(0) as usize,
-            }
-        }
+        Some(DisplayedContent::MembershipGiftingDetails(d)) => MessageKind::MembershipGift {
+            amount: d.gift_memberships_count().max(0) as usize,
+        },
         // Per-recipient echo of a gifting event we already counted; skip
         // to avoid double-counting gifts.
-        (
-            _,
-            Some(pb::live_chat_message_snippet::DisplayedContent::GiftMembershipReceivedDetails(_)),
-        ) => {
-            return None;
-        }
-        // Tombstones are deletion markers; nothing to display.
-        _ => MessageKind::Text,
+        Some(DisplayedContent::GiftMembershipReceivedDetails(_)) => return None,
+        // Already filtered by type above; listed so this match stays
+        // exhaustive without a `_` arm (a new proto variant = compile error).
+        Some(DisplayedContent::PollDetails(_)) => return None,
+        Some(DisplayedContent::TextMessageDetails(_)) | None => MessageKind::Text,
+    };
+
+    let text = snippet.display_message.unwrap_or_default();
+    let found = emojis.find(&text);
+    let kind = match kind {
+        MessageKind::Text if found.emote_only => MessageKind::EmoteOnly,
+        other => other,
     };
 
     let mut badges: Vec<String> = Vec::new();
@@ -108,7 +142,8 @@ pub fn convert(item: pb::LiveChatMessage, dedupe: &mut BoundedIdSet) -> Option<C
         badges.push("verified".into());
     }
 
-    Some(ChatMessage {
+    Some(ChatEvent::Message(ChatMessage {
+        id: item.id.unwrap_or_default(),
         platform: ChatPlatform::YouTube,
         author: Author {
             id: author
@@ -120,18 +155,18 @@ pub fn convert(item: pb::LiveChatMessage, dedupe: &mut BoundedIdSet) -> Option<C
                 .map(|n| n.trim_start_matches('@').to_string())
                 .unwrap_or_default(),
             color: None, // YouTube doesn't assign name colors
-            badges: badges,
+            badges,
             avatar_url: author.profile_image_url,
         },
-        text: snippet.display_message.unwrap_or_default(),
-        emotes: vec![], // YouTube emotes (:like:) have no id/url in this API
+        text,
+        emotes: found.emotes,
         timestamp: snippet
             .published_at
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
             .map(|t| t.with_timezone(&chrono::Utc))
             .unwrap_or_else(chrono::Utc::now),
         kind,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -139,25 +174,20 @@ mod tests {
     use super::*;
     use pb::LiveChatMessageAuthorDetails;
 
-    #[test]
-    fn converts_text_message() {
-        let item = pb::LiveChatMessage {
-            id: Some("m1".into()),
+    fn text_item(id: &str, text: &str) -> pb::LiveChatMessage {
+        pb::LiveChatMessage {
+            id: Some(id.into()),
             snippet: Some(pb::LiveChatMessageSnippet {
-                r#type: Some(
-                    pb::live_chat_message_snippet::type_wrapper::Type::TextMessageEvent as i32,
-                ),
+                r#type: Some(Type::TextMessageEvent as i32),
                 author_channel_id: Some("UC1".into()),
                 published_at: Some("2026-09-06T10:00:00Z".into()),
                 has_display_content: Some(true),
-                display_message: Some("hello".into()),
-                displayed_content: Some(
-                    pb::live_chat_message_snippet::DisplayedContent::TextMessageDetails(
-                        pb::LiveChatTextMessageDetails {
-                            message_text: Some("hello".into()),
-                        },
-                    ),
-                ),
+                display_message: Some(text.into()),
+                displayed_content: Some(DisplayedContent::TextMessageDetails(
+                    pb::LiveChatTextMessageDetails {
+                        message_text: Some(text.into()),
+                    },
+                )),
                 ..Default::default()
             }),
             author_details: Some(LiveChatMessageAuthorDetails {
@@ -167,10 +197,21 @@ mod tests {
                 ..Default::default()
             }),
             ..Default::default()
-        };
+        }
+    }
 
-        let mut dedupe = BoundedIdSet::new(16);
-        let msg = convert(item, &mut dedupe).unwrap();
+    /// Runs `convert` and unwraps a `ChatEvent::Message`.
+    fn convert_msg(item: pb::LiveChatMessage, emojis: &EmojiMap) -> ChatMessage {
+        match convert(item, &mut BoundedIdSet::new(16), emojis) {
+            Some(ChatEvent::Message(m)) => m,
+            other => panic!("expected a message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn converts_text_message() {
+        let msg = convert_msg(text_item("m1", "hello"), &EmojiMap::default());
+        assert_eq!(msg.id, "m1");
         assert_eq!(msg.author.name, "Ann");
         assert_eq!(msg.author.badges, vec!["moderator".to_string()]);
         assert_eq!(msg.text, "hello");
@@ -182,19 +223,15 @@ mod tests {
         let item = pb::LiveChatMessage {
             id: Some("m2".into()),
             snippet: Some(pb::LiveChatMessageSnippet {
-                r#type: Some(
-                    pb::live_chat_message_snippet::type_wrapper::Type::SuperChatEvent as i32,
-                ),
+                r#type: Some(Type::SuperChatEvent as i32),
                 display_message: Some("€2.00 WOO".into()),
-                displayed_content: Some(
-                    pb::live_chat_message_snippet::DisplayedContent::SuperChatDetails(
-                        pb::LiveChatSuperChatDetails {
-                            amount_display_string: Some("€2.00".into()),
-                            user_comment: Some("WOO".into()),
-                            ..Default::default()
-                        },
-                    ),
-                ),
+                displayed_content: Some(DisplayedContent::SuperChatDetails(
+                    pb::LiveChatSuperChatDetails {
+                        amount_display_string: Some("€2.00".into()),
+                        user_comment: Some("WOO".into()),
+                        ..Default::default()
+                    },
+                )),
                 ..Default::default()
             }),
             author_details: Some(LiveChatMessageAuthorDetails {
@@ -204,9 +241,94 @@ mod tests {
             ..Default::default()
         };
 
-        let mut dedupe = BoundedIdSet::new(16);
-        let msg = convert(item, &mut dedupe).unwrap();
+        let msg = convert_msg(item, &EmojiMap::default());
         assert!(matches!(msg.kind, MessageKind::Donation { .. }));
         assert_eq!(msg.text, "€2.00 WOO");
+    }
+
+    #[test]
+    fn duplicate_id_is_dropped() {
+        let mut dedupe = BoundedIdSet::new(16);
+        let emojis = EmojiMap::default();
+        assert!(convert(text_item("m1", "hi"), &mut dedupe, &emojis).is_some());
+        assert!(convert(text_item("m1", "hi"), &mut dedupe, &emojis).is_none());
+    }
+
+    #[test]
+    fn tombstone_deletes_already_seen_message() {
+        let mut dedupe = BoundedIdSet::new(16);
+        let emojis = EmojiMap::default();
+        convert(text_item("m1", "oops"), &mut dedupe, &emojis);
+
+        let tombstone = pb::LiveChatMessage {
+            id: Some("m1".into()),
+            snippet: Some(pb::LiveChatMessageSnippet {
+                r#type: Some(Type::Tombstone as i32),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        match convert(tombstone, &mut dedupe, &emojis) {
+            Some(ChatEvent::Delete { message_id, .. }) => assert_eq!(message_id, "m1"),
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ban_clears_banned_user_not_moderator() {
+        let item = pb::LiveChatMessage {
+            id: Some("b1".into()),
+            snippet: Some(pb::LiveChatMessageSnippet {
+                r#type: Some(Type::UserBannedEvent as i32),
+                author_channel_id: Some("UC_MOD".into()),
+                displayed_content: Some(DisplayedContent::UserBannedDetails(
+                    pb::LiveChatUserBannedMessageDetails {
+                        banned_user_details: Some(pb::ChannelProfileDetails {
+                            channel_id: Some("UC_TROLL".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        match convert(item, &mut BoundedIdSet::new(16), &EmojiMap::default()) {
+            Some(ChatEvent::ClearUser { user_id, .. }) => assert_eq!(user_id, "UC_TROLL"),
+            other => panic!("expected ClearUser, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn silent_events_are_skipped() {
+        for ty in [Type::ChatEndedEvent, Type::SponsorOnlyModeStartedEvent] {
+            let item = pb::LiveChatMessage {
+                id: Some("s1".into()),
+                snippet: Some(pb::LiveChatMessageSnippet {
+                    r#type: Some(ty as i32),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let out = convert(item, &mut BoundedIdSet::new(16), &EmojiMap::default());
+            assert!(out.is_none(), "{ty:?} should be skipped, got {out:?}");
+        }
+    }
+
+    #[test]
+    fn custom_emoji_are_resolved() {
+        let emojis = EmojiMap::from_json(
+            r#"{ "version": 1, "entries": [ { "code": ":yt:", "url": "https://yt3.ggpht.com/yt" } ] }"#,
+        )
+        .unwrap();
+
+        let msg = convert_msg(text_item("m1", "hi :yt:"), &emojis);
+        assert_eq!(msg.emotes.len(), 1);
+        assert_eq!(msg.emotes[0].url, "https://yt3.ggpht.com/yt");
+        assert!(matches!(msg.kind, MessageKind::Text));
+
+        let msg = convert_msg(text_item("m2", ":yt: :yt:"), &emojis);
+        assert!(matches!(msg.kind, MessageKind::EmoteOnly));
     }
 }

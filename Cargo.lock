@@ -217,6 +217,7 @@ dependencies = [
  "prost-types",
  "reqwest",
  "serde",
+ "serde_json",
  "tokio",
  "tonic",
  "tonic-build",

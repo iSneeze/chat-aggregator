@@ -1,12 +1,13 @@
 use anyhow::Context;
-use chat_core::{ChatMessage, ChatSource, MessageKind};
-use chat_youtube::{Auth, YouTubeSource, YouTubeTarget};
+use chat_core::{ChatEvent, ChatMessage, ChatSource, MessageKind};
+use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // usage: listen_youtube <video_id>            (API key)
     //        listen_youtube --member <video_id>   (OAuth, e.g. members-only stream)
     //        listen_youtube --own                 (OAuth, your own broadcast)
+    // optional: YOUTUBE_EMOJIS=<export.json> from scripts/yt-emoji-export.js
     let args: Vec<String> = std::env::args().collect();
 
     let (target, auth) = match (args.get(1).map(String::as_str), args.get(2)) {
@@ -25,24 +26,29 @@ async fn main() -> anyhow::Result<()> {
         _ => anyhow::bail!("usage: listen_youtube <video_id> | --member <video_id> | --own"),
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatMessage>(256);
-    let mut source_task = tokio::spawn(Box::new(YouTubeSource { target, auth }).run(tx));
+    let emojis = match std::env::var("YOUTUBE_EMOJIS") {
+        Ok(path) => {
+            let map = EmojiMap::load(&path)?;
+            println!("loaded {} custom emoji from {path}", map.len());
+            map
+        }
+        Err(_) => EmojiMap::default(),
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatEvent>(256);
+    let mut source_task = tokio::spawn(
+        Box::new(YouTubeSource {
+            target,
+            auth,
+            emojis,
+        })
+        .run(tx),
+    );
 
     loop {
         tokio::select! {
-            msg = rx.recv() => match msg {
-                Some(msg) => {
-                    let kind = match &msg.kind {
-                        MessageKind::Text => "text".into(),
-                        MessageKind::EmoteOnly { emotes } => format!("emote-only {emotes:?}"),
-                        MessageKind::Donation { amount } => format!("DONATION {amount}"),
-                        MessageKind::Special { .. } => "special".into(),
-                        MessageKind::MembershipJoin { .. } => "MEMBER".into(),
-                        MessageKind::MembershipGift { amount } => format!("GIFT x{amount}"),
-                        MessageKind::SystemNotice => "notice".into(),
-                    };
-                    println!("[{}] {}: {} <{}>", kind, msg.author.name, msg.text, msg.timestamp);
-                }
+            event = rx.recv() => match event {
+                Some(event) => print_event(event),
                 None => {
                     // tx dropped => source finished; its result is the real story.
                     let res = (&mut source_task).await;
@@ -59,6 +65,42 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+}
+
+fn print_event(event: ChatEvent) {
+    match event {
+        ChatEvent::Message(msg) => print_message(&msg),
+        ChatEvent::Delete { message_id, .. } => println!("[DELETE] message {message_id}"),
+        ChatEvent::ClearUser { user_id, .. } => println!("[CLEAR USER] {user_id}"),
+        ChatEvent::ClearAll { .. } => println!("[CLEAR ALL]"),
+    }
+}
+
+fn print_message(msg: &ChatMessage) {
+    let kind = match &msg.kind {
+        MessageKind::Text => "text".into(),
+        MessageKind::EmoteOnly => "emote-only".into(),
+        MessageKind::Donation { amount } => format!("DONATION {amount}"),
+        MessageKind::Special { .. } => "special".into(),
+        MessageKind::MembershipJoin { .. } => "MEMBER".into(),
+        MessageKind::MembershipGift { amount } => format!("GIFT x{amount}"),
+        MessageKind::SystemNotice => "notice".into(),
+    };
+    let badges = if msg.author.badges.is_empty() {
+        String::new()
+    } else {
+        format!(" {{{}}}", msg.author.badges.join(","))
+    };
+    let emotes = if msg.emotes.is_empty() {
+        String::new()
+    } else {
+        let codes: Vec<_> = msg.emotes.iter().map(|e| e.code.as_str()).collect();
+        format!(" emotes: {}", codes.join(", "))
+    };
+    println!(
+        "[{}] {}{}: {} <{}> id={}{}",
+        kind, msg.author.name, badges, msg.text, msg.timestamp, msg.id, emotes
+    );
 }
 
 fn env(name: &str) -> String {
