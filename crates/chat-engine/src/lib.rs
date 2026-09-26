@@ -57,6 +57,8 @@ pub struct EngineConfig {
     pub theme_dir: Option<PathBuf>,
     /// Spacing of message bursts in the overlay.
     pub stagger: Stagger,
+    /// Whether the JSON API (`/api/v1/ws`) accepts clients.
+    pub api: bool,
 }
 
 impl Default for EngineConfig {
@@ -68,6 +70,7 @@ impl Default for EngineConfig {
             history: DEFAULT_HISTORY,
             theme_dir: None,
             stagger: Stagger::default(),
+            api: false,
         }
     }
 }
@@ -83,6 +86,7 @@ pub struct EngineHandle {
     // because a `watch::Sender` can't be cloned; all handles share one.
     theme_dir: Arc<watch::Sender<Option<PathBuf>>>,
     stagger: Arc<watch::Sender<Stagger>>,
+    api: Arc<watch::Sender<bool>>,
     hub: Arc<Hub>,
 }
 
@@ -165,6 +169,16 @@ impl EngineHandle {
         *self.stagger.borrow()
     }
 
+    /// Switches the JSON API on or off. Off also disconnects the clients
+    /// that are connected.
+    pub fn set_api_enabled(&self, on: bool) {
+        self.api.send_replace(on);
+    }
+
+    pub fn api_enabled(&self) -> bool {
+        *self.api.borrow()
+    }
+
     /// The live status. A `watch` receiver always holds the latest value;
     /// `changed().await` waits for the next update.
     pub fn status(&self) -> watch::Receiver<Status> {
@@ -229,11 +243,13 @@ impl Engine {
 
         let (theme_tx, theme_rx) = watch::channel(config.theme_dir);
         let (stagger_tx, stagger_rx) = watch::channel(config.stagger);
+        let (api_tx, api_rx) = watch::channel(config.api);
         let state = ServerState {
             hub: hub.clone(),
             theme_dir: theme_rx,
             shutdown: shutdown.clone(),
             stagger: stagger_rx,
+            api: api_rx,
             connections,
         };
         tasks.spawn(async move {
@@ -247,6 +263,7 @@ impl Engine {
             status: status_rx,
             theme_dir: Arc::new(theme_tx),
             stagger: Arc::new(stagger_tx),
+            api: Arc::new(api_tx),
             hub: hub.clone(),
         };
         for source in config.sources {
@@ -658,6 +675,10 @@ mod tests {
 
         handle.set_stagger(Stagger::off());
         assert!(handle.stagger().is_off());
+
+        assert!(!handle.api_enabled(), "off by default");
+        handle.set_api_enabled(true);
+        assert!(handle.api_enabled());
         engine.shutdown().await;
     }
 

@@ -15,6 +15,10 @@ history = 20
 stagger_ms = 250
 # ... but never delay a message by more than this (at most 5000).
 stagger_max_ms = 2000
+# The JSON API for your own programs (games, bots) at
+# ws://127.0.0.1:<port>/api/v1/ws. Off unless you need it: any web page open
+# in your browser could connect to it too.
+api = false
 
 [youtube]
 # Your own Google project's OAuth client, see

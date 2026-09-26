@@ -27,6 +27,7 @@
 //!   --history <n>         messages replayed to a new overlay, default 20
 //!   --stagger <ms>        spacing of message bursts in the overlay, default 250 (0 = off)
 //!   --stagger-max <ms>    most a message may be delayed by it, default 2000 (max 5000)
+//!   --api                 switch the JSON API on (ws://127.0.0.1:<port>/api/v1/ws)
 //!
 //! YouTube login (once; the token is kept in the system keyring):
 //!   cargo run -p chat-engine --example run -- --youtube-login
@@ -88,11 +89,14 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let api = config.api;
     let engine = Engine::start(config).await?;
-    println!(
-        "\n  overlay: http://{}/   (Ctrl+C to stop)\n",
-        engine.addr()
-    );
+    println!("\n  overlay:  http://{}/   (Ctrl+C to stop)", engine.addr());
+    if api {
+        println!("  JSON API: ws://{}/api/v1/ws\n", engine.addr());
+    } else {
+        println!("  JSON API: off (--api, or `api = true` in [server])\n");
+    }
     tokio::spawn(print_status_changes(engine.handle().status()));
 
     tokio::signal::ctrl_c().await?;
@@ -192,6 +196,7 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
             "--history" => server.history = parse(&mut args, "--history")?,
             "--stagger" => server.stagger_ms = parse(&mut args, "--stagger")?,
             "--stagger-max" => server.stagger_max_ms = parse(&mut args, "--stagger-max")?,
+            "--api" => server.api = true,
             other => bail!("unknown flag {other:?} (see the top of examples/run.rs)"),
         }
     }

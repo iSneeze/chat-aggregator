@@ -60,9 +60,10 @@ without any login.
 - **Nothing is sent to the developers or any third party.**
 - chat-aggregator shows the chat in an overlay served on your own computer
   (`127.0.0.1`); other computers can't reach it. Programs running on your
-  computer can read the same chat through its local API (and so can web
-  pages open in your browser, because browsers allow pages to connect to
-  your own computer). This only ever includes public chat.
+  computer can read the same chat through its local API, if you switch it
+  on (it's off by default); while it's on, so can web pages open in your
+  browser, because browsers allow pages to connect to your own computer.
+  This only ever includes public chat.
 - The program connects only to the platforms themselves: Google/YouTube (for
   login and chat) and Twitch (for chat). Emote and profile images in the
   overlay are loaded from Twitch's and YouTube's image servers by your

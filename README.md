@@ -98,8 +98,10 @@ server: `cargo run -p chat-render --example preview -- <dir> > preview.html`.
 
 **JSON API** for your own programs (games, bots, ...):
 `ws://127.0.0.1:7878/api/v1/ws`, one JSON event per WebSocket message.
-See [docs/api.md](docs/api.md); formal spec in
+Off by default: switch it on in the app's settings (headless: `--api` or
+`api = true` in `[server]`). See [docs/api.md](docs/api.md); formal spec in
 [docs/asyncapi.yaml](docs/asyncapi.yaml). Quick look:
+`cargo run -p chat-engine --example run -- --demo --api`, then
 `websocat ws://127.0.0.1:7878/api/v1/ws`.
 
 Standalone listeners for a single platform:

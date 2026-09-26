@@ -91,6 +91,9 @@ pub struct ServerSettings {
     pub theme: Option<String>,
     pub stagger_ms: u64,
     pub stagger_max_ms: u64,
+    /// The JSON API for other programs. Off by default: any web page open
+    /// in the browser could connect to it too.
+    pub api: bool,
 }
 
 impl Default for ServerSettings {
@@ -101,6 +104,7 @@ impl Default for ServerSettings {
             theme: None,
             stagger_ms: 250,
             stagger_max_ms: 2000,
+            api: false,
         }
     }
 }
@@ -177,6 +181,7 @@ impl ConfigFile {
                 Duration::from_millis(server.stagger_ms),
                 Duration::from_millis(server.stagger_max_ms),
             ),
+            api: server.api,
         }
     }
 }
@@ -223,6 +228,7 @@ mod tests {
             theme = "cozy"
             stagger_ms = 100
             stagger_max_ms = 1000
+            api = true
 
             [youtube]
             client_id = "id"
@@ -274,6 +280,7 @@ mod tests {
             "switched-off sources don't start"
         );
         assert_eq!(engine.bind.port(), 8080);
+        assert!(engine.api);
         assert_eq!(engine.history, 5);
         assert_eq!(
             engine.theme_dir.as_deref(),
@@ -287,6 +294,7 @@ mod tests {
         let file = ConfigFile::parse("").unwrap();
         assert_eq!(file, ConfigFile::default());
         assert_eq!(file.server.port, DEFAULT_PORT);
+        assert!(!file.server.api, "the JSON API is off unless asked for");
 
         let file = ConfigFile::parse("[server]\nport = 9000").unwrap();
         assert_eq!(file.server.port, 9000);

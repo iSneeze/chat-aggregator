@@ -57,6 +57,9 @@ pub struct ServerState {
     /// an overlay connects: a change applies to overlays connecting (or
     /// reloading) afterwards.
     pub stagger: watch::Receiver<Stagger>,
+    /// Whether the JSON API accepts clients. Switching it off also closes
+    /// the connected ones.
+    pub api: watch::Receiver<bool>,
     pub connections: Arc<Connections>,
 }
 
@@ -285,6 +288,7 @@ mod tests {
         pub(crate) task: JoinHandle<std::io::Result<()>>,
         pub(crate) theme_dir: watch::Sender<Option<PathBuf>>,
         pub(crate) stagger: watch::Sender<Stagger>,
+        pub(crate) api: watch::Sender<bool>,
         pub(crate) connections: Arc<Connections>,
     }
 
@@ -297,11 +301,14 @@ mod tests {
         let (theme_tx, theme_rx) = watch::channel(theme_dir);
         let connections = Arc::new(Connections::default());
         let (stagger_tx, stagger_rx) = watch::channel(Stagger::default());
+        // On in tests: most of them are about the API.
+        let (api_tx, api_rx) = watch::channel(true);
         let state = ServerState {
             hub: hub.clone(),
             theme_dir: theme_rx,
             shutdown: shutdown.clone(),
             stagger: stagger_rx,
+            api: api_rx,
             connections: connections.clone(),
         };
         let task = tokio::spawn(serve(listener, state));
@@ -312,6 +319,7 @@ mod tests {
             task,
             theme_dir: theme_tx,
             stagger: stagger_tx,
+            api: api_tx,
             connections,
         }
     }

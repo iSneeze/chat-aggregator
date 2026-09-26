@@ -6,6 +6,10 @@ overlays.
 
 - **Endpoint:** `ws://127.0.0.1:7878/api/v1/ws` (WebSocket, port
   configurable)
+- **Off by default:** switch it on in the app under **⚙ Settings →
+  Connection → JSON API** (headless: `api = true` in `[server]`, or
+  `--api`). Any web page open in the browser could connect to it, so it
+  only listens when you want it to.
 - **Direction:** the server pushes one event per text frame; anything the
   client sends is ignored.
 - **Formal spec:** [asyncapi.yaml](asyncapi.yaml) (AsyncAPI 3.0) with the
@@ -15,7 +19,7 @@ overlays.
 Try it without writing code (the dev shell includes `websocat`):
 
 ```sh
-cargo run -p chat-engine --example run -- --demo
+cargo run -p chat-engine --example run -- --demo --api
 websocat ws://127.0.0.1:7878/api/v1/ws
 ```
 
@@ -32,8 +36,10 @@ replay old commands every time it reconnects. Use `?history=true` if you
 
 The server pings idle connections every 30 seconds (WebSocket libraries
 answer automatically) and sends a Close frame with code `1001` when it shuts
-down. Reconnect when the connection drops: nothing is lost while you're
-connected, but events that happen while you're disconnected are not queued.
+down or the API is switched off (the reason says which). While it's
+switched off, connecting fails with HTTP `403 Forbidden`. Reconnect when the
+connection drops: nothing is lost while you're connected, but events that
+happen while you're disconnected are not queued.
 
 ## Events
 

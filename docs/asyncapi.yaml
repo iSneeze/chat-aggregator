@@ -26,7 +26,9 @@ servers:
     protocol: ws
     description: |
       The aggregator running on the streamer's machine. Only reachable
-      from the same machine; the port is configurable.
+      from the same machine; the port is configurable. The API is off by
+      default (switched on in the app's settings); while off, connecting
+      fails with HTTP 403.
 
 channels:
   events:
@@ -35,7 +37,7 @@ channels:
     description: |
       Every chat event, live. Messages sent by the client are ignored.
       The server pings idle connections every 30 seconds and sends a Close
-      frame (code 1001) when it shuts down.
+      frame (code 1001) when it shuts down or the API is switched off.
     messages:
       chatEvent:
         $ref: '#/components/messages/chatEvent'

@@ -4,15 +4,21 @@
 //! by the serde attributes in `chat-core` (see docs/api.md and
 //! docs/asyncapi.yaml). The connection is one-way for now: messages from the
 //! client are read (to notice disconnects and answer pings) but ignored.
+//!
+//! Off unless switched on (`ServerState::api`): any web page open in the
+//! browser can connect to `localhost`, so the API only listens when the
+//! streamer wants it to.
 
 use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
 use axum::extract::{Query, State};
-use axum::response::Response;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use chat_core::ChatEvent;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
 use tracing::debug;
 
 use crate::ServerState;
@@ -31,12 +37,21 @@ pub(crate) struct WsParams {
 }
 
 /// The HTTP handler: agrees to switch the connection to the WebSocket
-/// protocol, then hands the socket to `client`.
+/// protocol, then hands the socket to `client`. Refuses while the API is
+/// switched off, saying why, so a developer testing a bot isn't left
+/// guessing.
 pub(crate) async fn ws(
     upgrade: WebSocketUpgrade,
     Query(params): Query<WsParams>,
     State(state): State<ServerState>,
 ) -> Response {
+    if !*state.api.borrow() {
+        return (
+            StatusCode::FORBIDDEN,
+            "The JSON API is switched off in chat-aggregator's settings.",
+        )
+            .into_response();
+    }
     upgrade.on_upgrade(move |socket| client(socket, state, params.history))
 }
 
@@ -58,6 +73,8 @@ async fn client(mut socket: WebSocket, state: ServerState, history: bool) {
 
     // First ping one interval from now, not immediately.
     let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
+    // A clone of its own: `switched_off` marks values as seen on it.
+    let mut api = state.api.clone();
 
     loop {
         // Wait for whichever happens first; the other branches are simply
@@ -90,17 +107,40 @@ async fn client(mut socket: WebSocket, state: ServerState, history: bool) {
             // Say goodbye properly instead of just dropping the connection,
             // and don't hold up the server's shutdown.
             () = state.shutdown.cancelled() => {
-                let _ = socket
-                    .send(Message::Close(Some(CloseFrame {
-                        code: close_code::AWAY,
-                        reason: "server shutting down".into(),
-                    })))
-                    .await;
+                close(&mut socket, "server shutting down").await;
+                break;
+            }
+            // Switched off in the settings: "off" means no clients at all,
+            // not just no new ones.
+            () = switched_off(&mut api) => {
+                close(&mut socket, "API switched off").await;
                 break;
             }
         }
     }
     debug!("API client disconnected");
+}
+
+/// Ends the connection with a Close frame: "going away", and why.
+async fn close(socket: &mut WebSocket, reason: &'static str) {
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame {
+            code: close_code::AWAY,
+            reason: reason.into(),
+        })))
+        .await;
+}
+
+/// Finishes when the API is switched off. Its own function so the watch's
+/// read guard (`wait_for` returns one) is dropped right here: held across
+/// the `close(...).await` in the loop, it would block the engine from
+/// changing the setting, and make the task non-`Send`, which axum refuses.
+async fn switched_off(api: &mut watch::Receiver<bool>) {
+    if api.wait_for(|on| !*on).await.is_err() {
+        // The setting's sender is gone, i.e. the server is shutting down:
+        // the shutdown branch handles that.
+        std::future::pending::<()>().await;
+    }
 }
 
 async fn send(socket: &mut WebSocket, json: String) -> Result<(), axum::Error> {
@@ -223,6 +263,41 @@ mod tests {
     fn lagged_notice_format() {
         let json: serde_json::Value = serde_json::from_str(&lagged_json(7)).unwrap();
         assert_eq!(json, serde_json::json!({ "type": "lagged", "missed": 7 }));
+    }
+
+    #[tokio::test]
+    async fn switched_off_refuses_and_disconnects_then_on_again_works() {
+        let server = start(None).await;
+        let mut client = connect(server.addr, "").await;
+        sync(&server, &mut client).await;
+
+        // Switching off closes connected clients...
+        server.api.send_replace(false);
+        let closed = timeout(WAIT, async {
+            while let Some(Ok(frame)) = client.next().await {
+                if let WsMessage::Close(Some(close)) = frame {
+                    return close.reason.to_string();
+                }
+            }
+            panic!("connection ended without a Close frame");
+        })
+        .await
+        .unwrap();
+        assert_eq!(closed, "API switched off");
+
+        // ...and refuses new ones, saying why.
+        let refused = connect_async(format!("ws://{}/api/v1/ws", server.addr)).await;
+        match refused {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 403);
+            }
+            other => panic!("expected 403, got {other:?}"),
+        }
+
+        // On again: works without a restart.
+        server.api.send_replace(true);
+        let mut client = connect(server.addr, "").await;
+        sync(&server, &mut client).await;
     }
 
     #[tokio::test]

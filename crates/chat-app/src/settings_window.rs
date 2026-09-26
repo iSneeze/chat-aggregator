@@ -152,6 +152,9 @@ impl SettingsWindow {
                 Duration::from_millis(new.stagger_max_ms),
             ));
         }
+        if new.api != server.api {
+            self.engine.set_api_enabled(new.api);
+        }
         // (A new port is only saved: the server keeps its socket until the
         // next start.)
         if *new != server {
@@ -173,6 +176,23 @@ impl SettingsWindow {
             .detach();
         }
         Ok(())
+    }
+
+    /// Switches the JSON API on or off right away (a switch has no
+    /// half-typed states to wait out). Edits still waiting for the pause go
+    /// along with it.
+    fn set_api(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.draft.server.api = on;
+        // Dropping the pending timer cancels it; `apply` does its work now.
+        self.pending = None;
+        if let Err(e) = self.apply(cx) {
+            let window = self.window;
+            let message = format!("Couldn't save the settings: {e:#}");
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, cx| report(window, cx, message));
+            });
+        }
+        cx.notify();
     }
 
     /// Changes the look right away, and saves it.
@@ -249,6 +269,29 @@ impl SettingsWindow {
                     })
             })
         };
+        let json_api = {
+            let (read, write) = (view.clone(), view.clone());
+            SettingField::switch(
+                move |cx| {
+                    read.upgrade()
+                        .is_some_and(|view| view.read(cx).draft.server.api)
+                },
+                move |on, cx| {
+                    if let Some(view) = write.upgrade() {
+                        view.update(cx, |this, cx| this.set_api(on, cx));
+                    }
+                },
+            )
+        };
+        // Where programs connect: the running server's address (a changed
+        // port only applies after a restart).
+        let api_url = self
+            .engine
+            .status()
+            .borrow()
+            .overlay_url
+            .replacen("http://", "ws://", 1)
+            + "api/v1/ws";
         let api_key = {
             let input = self.api_key.clone();
             SettingField::render(move |_, _, _| {
@@ -306,6 +349,13 @@ impl SettingsWindow {
             ),
             SettingPage::new("Connection").group(
                 SettingGroup::new().items([
+                    SettingItem::new("JSON API", json_api.default_value(false)).description(
+                        format!(
+                            "Chat for your own programs (games, bots) at {api_url}. Off \
+                             unless you need it: any web page open in your browser could \
+                             connect to it too."
+                        ),
+                    ),
                     SettingItem::new(
                         "Port",
                         number(&view, 1024., 65535., 1., |d| &mut d.server.port)
@@ -525,6 +575,19 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(ui.saved().unwrap().server.stagger_ms, 0);
         assert!(ui.engine.handle().stagger().is_off());
+    }
+
+    #[gpui_kit::test]
+    fn the_json_api_switches_at_once_and_is_saved(cx: &mut TestAppContext) {
+        let ui = open(cx, "api");
+        assert!(!ui.engine.handle().api_enabled(), "off by default");
+        ui.view().update(cx, |this, cx| this.set_api(true, cx));
+        assert!(ui.engine.handle().api_enabled(), "no waiting");
+        assert!(ui.saved().unwrap().server.api);
+
+        ui.view().update(cx, |this, cx| this.set_api(false, cx));
+        assert!(!ui.engine.handle().api_enabled());
+        assert!(!ui.saved().unwrap().server.api);
     }
 
     #[gpui_kit::test]
