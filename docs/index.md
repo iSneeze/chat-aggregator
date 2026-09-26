@@ -26,7 +26,7 @@ or bots, can receive the same chat as a live JSON feed.
 - [Chat events API](api.md): the JSON WebSocket feed for your own programs
   ([AsyncAPI spec](asyncapi.yaml)).
 - [Privacy policy](privacy.md)
-- Source code: [github.com/iSneeze/chat-aggregator](https://github.com/iSneeze/chat-aggregator)
+- Source code: [github.com/iSneeze/chat-aggregator](https://github.com/iSneeze/chat-aggregator) (open source, [MIT license](https://github.com/iSneeze/chat-aggregator/blob/master/LICENSE))
 
 ## YouTube
 

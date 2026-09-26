@@ -2,6 +2,7 @@
 name = "chat-server"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 chat-core = { path = "../chat-core" }

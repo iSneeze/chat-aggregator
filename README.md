@@ -109,3 +109,7 @@ Details, design decisions and next steps: [ROADMAP.md](ROADMAP.md).
 - [x] HTML overlay + templates (SSE)
 - [x] JSON WebSocket API
 - [ ] control plane + GPUI app
+
+## License
+
+[MIT](LICENSE) © 2026 iSneeze

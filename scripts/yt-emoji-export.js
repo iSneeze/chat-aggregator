@@ -2,6 +2,7 @@
 // @name         YouTube Emoji Picker Exporter
 // @namespace    chat-aggregator
 // @version      1.6
+// @license      MIT
 // @description  Scrape custom emoji (token -> image URL) from YouTube's live chat emoji picker
 // @match        https://www.youtube.com/*
 // @run-at       document-idle
