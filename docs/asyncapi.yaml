@@ -80,17 +80,17 @@ components:
           summary: A YouTube message consisting of one custom emoji.
           payload:
             type: message
-            id: LCC.EhwKGkNKUEgzTzZ3aXBjREZlQVlyUVlkandvN25n
+            id: LCC.ExampleMessageId0001
             platform: youtube
             author:
               id: UCxxxxxxxxxxxxxxxxxxxxxx
-              name: NufPro.
+              name: Viewer42
               color: null
               badges: [member]
               avatar_url: https://yt3.ggpht.com/example
-            text: ':_charmMittyPat:'
+            text: ':_hypeWave:'
             emotes:
-              - code: ':_charmMittyPat:'
+              - code: ':_hypeWave:'
                 url: https://yt3.ggpht.com/example-emote
             timestamp: '2026-09-25T18:40:44.516Z'
             kind:

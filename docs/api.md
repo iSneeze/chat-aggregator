@@ -46,17 +46,17 @@ A chat message or a platform event (donation, sub, raid, ...).
 ```json
 {
   "type": "message",
-  "id": "LCC.EhwKGkNKUEgzTzZ3aXBjREZlQVlyUVlkandvN25n",
+  "id": "LCC.ExampleMessageId0001",
   "platform": "youtube",
   "author": {
     "id": "UCxxxxxxxxxxxxxxxxxxxxxx",
-    "name": "NufPro.",
+    "name": "Viewer42",
     "color": null,
     "badges": ["member"],
     "avatar_url": "https://yt3.ggpht.com/…"
   },
-  "text": ":_charmMittyPat:",
-  "emotes": [{ "code": ":_charmMittyPat:", "url": "https://yt3.ggpht.com/…" }],
+  "text": ":_hypeWave:",
+  "emotes": [{ "code": ":_hypeWave:", "url": "https://yt3.ggpht.com/…" }],
   "timestamp": "2026-09-25T18:40:44.516Z",
   "kind": { "type": "emote_only" }
 }
