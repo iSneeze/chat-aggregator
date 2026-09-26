@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use chat_core::{Activity, ChatEvent, ChatSource, Hub, Reporter};
+use chat_server::Connections;
 use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
@@ -17,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{info, warn};
 
-use crate::config::SourceConfig;
+use crate::config::{SourceConfig, YouTubeSettings};
 use crate::factory::{SourceFactory, is_login_required, needs_attention};
 use crate::status::{SourceId, SourceState, SourceStatus, Status};
 
@@ -38,6 +39,7 @@ pub(crate) enum Command {
     Start(SourceId, Reply<()>),
     Stop(SourceId, Reply<()>),
     Update(SourceId, SourceConfig, Reply<()>),
+    UpdateYouTube(YouTubeSettings, Reply<()>),
 }
 
 /// Messages from the actor's own helper tasks back to it.
@@ -66,6 +68,7 @@ pub(crate) struct Actor<F> {
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: mpsc::UnboundedReceiver<Internal>,
     status: watch::Sender<Status>,
+    connections: Arc<Connections>,
 }
 
 struct Slot {
@@ -109,7 +112,12 @@ impl Stats {
 }
 
 impl<F: SourceFactory> Actor<F> {
-    pub(crate) fn new(factory: F, hub: Arc<Hub>, status: watch::Sender<Status>) -> Self {
+    pub(crate) fn new(
+        factory: F,
+        hub: Arc<Hub>,
+        status: watch::Sender<Status>,
+        connections: Arc<Connections>,
+    ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
         Self {
             factory: Arc::new(factory),
@@ -119,6 +127,7 @@ impl<F: SourceFactory> Actor<F> {
             internal_tx,
             internal_rx,
             status,
+            connections,
         }
     }
 
@@ -205,6 +214,32 @@ impl<F: SourceFactory> Actor<F> {
                     }
                 };
                 let _ = reply.send(result);
+            }
+            Command::UpdateYouTube(settings, reply) => {
+                self.factory.set_youtube(settings);
+                // A login made or removed in the meantime, or a different
+                // client: the cached one is no longer the right one.
+                self.factory.forget_login();
+                // Restart every YouTube source that is meant to run, so a red
+                // "login required" becomes green without restarting the app.
+                let youtube: Vec<SourceId> = self
+                    .slots
+                    .iter()
+                    .filter(|(_, slot)| {
+                        matches!(slot.config, SourceConfig::YouTube { .. })
+                            && slot.state != SourceState::Stopped
+                    })
+                    .map(|(id, _)| *id)
+                    .collect();
+                for id in youtube {
+                    if let Some(slot) = self.slots.get_mut(&id) {
+                        stop(slot);
+                        slot.attempt = 0;
+                    }
+                    self.start(id);
+                }
+                info!("YouTube settings updated");
+                let _ = reply.send(Ok(()));
             }
             Command::Update(id, config, reply) => {
                 let result = match self.slots.get_mut(&id) {
@@ -352,13 +387,16 @@ impl<F: SourceFactory> Actor<F> {
                 last_message: slot.stats.last_message(),
             })
             .collect::<Vec<_>>();
+        let overlays = self.connections.overlays();
+        let api_clients = self.connections.api_clients();
         self.status.send_if_modified(|status| {
-            if status.sources == sources {
-                false
-            } else {
-                status.sources = sources;
-                true
-            }
+            let unchanged = status.sources == sources
+                && status.overlays_connected == overlays
+                && status.api_clients == api_clients;
+            status.sources = sources;
+            status.overlays_connected = overlays;
+            status.api_clients = api_clients;
+            !unchanged
         });
     }
 }

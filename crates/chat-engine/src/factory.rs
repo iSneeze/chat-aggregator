@@ -29,6 +29,9 @@ pub(crate) trait SourceFactory: Send + Sync + 'static {
     /// A source needed a login that isn't valid (anymore). Forget any cached
     /// one, so the next build picks up a fresh login.
     fn forget_login(&self) {}
+
+    /// New YouTube settings (client, API key, emojis) for future builds.
+    fn set_youtube(&self, _settings: YouTubeSettings) {}
 }
 
 /// Errors not worth retrying automatically: the user has to act.
@@ -64,7 +67,9 @@ impl ChatSource for SourceSpec {
 }
 
 pub(crate) struct Production {
-    youtube: YouTubeSettings,
+    // Changed at runtime by `set_youtube`, read by every build. A std Mutex:
+    // only ever held for a quick clone, never across an `.await`.
+    youtube: std::sync::Mutex<YouTubeSettings>,
     /// One login shared by all YouTube sources: one cached access token,
     /// refreshed once, instead of one per source.
     login: tokio::sync::Mutex<Option<TokenProvider>>,
@@ -73,9 +78,16 @@ pub(crate) struct Production {
 impl Production {
     pub(crate) fn new(youtube: YouTubeSettings) -> Self {
         Self {
-            youtube,
+            youtube: std::sync::Mutex::new(youtube),
             login: tokio::sync::Mutex::new(None),
         }
+    }
+
+    fn youtube(&self) -> YouTubeSettings {
+        self.youtube
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     async fn login(&self) -> anyhow::Result<TokenProvider> {
@@ -83,7 +95,7 @@ impl Production {
         if let Some(provider) = &*cached {
             return Ok(provider.clone());
         }
-        let provider = TokenProvider::from_store(self.youtube.oauth_app()?).await?;
+        let provider = TokenProvider::from_store(self.youtube().oauth_app()?).await?;
         *cached = Some(provider.clone());
         Ok(provider)
     }
@@ -99,7 +111,8 @@ impl SourceFactory for Production {
             }),
             SourceConfig::Demo => SourceSpec::Demo(DemoSource::default()),
             SourceConfig::YouTube { video_id } => {
-                let emojis = match &self.youtube.emojis {
+                let settings = self.youtube();
+                let emojis = match &settings.emojis {
                     Some(path) => EmojiMap::load(path)
                         .map_err(|e| SetupError(format!("YouTube emoji file: {e:#}")))?,
                     None => EmojiMap::default(),
@@ -112,7 +125,7 @@ impl SourceFactory for Production {
                     Some(id) => {
                         // A public video works with just an API key; without
                         // one, the login works too.
-                        let auth = match &self.youtube.api_key {
+                        let auth = match &settings.api_key {
                             Some(key) => Auth::ApiKey(key.clone()),
                             None => Auth::OAuth(self.login().await?),
                         };
@@ -134,5 +147,12 @@ impl SourceFactory for Production {
         if let Ok(mut cached) = self.login.try_lock() {
             *cached = None;
         }
+    }
+
+    fn set_youtube(&self, settings: YouTubeSettings) {
+        *self
+            .youtube
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = settings;
     }
 }

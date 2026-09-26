@@ -13,6 +13,23 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
+        # Native libraries the GPUI desktop app (crates/chat-app) needs on
+        # Linux. Some are only loaded at runtime (dlopen: Vulkan, Wayland,
+        # xkbcommon, X11), and NixOS has no global /usr/lib to find them in,
+        # hence LD_LIBRARY_PATH below. macOS/Windows use system frameworks.
+        guiLibs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (with pkgs; [
+          fontconfig
+          freetype
+          wayland
+          libxkbcommon
+          vulkan-loader
+          libx11
+          libxcb
+          libxcursor
+          libxrandr
+          libxi
+        ]);
+
         rustToolchain = pkgs.rust-bin.nightly.latest.default.override {
           extensions = [
             "rust-src"
@@ -44,7 +61,9 @@
             protobuf       # required by youtube gRPC connection
             websocat       # manual testing of the JSON WebSocket API
             cmake          # some crates need it transitively
-          ];
+          ] ++ guiLibs;
+
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath guiLibs;
 
           shellHook = ''
             echo "chat-aggregator dev shell — $(rustc --version)"

@@ -24,7 +24,27 @@ fn generate() -> String {
         .for_serialize()
         .into_generator()
         .into_root_schema_for::<ChatEvent>();
-    serde_json::to_string_pretty(&schema).unwrap() + "\n"
+    let value = serde_json::to_value(&schema).unwrap();
+    serde_json::to_string_pretty(&sorted(value)).unwrap() + "\n"
+}
+
+/// Rebuilds every JSON object with its keys in sorted order.
+///
+/// serde_json keeps keys sorted by default, but other crates in the same
+/// build can switch on its `preserve_order` feature (gpui-kit does), and
+/// Cargo turns features on for everyone in a build. Sorting explicitly makes
+/// the file identical either way.
+fn sorted(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            Value::Object(entries.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
+        other => other,
+    }
 }
 
 #[test]

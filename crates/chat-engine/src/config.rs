@@ -10,7 +10,9 @@ use chat_youtube::oauth::OAuthApp;
 /// source from this on every (re)start: `ChatSource::run` consumes a source,
 /// so a restart needs a fresh one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+// `deny_unknown_fields`: a typo like `vidoe_id` must be an error; ignoring
+// it would silently turn "this video" into "your own broadcasts".
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum SourceConfig {
     Twitch {
         channel: String,
@@ -27,6 +29,19 @@ pub enum SourceConfig {
 }
 
 impl SourceConfig {
+    /// Checks what can be checked without connecting: lets a settings form
+    /// point out a typo right away instead of adding a source that can
+    /// never work.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            SourceConfig::Twitch { channel } => chat_twitch::normalize_channel(channel).map(drop),
+            SourceConfig::YouTube { video_id: Some(id) } if id.trim().is_empty() => {
+                Err("the video id is empty".into())
+            }
+            SourceConfig::YouTube { .. } | SourceConfig::Demo => Ok(()),
+        }
+    }
+
     /// Short name for status displays and logs.
     pub fn label(&self) -> String {
         match self {
@@ -41,6 +56,7 @@ impl SourceConfig {
 /// YouTube settings shared by all YouTube sources: the streamer's own
 /// Google project (see docs/youtube-setup.md).
 #[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct YouTubeSettings {
     /// OAuth client of type "Desktop app".
     pub client_id: Option<String>,
@@ -48,7 +64,7 @@ pub struct YouTubeSettings {
     /// Only for `video_id` sources (any public video); your own broadcasts
     /// use the login instead.
     pub api_key: Option<String>,
-    /// Custom emoji export (scripts/yt-emoji-export.js).
+    /// Custom emoji export (scripts/yt-emoji-export.user.js).
     pub emojis: Option<PathBuf>,
 }
 
@@ -59,7 +75,8 @@ impl YouTubeSettings {
                 Ok(OAuthApp::new(id, secret))
             }
             _ => Err(SetupError(
-                "YouTube client id and secret aren't set (see docs/youtube-setup.md)".into(),
+                "YouTube isn't set up yet: your Google project's client id and secret are missing"
+                    .into(),
             )),
         }
     }
@@ -125,6 +142,32 @@ mod tests {
                 SourceConfig::Demo,
             ]
         );
+    }
+
+    #[test]
+    fn validation_catches_typos() {
+        assert!(
+            SourceConfig::Twitch {
+                channel: "your_channel".into()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            SourceConfig::Twitch {
+                channel: "not valid!".into()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            SourceConfig::YouTube {
+                video_id: Some(" ".into())
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(SourceConfig::YouTube { video_id: None }.validate().is_ok());
     }
 
     #[test]

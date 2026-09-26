@@ -1,0 +1,26 @@
+[package]
+name = "chat-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The desktop app. Build and run it with
+#   cargo run -p chat-app
+[[bin]]
+name = "chat-aggregator"
+path = "src/main.rs"
+
+[dependencies]
+chat-core = { path = "../chat-core" }
+chat-engine = { path = "../chat-engine" }
+chat-youtube = { path = "../chat-youtube" }
+anyhow.workspace = true
+gpui-kit.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# Headless UI tests: real components in an invisible window, driven by
+# simulated clicks and typing (`#[gpui_kit::test]`, `gpui_kit::test`).
+gpui-kit = { workspace = true, features = ["test-support"] }

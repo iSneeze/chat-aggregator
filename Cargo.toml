@@ -1,6 +1,19 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Built by a plain `cargo build`/`cargo test` in the root. The desktop app
+# (crates/chat-app) is left out on purpose: GPUI adds ~850 crates to the
+# build. Include it with `-p chat-app` or `--workspace`. New library crates
+# must be added here too.
+default-members = [
+    "crates/chat-core",
+    "crates/chat-engine",
+    "crates/chat-render",
+    "crates/chat-rplay",
+    "crates/chat-server",
+    "crates/chat-twitch",
+    "crates/chat-youtube",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,3 +40,7 @@ keyring = "4"
 webbrowser = "1"
 directories = "6"
 chrono-tz = "0.10"
+toml = "1"
+# Pinned exactly: the app is written against this version's API (GPUI
+# changes a lot between releases).
+gpui-kit = "=0.6.6"

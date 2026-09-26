@@ -13,6 +13,13 @@ use crate::config::SourceConfig;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceId(pub(crate) u64);
 
+impl SourceId {
+    /// The raw number, e.g. to build UI element ids.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 impl fmt::Display for SourceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{}", self.0)
@@ -112,6 +119,11 @@ impl SourceStatus {
 pub struct Status {
     /// Where to point OBS: `http://127.0.0.1:7878/`.
     pub overlay_url: String,
+    /// Overlays currently connected (e.g. OBS browser sources): 0 means
+    /// nothing is showing the chat right now.
+    pub overlays_connected: usize,
+    /// Programs currently connected to the JSON API.
+    pub api_clients: usize,
     /// In the order they were added.
     pub sources: Vec<SourceStatus>,
 }
@@ -173,6 +185,8 @@ mod tests {
     fn overall_is_the_worst() {
         let mut all = Status {
             overlay_url: String::new(),
+            overlays_connected: 0,
+            api_clients: 0,
             sources: vec![],
         };
         assert_eq!(all.overall(), Health::Off);

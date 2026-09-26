@@ -60,15 +60,26 @@ cargo test          # or: cargo nextest run
 
 ## Running
 
+The desktop app (window with status lights, add/remove/start/stop sources;
+settings are saved to the same config file):
+
+```sh
+cargo run -p chat-app
+```
+
 The whole pipeline, headless:
 
 ```sh
-cargo run -p chat-engine --example run -- --demo                  # every message kind, no account needed
-cargo run -p chat-engine --example run -- --twitch <channel>
-cargo run -p chat-engine --example run -- --youtube-own         # your own broadcast, after logging in:
-cargo run -p chat-engine --example run -- --youtube-login       # once; see docs/youtube-setup.md
-YOUTUBE_API_KEY=... cargo run -p chat-engine --example run -- --youtube <video_id>   # any public video (testing)
+cargo run -p chat-engine --example run -- --demo            # every message kind, no account needed
+cargo run -p chat-engine --example run -- --init-config     # once: write a commented config.toml
+cargo run -p chat-engine --example run                      # start everything in the config file
+cargo run -p chat-engine --example run -- --youtube-login   # once; see docs/youtube-setup.md
+cargo run -p chat-engine --example run -- --twitch <channel> --youtube-own   # sources as flags instead
 ```
+
+The config file lives in the per-OS settings folder
+(`~/.config/chat-aggregator/config.toml` on Linux). The terminal shows a
+status light per source (🟢 🟡 🔴 ⚪) and how many overlays are connected.
 
 YouTube needs your own (free) Google Cloud project, because YouTube's API
 quota is counted per project: [docs/youtube-setup.md](docs/youtube-setup.md)
@@ -95,7 +106,7 @@ Standalone listeners for a single platform:
 ```sh
 cargo run -p chat-twitch --example listen_twitch -- <channel>
 YOUTUBE_API_KEY=... cargo run -p chat-youtube --example listen_youtube -- <video_id>
-# optional: YOUTUBE_EMOJIS=export.json (from scripts/yt-emoji-export.js)
+# optional: YOUTUBE_EMOJIS=export.json (from scripts/yt-emoji-export.user.js)
 ```
 
 ## Status

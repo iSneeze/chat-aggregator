@@ -42,6 +42,8 @@ pub(crate) async fn ws(
 
 /// Serves one connected client until it leaves or the server shuts down.
 async fn client(mut socket: WebSocket, state: ServerState, history: bool) {
+    // Counted as connected until this function returns, however it returns.
+    let _connected = state.connections.api_client();
     let (snapshot, mut rx) = state.hub.subscribe();
     if history {
         for msg in snapshot {
@@ -204,6 +206,17 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[tokio::test]
+    async fn api_clients_are_counted_while_connected() {
+        let server = start(None).await;
+        let mut client = connect(server.addr, "").await;
+        sync(&server, &mut client).await;
+        assert_eq!(server.connections.api_clients(), 1);
+
+        client.close(None).await.unwrap();
+        crate::tests::eventually(|| server.connections.api_clients() == 0).await;
     }
 
     #[test]

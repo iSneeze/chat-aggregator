@@ -1,0 +1,265 @@
+//! The settings file (`config.toml`), shared by headless mode and, later,
+//! the app. The engine itself only ever *reads* it; saving is up to the
+//! caller (the app's settings window, or your text editor).
+
+use std::io::{ErrorKind, Write};
+use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::Context;
+
+use crate::config::{SourceConfig, YouTubeSettings};
+use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Stagger};
+
+/// A commented starting point, written by `run --init-config`.
+pub const TEMPLATE: &str = include_str!("../config.example.toml");
+
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+// `default`: a missing section or setting takes its default value.
+// `deny_unknown_fields`: a typo like `prot = 7878` is an error pointing at
+// the line, instead of being silently ignored.
+#[serde(default, deny_unknown_fields)]
+pub struct ConfigFile {
+    pub server: ServerSettings,
+    pub youtube: YouTubeSettings,
+    pub sources: Vec<SourceConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerSettings {
+    pub port: u16,
+    pub history: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme_dir: Option<PathBuf>,
+    pub stagger_ms: u64,
+    pub stagger_max_ms: u64,
+}
+
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self {
+            port: DEFAULT_PORT,
+            history: DEFAULT_HISTORY,
+            theme_dir: None,
+            stagger_ms: 250,
+            stagger_max_ms: 2000,
+        }
+    }
+}
+
+impl ConfigFile {
+    /// `config.toml` in the per-OS config folder: `~/.config/chat-aggregator`
+    /// on Linux, `~/Library/Application Support/chat-aggregator` on macOS,
+    /// `%APPDATA%\chat-aggregator` on Windows.
+    pub fn default_path() -> anyhow::Result<PathBuf> {
+        let dirs = directories::ProjectDirs::from("", "", "chat-aggregator")
+            .context("can't determine the config folder (no home directory?)")?;
+        Ok(dirs.config_dir().join("config.toml"))
+    }
+
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Self::parse(&text).with_context(|| format!("in {}", path.display()))
+    }
+
+    /// Like [`load`](Self::load), but a missing file just means defaults.
+    pub fn load_or_default(path: &Path) -> anyhow::Result<Self> {
+        match Self::load(path) {
+            Err(e) if is_not_found(&e) => Ok(Self::default()),
+            other => other,
+        }
+    }
+
+    pub fn parse(text: &str) -> anyhow::Result<Self> {
+        // toml's error message already names the line and shows it.
+        Ok(toml::from_str(text)?)
+    }
+
+    /// Writes the file, readable only by you (it contains the client
+    /// secret). Comments in an existing file are not kept.
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        write_private(path, &toml::to_string_pretty(self)?)
+    }
+
+    /// Writes the commented template, unless the file already exists.
+    pub fn write_template(path: &Path) -> anyhow::Result<()> {
+        if path.exists() {
+            anyhow::bail!("{} already exists; not overwriting it", path.display());
+        }
+        write_private(path, TEMPLATE)
+    }
+
+    pub fn into_engine_config(self) -> EngineConfig {
+        let server = self.server;
+        EngineConfig {
+            sources: self.sources,
+            youtube: self.youtube,
+            bind: (Ipv4Addr::LOCALHOST, server.port).into(),
+            history: server.history,
+            theme_dir: server.theme_dir,
+            stagger: Stagger::new(
+                Duration::from_millis(server.stagger_ms),
+                Duration::from_millis(server.stagger_max_ms),
+            ),
+        }
+    }
+}
+
+fn is_not_found(e: &anyhow::Error) -> bool {
+    e.chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|e| e.kind() == ErrorKind::NotFound)
+}
+
+/// Only the current user may read it (Unix: mode 0600; on Windows the
+/// user's profile folder already restricts access).
+fn write_private(path: &Path, contents: &str) -> anyhow::Result<()> {
+    let result = (|| {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            options.mode(0o600);
+            if path.exists() {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+        options.open(path)?.write_all(contents.as_bytes())
+    })();
+    result.with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_file_parses() {
+        let file = ConfigFile::parse(
+            r#"
+            [server]
+            port = 8080
+            history = 5
+            theme_dir = "/themes/mine"
+            stagger_ms = 100
+            stagger_max_ms = 1000
+
+            [youtube]
+            client_id = "id"
+            client_secret = "secret"
+
+            [[sources]]
+            type = "twitch"
+            channel = "your_channel"
+
+            [[sources]]
+            type = "youtube"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(file.server.port, 8080);
+        assert_eq!(
+            file.server.theme_dir.as_deref(),
+            Some(Path::new("/themes/mine"))
+        );
+        assert_eq!(file.youtube.client_id.as_deref(), Some("id"));
+        assert_eq!(
+            file.sources,
+            [
+                SourceConfig::Twitch {
+                    channel: "your_channel".into()
+                },
+                SourceConfig::YouTube { video_id: None },
+            ]
+        );
+
+        let engine = file.into_engine_config();
+        assert_eq!(engine.bind.port(), 8080);
+        assert_eq!(engine.history, 5);
+    }
+
+    #[test]
+    fn missing_parts_take_defaults() {
+        let file = ConfigFile::parse("").unwrap();
+        assert_eq!(file, ConfigFile::default());
+        assert_eq!(file.server.port, DEFAULT_PORT);
+
+        let file = ConfigFile::parse("[server]\nport = 9000").unwrap();
+        assert_eq!(file.server.port, 9000);
+        assert_eq!(
+            file.server.history, DEFAULT_HISTORY,
+            "rest of the section stays default"
+        );
+    }
+
+    #[test]
+    fn typos_are_errors_that_name_the_line() {
+        let err = ConfigFile::parse("[server]\nprot = 9000").unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("prot") && message.contains("line 2"),
+            "{message}"
+        );
+
+        let err = ConfigFile::parse("[[sources]]\ntype = \"twich\"").unwrap_err();
+        assert!(format!("{err:#}").contains("twich"), "{err:#}");
+
+        // Inside a source and in [youtube] too: a typo must not silently
+        // change what gets watched.
+        let err =
+            ConfigFile::parse("[[sources]]\ntype = \"youtube\"\nvidoe_id = \"x\"").unwrap_err();
+        assert!(format!("{err:#}").contains("vidoe_id"), "{err:#}");
+        let err = ConfigFile::parse("[youtube]\nclient_secert = \"x\"").unwrap_err();
+        assert!(format!("{err:#}").contains("client_secert"), "{err:#}");
+    }
+
+    #[test]
+    fn the_template_is_valid() {
+        let file = ConfigFile::parse(TEMPLATE).unwrap();
+        assert_eq!(file.sources, [SourceConfig::Demo]);
+        assert_eq!(file.server, ServerSettings::default());
+    }
+
+    #[test]
+    fn save_load_roundtrip_and_private_file() {
+        let dir =
+            std::env::temp_dir().join(format!("chat-engine-config-test-{}", std::process::id()));
+        let path = dir.join("sub").join("config.toml");
+        let mut file = ConfigFile::default();
+        file.youtube.client_secret = Some("secret".into());
+        file.sources.push(SourceConfig::Twitch {
+            channel: "your_channel".into(),
+        });
+
+        file.save(&path).unwrap();
+        assert_eq!(ConfigFile::load(&path).unwrap(), file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "contains the client secret");
+        }
+        assert!(
+            ConfigFile::write_template(&path).is_err(),
+            "never overwrites"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_file_means_defaults_but_only_for_load_or_default() {
+        let path = Path::new("/nonexistent/chat-aggregator/config.toml");
+        assert_eq!(
+            ConfigFile::load_or_default(path).unwrap(),
+            ConfigFile::default()
+        );
+        assert!(ConfigFile::load(path).is_err());
+    }
+}

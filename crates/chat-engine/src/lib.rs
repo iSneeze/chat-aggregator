@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use chat_core::Hub;
-use chat_server::ServerState;
+use chat_server::{Connections, ServerState};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -28,11 +28,13 @@ use tracing::{error, info};
 
 mod actor;
 mod config;
+mod config_file;
 mod factory;
 mod status;
 
 pub use chat_server::Stagger;
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
+pub use config_file::{ConfigFile, ServerSettings};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
 
 use actor::{Actor, Command, Reply};
@@ -76,6 +78,9 @@ impl Default for EngineConfig {
 pub struct EngineHandle {
     commands: mpsc::Sender<Command>,
     status: watch::Receiver<Status>,
+    // Server settings, not source state, so they bypass the actor. `Arc`
+    // because a `watch::Sender` can't be cloned; all handles share one.
+    theme_dir: Arc<watch::Sender<Option<PathBuf>>>,
 }
 
 impl EngineHandle {
@@ -102,6 +107,30 @@ impl EngineHandle {
     /// Changes a source's settings and restarts it (unless it's stopped).
     pub async fn update_source(&self, id: SourceId, config: SourceConfig) -> anyhow::Result<()> {
         self.call(|reply| Command::Update(id, config, reply)).await
+    }
+
+    /// New YouTube settings (e.g. entered in the app), or the same ones after
+    /// logging in or out: forgets the cached login and restarts all YouTube
+    /// sources that are switched on.
+    pub async fn update_youtube(&self, settings: YouTubeSettings) -> anyhow::Result<()> {
+        self.call(|reply| Command::UpdateYouTube(settings, reply))
+            .await
+    }
+
+    /// Switches the overlay theme; connected overlays reload by themselves.
+    /// `None` = the built-in theme.
+    pub fn set_theme_dir(&self, dir: Option<PathBuf>) {
+        self.theme_dir.send_replace(dir);
+    }
+
+    /// Makes connected overlays reload, e.g. after editing the theme files.
+    pub fn reload_overlays(&self) {
+        // `send_modify` notifies watchers even though nothing changed.
+        self.theme_dir.send_modify(|_| {});
+    }
+
+    pub fn theme_dir(&self) -> Option<PathBuf> {
+        self.theme_dir.borrow().clone()
     }
 
     /// The live status. A `watch` receiver always holds the latest value;
@@ -157,17 +186,22 @@ impl Engine {
 
         let (status_tx, status_rx) = watch::channel(Status {
             overlay_url: format!("http://{addr}/"),
+            overlays_connected: 0,
+            api_clients: 0,
             sources: Vec::new(),
         });
+        let connections = Arc::new(Connections::default());
         let (commands_tx, commands_rx) = mpsc::channel(32);
-        let actor = Actor::new(factory, hub.clone(), status_tx);
+        let actor = Actor::new(factory, hub.clone(), status_tx, connections.clone());
         tasks.spawn(actor.run(commands_rx, shutdown.clone()));
 
+        let (theme_tx, theme_rx) = watch::channel(config.theme_dir);
         let state = ServerState {
             hub: hub.clone(),
-            theme_dir: config.theme_dir,
+            theme_dir: theme_rx,
             shutdown: shutdown.clone(),
             stagger: config.stagger,
+            connections,
         };
         tasks.spawn(async move {
             if let Err(e) = chat_server::serve(listener, state).await {
@@ -178,6 +212,7 @@ impl Engine {
         let handle = EngineHandle {
             commands: commands_tx,
             status: status_rx,
+            theme_dir: Arc::new(theme_tx),
         };
         for source in config.sources {
             handle.add_source(source).await?;
@@ -264,6 +299,17 @@ mod tests {
         timeout(WAIT, engine.shutdown())
             .await
             .expect("shutdown hung");
+    }
+
+    #[tokio::test]
+    async fn status_counts_connected_overlays() {
+        let engine = start_demo().await;
+        let _overlay = reqwest::get(format!("http://{}/events", engine.addr()))
+            .await
+            .unwrap();
+        let status = wait_for(&engine.handle(), |s| s.overlays_connected == 1).await;
+        assert_eq!(status.api_clients, 0);
+        engine.shutdown().await;
     }
 
     #[tokio::test]
@@ -359,8 +405,19 @@ mod tests {
         type Source = Behaviour;
 
         async fn build(&self, config: &SourceConfig) -> anyhow::Result<Behaviour> {
+            // YouTube configs stand for a source that just runs; counted
+            // under "youtube".
+            if let SourceConfig::YouTube { .. } = config {
+                *self
+                    .builds
+                    .lock()
+                    .unwrap()
+                    .entry("youtube".into())
+                    .or_default() += 1;
+                return Ok(Behaviour::Run(0));
+            }
             let SourceConfig::Twitch { channel: script } = config else {
-                anyhow::bail!("scripted sources are Twitch configs");
+                anyhow::bail!("scripted sources are Twitch or YouTube configs");
             };
             let build = {
                 let mut builds = self.builds.lock().unwrap();
@@ -558,6 +615,44 @@ mod tests {
         let s = wait_for(&handle, |s| s.sources[0].messages == 1).await;
         assert_eq!(s.sources[0].config, script("emit:1"));
         assert_eq!(factory.builds("emit:1"), 1);
+        engine.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn new_youtube_settings_restart_only_running_youtube_sources() {
+        let factory = Arc::new(Scripted::default());
+        let engine = Engine::start_with(
+            EngineConfig {
+                sources: vec![
+                    SourceConfig::YouTube { video_id: None },
+                    SourceConfig::YouTube {
+                        video_id: Some("off".into()),
+                    },
+                    script("emit:0"),
+                ],
+                bind: local(),
+                ..EngineConfig::default()
+            },
+            factory.clone(),
+        )
+        .await
+        .unwrap();
+        let handle = engine.handle();
+        let s = wait_for(&handle, |_| factory.builds("youtube") == 2).await;
+        handle.stop_source(s.sources[1].id).await.unwrap();
+
+        handle
+            .update_youtube(YouTubeSettings::default())
+            .await
+            .unwrap();
+        wait_for(&handle, |_| factory.builds("youtube") == 3).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(
+            factory.builds("youtube"),
+            3,
+            "the stopped one stays stopped"
+        );
+        assert_eq!(factory.builds("emit:0"), 1, "other sources aren't touched");
         engine.shutdown().await;
     }
 

@@ -66,6 +66,10 @@
     remove(`.msg${attr("data-platform", d.platform)}${attr("data-author", d.user_id)}`);
   });
 
+  // The theme changed (e.g. from the app's settings): load the page again,
+  // which fetches the new CSS and reconnects for the new template.
+  events.addEventListener("reload", () => location.reload());
+
   events.addEventListener("clear_all", (e) => {
     const d = JSON.parse(e.data);
     remove(`.msg${attr("data-platform", d.platform)}`);

@@ -24,43 +24,54 @@ use chat_render::Theme;
 use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, stream};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::WatchStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
 mod api;
+mod connections;
 mod stagger;
 
+pub use connections::Connections;
 pub use stagger::Stagger;
 
 const OVERLAY_HTML: &str = include_str!("overlay.html");
 
 /// Shared by all request handlers. Cloned per request, which is cheap:
-/// an `Arc`, a token (also an `Arc` inside) and a short path.
+/// every field is an `Arc` or a small handle around one.
 #[derive(Clone)]
 pub struct ServerState {
     pub hub: Arc<Hub>,
     /// Folder with a custom `message.html` / `overlay.css`; `None` = built-in.
-    pub theme_dir: Option<PathBuf>,
+    /// A `watch` channel: the current value, plus a notification when it
+    /// changes, which makes connected overlays reload.
+    pub theme_dir: watch::Receiver<Option<PathBuf>>,
     /// Cancelled when the app shuts down.
     pub shutdown: CancellationToken,
     /// Spacing of message bursts in the overlay (not in the API).
     pub stagger: Stagger,
+    pub connections: Arc<Connections>,
 }
 
 impl ServerState {
+    fn current_theme_dir(&self) -> Option<PathBuf> {
+        self.theme_dir.borrow().clone()
+    }
+
     /// Loaded per overlay connection, so "edit the template, refresh the
     /// browser source" picks up changes without a restart. A broken custom
     /// template must not take the overlay down mid-stream: log it and fall
     /// back to the built-in one.
     fn load_theme(&self) -> Theme {
-        let Some(dir) = &self.theme_dir else {
+        let Some(dir) = self.current_theme_dir() else {
             return Theme::builtin();
         };
         // Blocking file I/O in an async handler is normally a no-go, but
         // this is two small local files, once per connection.
-        Theme::load(dir).unwrap_or_else(|e| {
+        Theme::load(&dir).unwrap_or_else(|e| {
             error!("invalid custom theme, using the built-in template: {e:#}");
             Theme::builtin()
         })
@@ -93,7 +104,7 @@ async fn overlay_page() -> impl IntoResponse {
 }
 
 async fn overlay_css(State(state): State<ServerState>) -> impl IntoResponse {
-    let css = match &state.theme_dir {
+    let css = match state.current_theme_dir() {
         None => chat_render::DEFAULT_CSS.to_string(),
         Some(dir) => chat_render::read_css(dir).unwrap_or_else(|e| {
             error!("can't read custom CSS, using the built-in one: {e:#}");
@@ -136,14 +147,31 @@ async fn events(
         tokio_stream::wrappers::ReceiverStream::new(paced).boxed()
     };
 
-    let stream = replay
+    // Counted as connected for as long as this response stream exists.
+    let connected = state.connections.overlay();
+    // Tells the overlay to reload when the theme folder changes; it then
+    // reconnects and gets the new template and CSS. `from_changes` skips the
+    // current value: only actual changes count.
+    let reload = WatchStream::from_changes(state.theme_dir.clone())
+        .map(|_| Event::default().event("reload").data("theme changed"));
+
+    let events = replay
         .chain(live)
-        .filter_map(move |event| std::future::ready(to_sse(&theme, &event)))
+        .filter_map(move |event| std::future::ready(to_sse(&theme, &event)));
+    // `select` merges both streams: whichever has something next goes first.
+    let stream = stream::select(events, reload)
         .map(Ok)
         // An SSE response never ends by itself, and graceful shutdown waits
         // for open responses to finish: without this, shutdown would hang
         // for as long as an overlay is connected.
-        .take_until(state.shutdown.cancelled_owned());
+        .take_until(state.shutdown.cancelled_owned())
+        // The closure owns the guard, so the guard lives exactly as long as
+        // the stream: when the overlay disconnects, the stream is dropped
+        // and the count goes down.
+        .map(move |event| {
+            let _connected = &connected;
+            event
+        });
 
     // Comment lines every 15s keep idle connections (and OBS) from timing out.
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
@@ -183,6 +211,8 @@ mod tests {
         pub(crate) hub: Arc<Hub>,
         pub(crate) shutdown: CancellationToken,
         pub(crate) task: JoinHandle<std::io::Result<()>>,
+        pub(crate) theme_dir: watch::Sender<Option<PathBuf>>,
+        pub(crate) connections: Arc<Connections>,
     }
 
     pub(crate) async fn start(theme_dir: Option<PathBuf>) -> TestServer {
@@ -191,11 +221,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let hub = Arc::new(Hub::new(20));
         let shutdown = CancellationToken::new();
+        let (theme_tx, theme_rx) = watch::channel(theme_dir);
+        let connections = Arc::new(Connections::default());
         let state = ServerState {
             hub: hub.clone(),
-            theme_dir,
+            theme_dir: theme_rx,
             shutdown: shutdown.clone(),
             stagger: Stagger::default(),
+            connections: connections.clone(),
         };
         let task = tokio::spawn(serve(listener, state));
         TestServer {
@@ -203,6 +236,8 @@ mod tests {
             hub,
             shutdown,
             task,
+            theme_dir: theme_tx,
+            connections,
         }
     }
 
@@ -291,6 +326,65 @@ mod tests {
             .unwrap();
         let mut seen = String::new();
         read_until(&mut resp, &mut seen, r#"<article class="msg"#).await;
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Polls until `condition` holds (the server updates counters in its own
+    /// tasks, so the test can't know the exact moment).
+    pub(crate) async fn eventually(condition: impl Fn() -> bool) {
+        timeout(WAIT, async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("condition not reached in time");
+    }
+
+    #[tokio::test]
+    async fn overlays_are_counted_while_connected() {
+        let server = start(None).await;
+        server.hub.publish(message("m1"));
+        let mut resp = reqwest::get(format!("http://{}/events", server.addr))
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"data-id="m1""#).await;
+        assert_eq!(server.connections.overlays(), 1);
+
+        drop(resp); // the overlay goes away
+        // The server notices on its next write to the closed connection.
+        server.hub.publish(message("m2"));
+        eventually(|| server.connections.overlays() == 0).await;
+    }
+
+    #[tokio::test]
+    async fn theme_change_reloads_overlays_and_css() {
+        let dir = std::env::temp_dir().join(format!("chat-server-theme-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("overlay.css"), "/* my theme */").unwrap();
+
+        let server = start(None).await;
+        let base = format!("http://{}", server.addr);
+        server.hub.publish(message("m1"));
+        let mut resp = reqwest::get(format!("{base}/events")).await.unwrap();
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"data-id="m1""#).await;
+        assert!(
+            !seen.contains("event: reload"),
+            "no reload without a change"
+        );
+
+        server.theme_dir.send_replace(Some(dir.clone()));
+        read_until(&mut resp, &mut seen, "event: reload").await;
+        let css = reqwest::get(format!("{base}/overlay.css"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(css, "/* my theme */");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

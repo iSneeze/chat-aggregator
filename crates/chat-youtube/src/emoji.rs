@@ -1,5 +1,5 @@
 //! Custom YouTube emoji, loaded from the JSON export of
-//! `scripts/yt-emoji-export.js`.
+//! `scripts/yt-emoji-export.user.js`.
 //!
 //! The Data API only gives us the message text, where custom emoji appear
 //! as `:code:` tokens with no image URL. The export maps those codes to

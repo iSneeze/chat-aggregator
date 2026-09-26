@@ -116,6 +116,14 @@ pub async fn logout(app: &OAuthApp) -> anyhow::Result<()> {
     app.store.delete(app).await
 }
 
+/// The YouTube channel the stored login belongs to, e.g. to show "connected
+/// as …". Costs 1 quota unit. Fails with [`LoginRequired`] if there's no
+/// valid login (none stored, or revoked/expired).
+pub async fn logged_in_channel(app: &OAuthApp) -> anyhow::Result<String> {
+    let tokens = TokenProvider::from_store(app.clone()).await?;
+    crate::channel_title(&reqwest::Client::new(), &crate::Auth::OAuth(tokens)).await
+}
+
 /// HTTP client for talking to Google's token endpoint.
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()

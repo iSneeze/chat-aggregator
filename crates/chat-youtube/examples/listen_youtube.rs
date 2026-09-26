@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     //        listen_youtube --member <video_id>   (OAuth, e.g. members-only stream)
     //        listen_youtube --logout
     // OAuth needs YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET (docs/youtube-setup.md).
-    // optional: YOUTUBE_EMOJIS=<export.json> from scripts/yt-emoji-export.js
+    // optional: YOUTUBE_EMOJIS=<export.json> from scripts/yt-emoji-export.user.js
     let args: Vec<String> = std::env::args().collect();
 
     let (target, auth) = match (args.get(1).map(String::as_str), args.get(2)) {

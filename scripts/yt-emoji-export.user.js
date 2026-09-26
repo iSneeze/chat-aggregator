@@ -1,8 +1,11 @@
 // ==UserScript==
 // @name         YouTube Emoji Picker Exporter
 // @namespace    chat-aggregator
-// @version      1.6
+// @version      1.7
 // @license      MIT
+// @homepageURL  https://isneeze.github.io/chat-aggregator/youtube-emoji
+// @downloadURL  https://github.com/iSneeze/chat-aggregator/raw/master/scripts/yt-emoji-export.user.js
+// @updateURL    https://github.com/iSneeze/chat-aggregator/raw/master/scripts/yt-emoji-export.user.js
 // @description  Scrape custom emoji (token -> image URL) from YouTube's live chat emoji picker
 // @match        https://www.youtube.com/*
 // @run-at       document-idle

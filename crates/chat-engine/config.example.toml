@@ -1,0 +1,45 @@
+# chat-aggregator settings.
+#
+# Lines starting with # are comments. Remove the # in front of a setting to
+# use it. Changes take effect the next time chat-aggregator starts.
+
+[server]
+# The overlay for OBS is at http://127.0.0.1:<port>/
+port = 7878
+# How many recent messages a (re)loaded overlay shows right away.
+history = 20
+# Your own message.html and/or overlay.css (start from the built-in ones).
+# theme_dir = "/path/to/my-theme"
+# When many messages arrive at once, show them this far apart (0 = off) ...
+stagger_ms = 250
+# ... but never delay a message by more than this (at most 5000).
+stagger_max_ms = 2000
+
+[youtube]
+# Your own Google project's OAuth client, see
+# https://isneeze.github.io/chat-aggregator/youtube-setup
+# client_id = "1234567890-abc….apps.googleusercontent.com"
+# client_secret = "GOCSPX-…"
+# Only needed to watch other channels' videos by id:
+# api_key = "…"
+# Custom channel emoji, exported with scripts/yt-emoji-export.user.js:
+# emojis = "/path/to/youtube-emojis.json"
+
+# One [[sources]] block per chat to read.
+
+# [[sources]]
+# type = "twitch"
+# channel = "your_channel"
+
+# Your own YouTube broadcasts (needs the login: run with --youtube-login):
+# [[sources]]
+# type = "youtube"
+
+# A specific YouTube video instead:
+# [[sources]]
+# type = "youtube"
+# video_id = "VIDEO_ID"   # the part after watch?v= in the URL
+
+# Sample messages of every kind, for trying out themes:
+[[sources]]
+type = "demo"

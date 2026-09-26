@@ -87,12 +87,30 @@ publicly either.
 
 ## 5. Tell chat-aggregator
 
-Until the settings window exists, via environment variables:
+Until the settings window exists, in the config file. Create it once:
 
 ```sh
-export YOUTUBE_CLIENT_ID="1234567890-abc….apps.googleusercontent.com"
-export YOUTUBE_CLIENT_SECRET="GOCSPX-…"
+cargo run -p chat-engine --example run -- --init-config
 ```
+
+This writes a commented `config.toml` to chat-aggregator's settings folder
+(`~/.config/chat-aggregator/` on Linux, `~/Library/Application
+Support/chat-aggregator/` on macOS, `%APPDATA%\chat-aggregator\` on
+Windows). Open it and fill in the `[youtube]` section, and add your own
+broadcasts as a source:
+
+```toml
+[youtube]
+client_id = "1234567890-abc….apps.googleusercontent.com"
+client_secret = "GOCSPX-…"
+
+[[sources]]
+type = "youtube"
+```
+
+The file is readable only by your user account. (Alternatively, the
+environment variables `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`
+override the file.)
 
 ## 6. Log in
 
@@ -118,13 +136,16 @@ folder). You only do this once.
 ## 7. Go live
 
 ```sh
-cargo run -p chat-engine --example run -- --youtube-own
+cargo run -p chat-engine --example run
 ```
 
-chat-aggregator finds your current or next broadcast by itself (including
-unlisted and members-only streams), waits cheaply until it starts, and
-attaches to its chat. After the stream it goes back to waiting for the next
-one.
+Without arguments, everything in your config file starts. chat-aggregator
+finds your current or next broadcast by itself (including unlisted and
+members-only streams), waits cheaply until it starts, and attaches to its
+chat. After the stream it goes back to waiting for the next one. The
+terminal shows a status light per source: 🟢 working (or waiting for your
+broadcast), 🟡 recovering by itself, 🔴 needs you (e.g. log in again), ⚪
+stopped.
 
 To log out (e.g. to switch channels):
 `cargo run -p chat-engine --example run -- --youtube-logout`.
