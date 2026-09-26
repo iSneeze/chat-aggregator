@@ -8,8 +8,9 @@
 port = 7878
 # How many recent messages a (re)loaded overlay shows right away.
 history = 20
-# Your own message.html and/or overlay.css (start from the built-in ones).
-# theme_dir = "/path/to/my-theme"
+# Overlay theme: the name of a folder in the "themes" folder next to this
+# file, containing overlay.css and/or message.html (without it: built-in).
+# theme = "my theme"
 # When many messages arrive at once, show them this far apart (0 = off) ...
 stagger_ms = 250
 # ... but never delay a message by more than this (at most 5000).

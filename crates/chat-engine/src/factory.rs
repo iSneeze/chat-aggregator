@@ -110,6 +110,12 @@ impl SourceFactory for Production {
                 channel: chat_twitch::normalize_channel(channel).map_err(SetupError)?,
             }),
             SourceConfig::Demo => SourceSpec::Demo(DemoSource::default()),
+            // The actor runs manual sources itself; they never get here.
+            SourceConfig::Manual => {
+                return Err(
+                    SetupError("test messages come from the app's test window".into()).into(),
+                );
+            }
             SourceConfig::YouTube { video_id } => {
                 let settings = self.youtube();
                 let emojis = match &settings.emojis {

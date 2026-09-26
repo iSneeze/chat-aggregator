@@ -37,6 +37,7 @@ pub use config::{SetupError, SourceConfig, YouTubeSettings};
 pub use config_file::{ConfigFile, ServerSettings};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
 
+pub use actor::ManualInput;
 use actor::{Actor, Command, Reply};
 use factory::{Production, SourceFactory};
 
@@ -87,6 +88,13 @@ impl EngineHandle {
     /// Adds a source and starts it.
     pub async fn add_source(&self, config: SourceConfig) -> anyhow::Result<SourceId> {
         self.call(|reply| Command::Add(config, reply)).await
+    }
+
+    /// Adds a source whose messages come from the returned `ManualInput`
+    /// (the app's test window), and starts it. It ends when the input is
+    /// dropped; remove it then.
+    pub async fn add_manual_source(&self) -> anyhow::Result<(SourceId, ManualInput)> {
+        self.call(Command::AddManual).await
     }
 
     /// Stops and forgets a source.
@@ -654,6 +662,56 @@ mod tests {
         );
         assert_eq!(factory.builds("emit:0"), 1, "other sources aren't touched");
         engine.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn manual_source_forwards_until_its_input_is_dropped() {
+        let (engine, _) = start_scripted(&[]).await;
+        let handle = engine.handle();
+        let (_, mut hub) = engine.hub().subscribe();
+
+        let (id, input) = handle.add_manual_source().await.unwrap();
+        let s = wait_for(&handle, |s| {
+            s.source(id).is_some_and(|s| s.health() == Health::Ok)
+        })
+        .await;
+        assert_eq!(s.source(id).unwrap().label(), "Test messages");
+
+        let msg = chat_core::demo::sample_messages(0).remove(0);
+        input.send(ChatEvent::Message(msg.clone())).await.unwrap();
+        match hub.recv().await.unwrap() {
+            ChatEvent::Message(m) => assert_eq!(m.id, msg.id),
+            other => panic!("expected the message, got {other:?}"),
+        }
+        wait_for(&handle, |s| s.source(id).unwrap().messages == 1).await;
+
+        // Stopping and starting again re-attaches to the same input.
+        handle.stop_source(id).await.unwrap();
+        handle.start_source(id).await.unwrap();
+        wait_for(&handle, |s| {
+            s.source(id).unwrap().state == SourceState::Running
+        })
+        .await;
+        input.send(ChatEvent::Message(msg)).await.unwrap();
+        wait_for(&handle, |s| s.source(id).unwrap().messages == 2).await;
+
+        drop(input); // the window closed
+        wait_for(&handle, |s| {
+            s.source(id).unwrap().state == SourceState::Finished
+        })
+        .await;
+        engine.shutdown().await;
+    }
+
+    #[test]
+    fn manual_sources_never_end_up_in_the_config_file() {
+        let file = ConfigFile {
+            sources: vec![SourceConfig::Demo, SourceConfig::Manual],
+            ..ConfigFile::default()
+        };
+        // serde skips the variant: serializing it is an error rather than
+        // writing something that can't be read back.
+        assert!(toml::to_string(&file).is_err());
     }
 
     #[tokio::test(start_paused = true)]

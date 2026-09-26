@@ -21,7 +21,8 @@
 //!                         needs a login, see below
 //!   --youtube <video_id>  a specific public video (testing path); uses
 //!                         YOUTUBE_API_KEY if set, otherwise the login
-//!   --theme <dir>         custom message.html and/or overlay.css
+//!   --theme <name|dir>    overlay theme: a folder name in "themes" next to the
+//!                         config file, or a path to any theme folder
 //!   --port <n>            default 7878
 //!   --history <n>         messages replayed to a new overlay, default 20
 //!   --stagger <ms>        spacing of message bursts in the overlay, default 250 (0 = off)
@@ -39,7 +40,7 @@
 //! RUST_LOG=debug shows more detail (e.g. YouTube's routine reconnects).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use chat_engine::{
@@ -145,10 +146,21 @@ async fn print_status_changes(mut status: tokio::sync::watch::Receiver<Status>) 
 
 /// The config file, then flags on top, then environment variables.
 fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
-    let mut file = match flag_value(args, "--config")? {
-        Some(path) => ConfigFile::load(&PathBuf::from(path))?,
-        None => ConfigFile::load_or_default(&ConfigFile::default_path()?)?,
+    let config_path = match flag_value(args, "--config")? {
+        Some(path) => PathBuf::from(path),
+        None => ConfigFile::default_path()?,
     };
+    let mut file = if flag_value(args, "--config")?.is_some() {
+        ConfigFile::load(&config_path)?
+    } else {
+        ConfigFile::load_or_default(&config_path)?
+    };
+    // Themes live next to the config file.
+    let settings_dir = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let mut theme_path = None;
 
     let mut flag_sources = Vec::new();
     let mut args = args.iter().cloned();
@@ -167,7 +179,15 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
                 video_id: Some(next_value(&mut args, "--youtube")?),
             }),
             "--youtube-own" => flag_sources.push(SourceConfig::YouTube { video_id: None }),
-            "--theme" => server.theme_dir = Some(next_value(&mut args, "--theme")?.into()),
+            // A theme name, or a path to any theme folder.
+            "--theme" => {
+                let theme = next_value(&mut args, "--theme")?;
+                if theme.contains(['/', '\\']) {
+                    theme_path = Some(PathBuf::from(theme));
+                } else {
+                    server.theme = Some(theme);
+                }
+            }
             "--port" => server.port = parse(&mut args, "--port")?,
             "--history" => server.history = parse(&mut args, "--history")?,
             "--stagger" => server.stagger_ms = parse(&mut args, "--stagger")?,
@@ -181,7 +201,11 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
         file.sources = flag_sources;
     }
     apply_env(&mut file.youtube);
-    Ok(file.into_engine_config())
+    let mut config = file.into_engine_config(&settings_dir);
+    if theme_path.is_some() {
+        config.theme_dir = theme_path;
+    }
+    Ok(config)
 }
 
 fn apply_env(youtube: &mut YouTubeSettings) {

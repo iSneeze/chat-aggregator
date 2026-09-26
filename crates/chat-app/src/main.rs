@@ -9,18 +9,22 @@
 //! the `watch` status), which can be awaited from either side: they don't
 //! need the tokio runtime, only their wakers.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use anyhow::Context as _;
 use chat_engine::{ConfigFile, Engine};
 use gpui_kit::component::{Root, Theme};
 use gpui_kit::*;
 
+mod app_config;
 mod app_view;
 mod emoji_import;
-mod sources;
+mod manual_window;
 mod youtube_panel;
 
+use app_config::AppConfig;
 use app_view::AppView;
-use sources::SourceList;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -40,14 +44,18 @@ fn main() -> anyhow::Result<()> {
         .build()
         .context("starting the tokio runtime")?;
 
-    // The engine starts without sources: `SourceList` adds them one by one
+    // The engine starts without sources: `AppConfig` adds them one by one
     // to learn the id the engine gives each.
-    let mut engine_config = file.clone().into_engine_config();
+    let settings_dir = config_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let mut engine_config = file.clone().into_engine_config(&settings_dir);
     engine_config.sources.clear();
     let engine = runtime.block_on(Engine::start(engine_config))?;
     let handle = engine.handle();
-    let mut sources = SourceList::new(file, config_path);
-    runtime.block_on(sources.start_all(&handle))?;
+    let mut config = AppConfig::new(file, config_path);
+    runtime.block_on(config.start_all(&handle))?;
 
     let tokio = runtime.handle().clone();
     let tokio_for_quit = tokio.clone();
@@ -58,9 +66,14 @@ fn main() -> anyhow::Result<()> {
     application().with_assets(assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
 
-        // Closing the (last) window quits the app...
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+        // Closing the main window quits the app, even if the test messages
+        // window is still open... The main window's id is only known once
+        // it's open; `Rc<Cell>` shares that slot between this callback and
+        // the task opening the window (both on the main thread).
+        let main_window = Rc::new(Cell::new(None));
+        let closed_main = main_window.clone();
+        cx.on_window_closed(move |cx, closed| {
+            if closed_main.get() == Some(closed) || cx.windows().is_empty() {
                 cx.quit();
             }
         })
@@ -95,13 +108,15 @@ fn main() -> anyhow::Result<()> {
                 window_min_size: Some(size(px(420.), px(360.))),
                 ..Default::default()
             };
-            cx.open_window(options, |window, cx| {
-                // Follow the system's light/dark setting, now and later.
-                Theme::sync_system_appearance(Some(window), cx);
-                let view = cx.new(|cx| AppView::new(handle, sources, tokio, window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            })
-            .expect("failed to open the window");
+            let window = cx
+                .open_window(options, |window, cx| {
+                    // Follow the system's light/dark setting, now and later.
+                    Theme::sync_system_appearance(Some(window), cx);
+                    let view = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));
+                    cx.new(|cx| Root::new(view, window, cx))
+                })
+                .expect("failed to open the window");
+            main_window.set(Some(window.window_id()));
         })
         .detach();
     });

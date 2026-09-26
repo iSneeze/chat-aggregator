@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Chat overlay</title>
-<link rel="stylesheet" href="overlay.css">
+<link rel="stylesheet" href="theme/overlay.css">
 </head>
 <body>
 <main class="chat" role="log" aria-live="polite"></main>
@@ -11,7 +11,8 @@
 "use strict";
 // The server sends ready-rendered, escaped HTML for each message; this
 // script only inserts messages and removes deleted ones. Styling is all
-// in overlay.css. (Relative URLs, so the page also works under a subpath.)
+// in the theme's overlay.css. (Relative URLs, so the page also works under a
+// subpath.)
 (() => {
   const chat = document.querySelector(".chat");
 

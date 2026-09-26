@@ -4,20 +4,22 @@
 //! | route          | serves                                                   |
 //! |----------------|----------------------------------------------------------|
 //! | `/`            | the overlay page (add it to OBS as a Browser Source)     |
-//! | `/overlay.css` | the theme's CSS, re-read on every request                |
+//! | `/theme/overlay.css` | the theme's CSS, re-read on every request          |
+//! | `/theme/…`     | other files of the theme folder (images, fonts)          |
 //! | `/events`      | SSE: replay history, then live chat as rendered HTML     |
 //! | `/api/v1/ws`   | WebSocket: live events as JSON (see `api`, docs/api.md)  |
 
 use std::convert::Infallible;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path as UrlPath, State};
+use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use chat_core::{ChatEvent, Hub};
 use chat_render::Theme;
@@ -81,7 +83,7 @@ impl ServerState {
 pub fn router(state: ServerState) -> Router {
     Router::new()
         .route("/", get(overlay_page))
-        .route("/overlay.css", get(overlay_css))
+        .route("/theme/{*path}", get(theme_file))
         .route("/events", get(events))
         .route("/api/v1/ws", get(api::ws))
         .with_state(state)
@@ -103,7 +105,30 @@ async fn overlay_page() -> impl IntoResponse {
     ([NO_CACHE], Html(OVERLAY_HTML))
 }
 
-async fn overlay_css(State(state): State<ServerState>) -> impl IntoResponse {
+/// The theme's files. The CSS lives under `/theme/` too, so a relative URL
+/// in it (`url(bg.png)`) resolves to `/theme/bg.png`: a file in the same
+/// theme folder.
+async fn theme_file(State(state): State<ServerState>, UrlPath(path): UrlPath<String>) -> Response {
+    if path == chat_render::CSS_FILE {
+        return overlay_css(&state).into_response();
+    }
+    let Some(dir) = state.current_theme_dir() else {
+        return StatusCode::NOT_FOUND.into_response(); // the built-in theme has no files
+    };
+    let Some(file) = inside(&dir, &path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match tokio::fs::read(&file).await {
+        Ok(bytes) => (
+            [(header::CONTENT_TYPE, content_type(&file)), NO_CACHE],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn overlay_css(state: &ServerState) -> impl IntoResponse + use<> {
     let css = match state.current_theme_dir() {
         None => chat_render::DEFAULT_CSS.to_string(),
         Some(dir) => chat_render::read_css(dir).unwrap_or_else(|e| {
@@ -115,6 +140,39 @@ async fn overlay_css(State(state): State<ServerState>) -> impl IntoResponse {
         [(header::CONTENT_TYPE, "text/css; charset=utf-8"), NO_CACHE],
         css,
     )
+}
+
+/// `dir/relative`, but only if that stays inside `dir`: a request like
+/// `/theme/..%2F..%2Fconfig.toml` must not read files outside the theme
+/// (the config file holds the client secret). Only plain path segments are
+/// allowed: no `..`, no absolute paths, no Windows drive prefixes.
+fn inside(dir: &Path, relative: &str) -> Option<PathBuf> {
+    let relative = Path::new(relative);
+    relative
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)))
+        .then(|| dir.join(relative))
+}
+
+fn content_type(file: &Path) -> &'static str {
+    let extension = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "css" => "text/css; charset=utf-8",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        _ => "application/octet-stream",
+    }
 }
 
 async fn events(
@@ -150,9 +208,18 @@ async fn events(
     // Counted as connected for as long as this response stream exists.
     let connected = state.connections.overlay();
     // Tells the overlay to reload when the theme folder changes; it then
-    // reconnects and gets the new template and CSS. `from_changes` skips the
-    // current value: only actual changes count.
-    let reload = WatchStream::from_changes(state.theme_dir.clone())
+    // reconnects and gets the new template and CSS.
+    //
+    // A `watch` receiver remembers which version it last saw, and a clone
+    // copies that memory. The receiver kept in `state` is never read, so it
+    // still "remembers" the startup value: after any theme change, a fresh
+    // clone would see a "change" right away and reload a page that already
+    // has the new theme, which then reconnects and reloads again, forever.
+    // So: mark the current value as seen first, and only real changes from
+    // now on count.
+    let mut theme_changes = state.theme_dir.clone();
+    theme_changes.borrow_and_update();
+    let reload = WatchStream::from_changes(theme_changes)
         .map(|_| Event::default().event("reload").data("theme changed"));
 
     let events = replay
@@ -280,7 +347,9 @@ mod tests {
         assert!(page.contains(r#"<main class="chat""#));
         assert!(page.contains(r#"new EventSource("events")"#));
 
-        let resp = reqwest::get(format!("{base}/overlay.css")).await.unwrap();
+        let resp = reqwest::get(format!("{base}/theme/overlay.css"))
+            .await
+            .unwrap();
         assert!(
             resp.headers()["content-type"]
                 .to_str()
@@ -378,7 +447,7 @@ mod tests {
 
         server.theme_dir.send_replace(Some(dir.clone()));
         read_until(&mut resp, &mut seen, "event: reload").await;
-        let css = reqwest::get(format!("{base}/overlay.css"))
+        let css = reqwest::get(format!("{base}/theme/overlay.css"))
             .await
             .unwrap()
             .text()
@@ -387,6 +456,59 @@ mod tests {
         assert_eq!(css, "/* my theme */");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Regression test: after a theme change, an overlay that connects
+    /// later must not be told to reload (it already loads the new theme).
+    /// Getting this wrong made overlays reload in an endless loop.
+    #[tokio::test]
+    async fn overlay_connecting_after_a_theme_change_does_not_reload() {
+        let server = start(None).await;
+        server.theme_dir.send_replace(Some(std::env::temp_dir()));
+
+        server.hub.publish(message("m1"));
+        let mut resp = reqwest::get(format!("http://{}/events", server.addr))
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"data-id="m1""#).await;
+        // Give a wrongly queued reload the chance to arrive, then check.
+        server.hub.publish(message("m2"));
+        read_until(&mut resp, &mut seen, r#"data-id="m2""#).await;
+        assert!(!seen.contains("event: reload"), "reload loop: {seen}");
+    }
+
+    #[tokio::test]
+    async fn theme_files_are_served_but_nothing_outside_the_theme() {
+        let root = std::env::temp_dir().join(format!("chat-server-assets-{}", std::process::id()));
+        let theme = root.join("themes").join("cozy");
+        std::fs::create_dir_all(theme.join("fonts")).unwrap();
+        std::fs::write(theme.join("bg.png"), [0x89, b'P', b'N', b'G']).unwrap();
+        std::fs::write(theme.join("fonts").join("f.woff2"), "font").unwrap();
+        std::fs::write(root.join("config.toml"), "client_secret = \"x\"").unwrap();
+
+        let server = start(Some(theme.clone())).await;
+        let base = format!("http://{}/theme", server.addr);
+
+        let png = reqwest::get(format!("{base}/bg.png")).await.unwrap();
+        assert_eq!(png.headers()["content-type"], "image/png");
+        assert_eq!(
+            png.bytes().await.unwrap().as_ref(),
+            [0x89, b'P', b'N', b'G']
+        );
+        let font = reqwest::get(format!("{base}/fonts/f.woff2")).await.unwrap();
+        assert_eq!(font.headers()["content-type"], "font/woff2");
+
+        // `%2F` is an encoded "/": the router decodes it into the path, so
+        // this asks for ../../config.toml. It must not be served.
+        for sneaky in ["..%2F..%2Fconfig.toml", "%2E%2E/%2E%2E/config.toml"] {
+            let resp = reqwest::get(format!("{base}/{sneaky}")).await.unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND, "{sneaky}");
+        }
+        let missing = reqwest::get(format!("{base}/nope.png")).await.unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

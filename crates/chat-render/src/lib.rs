@@ -11,13 +11,14 @@ use anyhow::Context;
 use chat_core::ChatMessage;
 use minijinja::Environment;
 
+pub mod themes;
 mod view;
 
 pub const DEFAULT_MESSAGE_TEMPLATE: &str = include_str!("../templates/message.html");
 pub const DEFAULT_CSS: &str = include_str!("../templates/overlay.css");
 
-const MESSAGE_FILE: &str = "message.html";
-const CSS_FILE: &str = "overlay.css";
+pub const MESSAGE_FILE: &str = "message.html";
+pub const CSS_FILE: &str = "overlay.css";
 
 pub struct Theme {
     env: Environment<'static>,

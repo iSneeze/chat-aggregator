@@ -89,11 +89,10 @@ Sources can be combined; see the top of `crates/chat-engine/examples/run.rs`
 for all flags. Then add `http://127.0.0.1:7878/` as a **Browser Source** in
 OBS (e.g. 450×800).
 
-**Styling:** pass `--theme <dir>` with your own `message.html` and/or
-`overlay.css` (start from the defaults in `crates/chat-render/templates/`).
-Both are re-read when the overlay (re)connects: edit, then hit *Refresh* on
-the browser source. To iterate without a server:
-`cargo run -p chat-render --example preview -- <dir> > preview.html`.
+**Styling:** themes are folders in `themes/` next to the config file, picked
+in the app (or `theme = "name"` in `config.toml`, `--theme <name|dir>`
+headless); see [docs/themes.md](docs/themes.md). To iterate without a
+server: `cargo run -p chat-render --example preview -- <dir> > preview.html`.
 
 **JSON API** for your own programs (games, bots, ...):
 `ws://127.0.0.1:7878/api/v1/ws`, one JSON event per WebSocket message.

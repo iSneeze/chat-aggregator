@@ -1,5 +1,6 @@
-//! Keeps the config file and the running engine in step: which config entry
-//! belongs to which `SourceId`, and saving after every change.
+//! The app's view of `config.toml`: keeps it and the running engine in step
+//! (which config entry belongs to which `SourceId`), and saves after every
+//! change the window makes (sources, YouTube settings, overlay theme).
 //!
 //! Plain Rust without GPUI, so it's testable on its own. The window only
 //! calls these methods after the engine has confirmed a change.
@@ -8,14 +9,14 @@ use std::path::{Path, PathBuf};
 
 use chat_engine::{ConfigFile, EngineHandle, SourceConfig, SourceId, YouTubeSettings};
 
-pub struct SourceList {
+pub struct AppConfig {
     file: ConfigFile,
     path: PathBuf,
     /// In config order, which is also the order shown in the window.
     entries: Vec<(SourceId, SourceConfig)>,
 }
 
-impl SourceList {
+impl AppConfig {
     pub fn new(file: ConfigFile, path: PathBuf) -> Self {
         Self {
             file,
@@ -57,6 +58,20 @@ impl SourceList {
     }
 
     /// The folder the config file lives in; other app files go next to it.
+    pub fn themes_dir(&self) -> PathBuf {
+        ConfigFile::themes_dir(&self.settings_dir())
+    }
+
+    /// The overlay theme's name; `None` = the built-in theme.
+    pub fn theme(&self) -> Option<&str> {
+        self.file.server.theme.as_deref()
+    }
+
+    pub fn set_theme(&mut self, theme: Option<String>) -> anyhow::Result<()> {
+        self.file.server.theme = theme;
+        self.save()
+    }
+
     pub fn settings_dir(&self) -> PathBuf {
         self.path
             .parent()
@@ -101,7 +116,7 @@ mod tests {
             sources: vec![SourceConfig::Demo],
             ..ConfigFile::default()
         };
-        let mut list = SourceList::new(file, path.clone());
+        let mut list = AppConfig::new(file, path.clone());
         list.start_all(&handle).await.unwrap();
         assert_eq!(list.entries.len(), 1);
 

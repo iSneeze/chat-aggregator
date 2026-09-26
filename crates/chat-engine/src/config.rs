@@ -26,6 +26,11 @@ pub enum SourceConfig {
     },
     /// Sample messages of every kind, for styling and testing.
     Demo,
+    /// Messages typed into the app's test window. Only ever created by
+    /// `EngineHandle::add_manual_source` (its messages come from that
+    /// window), so it's never read from or written to the config file.
+    #[serde(skip)]
+    Manual,
 }
 
 impl SourceConfig {
@@ -38,7 +43,7 @@ impl SourceConfig {
             SourceConfig::YouTube { video_id: Some(id) } if id.trim().is_empty() => {
                 Err("the video id is empty".into())
             }
-            SourceConfig::YouTube { .. } | SourceConfig::Demo => Ok(()),
+            SourceConfig::YouTube { .. } | SourceConfig::Demo | SourceConfig::Manual => Ok(()),
         }
     }
 
@@ -49,6 +54,7 @@ impl SourceConfig {
             SourceConfig::YouTube { video_id: None } => "YouTube: your channel".into(),
             SourceConfig::YouTube { video_id: Some(id) } => format!("YouTube: video {id}"),
             SourceConfig::Demo => "Demo".into(),
+            SourceConfig::Manual => "Test messages".into(),
         }
     }
 }

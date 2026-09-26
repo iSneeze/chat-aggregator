@@ -31,8 +31,10 @@ pub struct ConfigFile {
 pub struct ServerSettings {
     pub port: u16,
     pub history: usize,
+    /// Overlay theme: a folder name in `themes/` next to the config file.
+    /// `None`: the built-in theme.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub theme_dir: Option<PathBuf>,
+    pub theme: Option<String>,
     pub stagger_ms: u64,
     pub stagger_max_ms: u64,
 }
@@ -42,7 +44,7 @@ impl Default for ServerSettings {
         Self {
             port: DEFAULT_PORT,
             history: DEFAULT_HISTORY,
-            theme_dir: None,
+            theme: None,
             stagger_ms: 250,
             stagger_max_ms: 2000,
         }
@@ -92,14 +94,24 @@ impl ConfigFile {
         write_private(path, TEMPLATE)
     }
 
-    pub fn into_engine_config(self) -> EngineConfig {
+    /// The folder with the overlay themes, next to the config file in
+    /// `settings_dir`.
+    pub fn themes_dir(settings_dir: &Path) -> PathBuf {
+        settings_dir.join("themes")
+    }
+
+    /// `settings_dir` is the folder the config file is in: themes are
+    /// looked up next to it.
+    pub fn into_engine_config(self, settings_dir: &Path) -> EngineConfig {
         let server = self.server;
         EngineConfig {
             sources: self.sources,
             youtube: self.youtube,
             bind: (Ipv4Addr::LOCALHOST, server.port).into(),
             history: server.history,
-            theme_dir: server.theme_dir,
+            theme_dir: server
+                .theme
+                .map(|name| Self::themes_dir(settings_dir).join(name)),
             stagger: Stagger::new(
                 Duration::from_millis(server.stagger_ms),
                 Duration::from_millis(server.stagger_max_ms),
@@ -147,7 +159,7 @@ mod tests {
             [server]
             port = 8080
             history = 5
-            theme_dir = "/themes/mine"
+            theme = "cozy"
             stagger_ms = 100
             stagger_max_ms = 1000
 
@@ -165,10 +177,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(file.server.port, 8080);
-        assert_eq!(
-            file.server.theme_dir.as_deref(),
-            Some(Path::new("/themes/mine"))
-        );
+        assert_eq!(file.server.theme.as_deref(), Some("cozy"));
         assert_eq!(file.youtube.client_id.as_deref(), Some("id"));
         assert_eq!(
             file.sources,
@@ -180,9 +189,14 @@ mod tests {
             ]
         );
 
-        let engine = file.into_engine_config();
+        let engine = file.into_engine_config(Path::new("/settings"));
         assert_eq!(engine.bind.port(), 8080);
         assert_eq!(engine.history, 5);
+        assert_eq!(
+            engine.theme_dir.as_deref(),
+            Some(Path::new("/settings/themes/cozy")),
+            "a theme name is a folder in themes/ next to the config file"
+        );
     }
 
     #[test]

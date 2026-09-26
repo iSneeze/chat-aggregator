@@ -23,6 +23,8 @@ or bots, can receive the same chat as a live JSON feed.
 
 - [Connecting YouTube](youtube-setup.md): the one-time setup of your own
   Google Cloud project and login.
+- [Overlay themes](themes.md): making the chat look the way you want.
+- [YouTube channel emoji](youtube-emoji.md): showing custom emoji as images.
 - [Chat events API](api.md): the JSON WebSocket feed for your own programs
   ([AsyncAPI spec](asyncapi.yaml)).
 - [Privacy policy](privacy.md)

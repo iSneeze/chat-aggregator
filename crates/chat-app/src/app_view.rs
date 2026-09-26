@@ -10,18 +10,21 @@ use std::time::Duration;
 use chat_engine::{
     EngineHandle, Health, SourceConfig, SourceId, SourceState, SourceStatus, Status,
 };
+use chat_render::themes;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex,
+    ActiveTheme, IconName, Root, Selectable, Sizable, StyledExt, WindowExt, h_flex,
     scroll::ScrollableElement, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::sources::SourceList;
+use crate::app_config::AppConfig;
+use crate::manual_window::ManualWindow;
 use crate::youtube_panel::{SettingsChanged, YouTubePanel};
 
 /// What the add form creates.
@@ -74,21 +77,33 @@ impl NewSource {
 
 pub struct AppView {
     engine: EngineHandle,
-    sources: SourceList,
+    config: AppConfig,
     youtube: Entity<YouTubePanel>,
     status: Status,
     new_source: NewSource,
     input: Entity<InputState>,
     form_error: Option<String>,
+    /// Overlay theme folders found in the themes folder.
+    themes: Vec<String>,
+    theme_select: Entity<SelectState<Vec<SharedString>>>,
+    /// The "New theme" name field, while that form is open.
+    new_theme: Option<Entity<InputState>>,
+    theme_error: Option<String>,
+    /// The test messages window, once opened (it may be closed since).
+    manual_window: Option<WindowHandle<Root>>,
     // Subscriptions end when dropped; keeping them here ties them to the
     // view's lifetime.
     _subscriptions: Vec<Subscription>,
 }
 
+/// The built-in theme's entry in the theme picker. No theme folder can have
+/// this name (`themes::validate_name` refuses it).
+const DEFAULT_THEME: &str = "Default";
+
 impl AppView {
     pub fn new(
         engine: EngineHandle,
-        sources: SourceList,
+        config: AppConfig,
         tokio: tokio::runtime::Handle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -98,20 +113,45 @@ impl AppView {
             YouTubePanel::new(
                 engine.clone(),
                 tokio,
-                sources.youtube().clone(),
-                sources.settings_dir(),
+                config.youtube().clone(),
+                config.settings_dir(),
                 window,
                 cx,
             )
         });
+        let themes = themes::list(&config.themes_dir());
+        let current = SharedString::from(config.theme().unwrap_or(DEFAULT_THEME).to_string());
+        let theme_select = cx.new(|cx| {
+            let mut select = SelectState::new(theme_items(&themes), None, window, cx);
+            select.set_selected_value(&current, window, cx);
+            select
+        });
+
         let subscriptions = vec![
+            // A theme picked in the dropdown.
+            cx.subscribe_in(
+                &theme_select,
+                window,
+                |this, _, event: &SelectEvent<Vec<SharedString>>, window, cx| {
+                    if let SelectEvent::Confirm(Some(name)) = event {
+                        this.select_theme(name.clone(), window, cx);
+                    }
+                },
+            ),
+            // Back from editing themes in a file manager: pick up new
+            // folders without restarting.
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.rescan_themes(window, cx);
+                }
+            }),
             // The panel reports new credentials; this view owns the config
             // file, so it saves them.
             cx.subscribe_in(
                 &youtube,
                 window,
                 |this, _, event: &SettingsChanged, window, cx| {
-                    if let Err(e) = this.sources.set_youtube(event.0.clone()) {
+                    if let Err(e) = this.config.set_youtube(event.0.clone()) {
                         this.report_save_error(e, window, cx);
                     }
                 },
@@ -134,14 +174,94 @@ impl AppView {
 
         Self {
             engine,
-            sources,
+            config,
             youtube,
             status,
             new_source: NewSource::Twitch,
             input,
             form_error: None,
+            themes,
+            theme_select,
+            new_theme: None,
+            theme_error: None,
+            manual_window: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    // ---- overlay themes ----
+
+    fn rescan_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let themes = themes::list(&self.config.themes_dir());
+        if themes == self.themes {
+            return;
+        }
+        self.themes = themes;
+        let current = SharedString::from(self.config.theme().unwrap_or(DEFAULT_THEME).to_string());
+        let items = theme_items(&self.themes);
+        self.theme_select.update(cx, |select, cx| {
+            select.set_items(items, window, cx);
+            select.set_selected_value(&current, window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Switches the overlay theme: overlays reload by themselves (the engine
+    /// tells them to) and the choice is saved.
+    fn select_theme(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let theme = (name != DEFAULT_THEME).then(|| name.to_string());
+        self.engine.set_theme_dir(
+            theme
+                .as_ref()
+                .map(|name| self.config.themes_dir().join(name)),
+        );
+        if let Err(e) = self.config.set_theme(theme) {
+            self.report_save_error(e, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn create_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = &self.new_theme else {
+            return;
+        };
+        let name = input.read(cx).value().trim().to_string();
+        match themes::create_from_default(&self.config.themes_dir(), &name) {
+            Ok(dir) => {
+                self.new_theme = None;
+                self.theme_error = None;
+                self.rescan_themes(window, cx);
+                let name = SharedString::from(name);
+                self.theme_select.update(cx, |select, cx| {
+                    select.set_selected_value(&name, window, cx)
+                });
+                self.select_theme(name, window, cx);
+                window.push_notification(
+                    Notification::success(format!(
+                        "Theme created in {}: edit overlay.css there, then reload the overlays.",
+                        dir.display()
+                    )),
+                    cx,
+                );
+            }
+            Err(e) => self.theme_error = Some(format!("{e:#}")),
+        }
+        cx.notify();
+    }
+
+    fn open_themes_folder(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.config.themes_dir();
+        // It only exists once there's a theme; create it so there's
+        // something to open (and to put themes into).
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            report(
+                window,
+                cx,
+                format!("Couldn't create {}: {e}", dir.display()),
+            );
+            return;
+        }
+        cx.open_with_system(&dir);
     }
 
     /// Redraws whenever the engine publishes a new status.
@@ -208,7 +328,7 @@ impl AppView {
             let result = engine.add_source(config.clone()).await;
             let _ = this.update_in(cx, |view, window, cx| match result {
                 Ok(id) => {
-                    if let Err(e) = view.sources.added(id, config) {
+                    if let Err(e) = view.config.added(id, config) {
                         view.report_save_error(e, window, cx);
                     }
                 }
@@ -241,7 +361,7 @@ impl AppView {
             let result = engine.remove_source(id).await;
             let _ = this.update_in(cx, |view, window, cx| match result {
                 Ok(()) => {
-                    if let Err(e) = view.sources.removed(id) {
+                    if let Err(e) = view.config.removed(id) {
                         view.report_save_error(e, window, cx);
                     }
                 }
@@ -251,13 +371,48 @@ impl AppView {
         .detach();
     }
 
+    /// Opens the test messages window, or brings it to the front if it's
+    /// already open: one test source is enough.
+    fn open_manual_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // `update` fails once the window is closed; then open a new one.
+        if let Some(handle) = self.manual_window
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            return;
+        }
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(520.), px(420.)),
+                cx,
+            ))),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Test messages – chat-aggregator".into()),
+                ..Default::default()
+            }),
+            app_id: Some("chat-aggregator".into()),
+            window_min_size: Some(size(px(400.), px(320.))),
+            ..Default::default()
+        };
+        let engine = self.engine.clone();
+        match cx.open_window(options, |window, cx| {
+            let view = cx.new(|cx| ManualWindow::new(engine, window, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        }) {
+            Ok(handle) => self.manual_window = Some(handle),
+            Err(e) => report(window, cx, format!("Couldn't open the window: {e:#}")),
+        }
+    }
+
     fn report_save_error(&self, e: anyhow::Error, window: &mut Window, cx: &mut App) {
         report(
             window,
             cx,
             format!(
                 "Couldn't save {}: {e:#}",
-                self.sources.config_path().display()
+                self.config.config_path().display()
             ),
         );
     }
@@ -326,6 +481,98 @@ impl AppView {
             )
     }
 
+    fn render_themes(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let missing = self
+            .config
+            .theme()
+            .filter(|name| !self.themes.iter().any(|t| t == name))
+            .map(str::to_string);
+
+        let row = h_flex()
+            .gap_2()
+            .items_center()
+            .flex_wrap()
+            .child(div().text_color(muted).child("Theme"))
+            .child(
+                div()
+                    .w(px(180.))
+                    .child(Select::new(&self.theme_select).small()),
+            )
+            .child(
+                Button::new("theme-reload")
+                    .label("Reload overlays")
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.engine.reload_overlays();
+                        window.push_notification(Notification::info("Overlays reloaded"), cx);
+                    })),
+            )
+            .child(
+                Button::new("theme-new")
+                    .icon(IconName::Plus)
+                    .label("New theme…")
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.new_theme = Some(cx.new(|cx| {
+                            InputState::new(window, cx).placeholder("name for the new theme")
+                        }));
+                        this.theme_error = None;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("theme-folder")
+                    .icon(IconName::ExternalLink)
+                    .label("Open themes folder")
+                    .small()
+                    .ghost()
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_themes_folder(window, cx)),
+                    ),
+            );
+
+        v_flex()
+            .gap_2()
+            .child(row)
+            .children(missing.map(|name| {
+                div().text_sm().text_color(cx.theme().warning).child(format!(
+                    "The theme folder \"{name}\" wasn't found; the overlay uses the built-in look."
+                ))
+            }))
+            .children(self.new_theme.as_ref().map(|input| {
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().child(Input::new(input).id("theme-name")))
+                    .child(
+                        Button::new("theme-create")
+                            .label("Create")
+                            .primary()
+                            .small()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.create_theme(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("theme-cancel")
+                            .label("Cancel")
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.new_theme = None;
+                                this.theme_error = None;
+                                cx.notify();
+                            })),
+                    )
+            }))
+            .children(
+                self.theme_error
+                    .clone()
+                    .map(|e| div().text_sm().text_color(cx.theme().danger).child(e)),
+            )
+    }
+
     fn render_sources(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let list = v_flex().gap_1().children(
             self.status
@@ -341,7 +588,22 @@ impl AppView {
             .flex_1()
             .min_h_0()
             .gap_2()
-            .child(div().font_semibold().child("Sources"))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(div().font_semibold().child("Sources"))
+                    .child(
+                        Button::new("open-manual")
+                            .label("Test messages…")
+                            .small()
+                            .ghost()
+                            .tooltip("Send chat messages by hand")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_manual_window(window, cx)
+                            })),
+                    ),
+            )
             .child(if self.status.sources.is_empty() {
                 div()
                     .text_color(cx.theme().muted_foreground)
@@ -403,16 +665,20 @@ impl AppView {
                         this.set_running(id, *on, window, cx);
                     })),
             )
-            .child(
-                Button::new(("remove", key))
-                    .icon(IconName::Close)
-                    .small()
-                    .ghost()
-                    .tooltip("Remove this source")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.remove_source(id, window, cx);
-                    })),
-            )
+            // The test source belongs to its window: closing the window
+            // removes it.
+            .when(source.config != SourceConfig::Manual, |row| {
+                row.child(
+                    Button::new(("remove", key))
+                        .icon(IconName::Close)
+                        .small()
+                        .ghost()
+                        .tooltip("Remove this source")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.remove_source(id, window, cx);
+                        })),
+                )
+            })
     }
 
     fn render_add_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -478,10 +744,18 @@ impl Render for AppView {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_header(cx))
+            .child(self.render_themes(cx))
             .child(self.render_sources(cx))
             .child(self.youtube.clone())
             .child(self.render_add_form(cx))
     }
+}
+
+/// The theme picker's entries: the built-in theme first, then the folders.
+fn theme_items(themes: &[String]) -> Vec<SharedString> {
+    std::iter::once(SharedString::from(DEFAULT_THEME))
+        .chain(themes.iter().cloned().map(SharedString::from))
+        .collect()
 }
 
 /// The status light: a small coloured dot.
@@ -508,17 +782,34 @@ pub(crate) fn report(window: &mut Window, cx: &mut App, message: String) {
 mod tests {
     use std::net::Ipv4Addr;
 
+    use std::path::PathBuf;
+
     use chat_engine::{ConfigFile, Engine, EngineConfig, YouTubeSettings};
+    use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{AppContext as _, TestAppContext, WindowHandle};
+    use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
 
     use super::AppView;
-    use crate::sources::SourceList;
+    use crate::app_config::AppConfig;
 
-    /// Opens the window with a real engine (on its own tokio runtime) and
-    /// no sources. The runtime and engine are returned so they live as long
-    /// as the test.
-    fn open(cx: &mut TestAppContext) -> (WindowHandle<AppView>, tokio::runtime::Runtime, Engine) {
+    /// The window as the app builds it (the view inside a `Root`, which
+    /// notifications need), a real engine on its own tokio runtime, and a
+    /// fresh settings folder.
+    struct Ui {
+        window: WindowHandle<Root>,
+        view: Entity<AppView>,
+        engine: Engine,
+        settings_dir: PathBuf,
+        _runtime: tokio::runtime::Runtime,
+    }
+
+    impl Drop for Ui {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.settings_dir);
+        }
+    }
+
+    fn open(cx: &mut TestAppContext) -> Ui {
         cx.update(gpui_kit::init);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -535,28 +826,40 @@ mod tests {
             youtube: YouTubeSettings::default(), // not set up
             ..ConfigFile::default()
         };
-        let path = std::env::temp_dir()
-            .join(format!("chat-app-ui-test-{}", std::process::id()))
-            .join("config.toml");
-        let sources = SourceList::new(file, path);
+        let settings_dir =
+            std::env::temp_dir().join(format!("chat-app-ui-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&settings_dir);
+        let config = AppConfig::new(file, settings_dir.join("config.toml"));
         let (handle, tokio) = (engine.handle(), runtime.handle().clone());
-        let window = cx.add_window(|window, cx| AppView::new(handle, sources, tokio, window, cx));
-        (window, runtime, engine)
+
+        // `add_window` builds the root element; the view is created inside
+        // and handed out through `view` for the test to inspect.
+        let mut view = None;
+        let window = cx.add_window(|window, cx| {
+            let app = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));
+            view = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        Ui {
+            window,
+            view: view.expect("the window was built"),
+            engine,
+            settings_dir,
+            _runtime: runtime,
+        }
     }
 
     #[gpui_kit::test]
     fn invalid_twitch_name_is_rejected_in_the_form(cx: &mut TestAppContext) {
-        let (window, _runtime, _engine) = open(cx);
-        cx.update_window(window.into(), |_, window, cx| {
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
             window.click("new-source-text", cx);
             window.input("not valid!", cx);
             window.click("add", cx);
         })
         .unwrap();
 
-        let error = window
-            .read_with(cx, |view, _| view.form_error.clone())
-            .unwrap();
+        let error = ui.view.read_with(cx, |view, _| view.form_error.clone());
         let error = error.expect("the form shows an error");
         // Names the typed text: proves the typing reached the field (an
         // empty field would be rejected too, with a different message).
@@ -565,8 +868,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_text_field_is_only_there_when_needed(cx: &mut TestAppContext) {
-        let (window, _runtime, _engine) = open(cx);
-        cx.update_window(window.into(), |_, window, cx| {
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
             // Twitch (selected at start) needs a channel name...
             assert!(window.try_find("new-source-text").is_some());
             // ...Demo needs nothing...
@@ -581,8 +884,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn youtube_without_a_client_asks_for_one(cx: &mut TestAppContext) {
-        let (window, _runtime, _engine) = open(cx);
-        cx.update_window(window.into(), |_, window, cx| {
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
             assert!(window.try_find("youtube-client-id").is_some());
             assert!(window.try_find("youtube-connect").is_none());
 
@@ -604,5 +907,70 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn new_theme_is_created_selected_and_saved(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("theme-new", cx);
+            window.click("theme-name", cx);
+            window.input("Cozy Night", cx);
+            window.click("theme-create", cx);
+        })
+        .unwrap();
+
+        let theme = ui.settings_dir.join("themes").join("Cozy Night");
+        assert!(
+            theme.join("overlay.css").exists(),
+            "created from the defaults"
+        );
+        assert_eq!(
+            ui.engine.handle().theme_dir(),
+            Some(theme),
+            "overlays switch to it"
+        );
+        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml")).unwrap();
+        assert_eq!(
+            saved.server.theme.as_deref(),
+            Some("Cozy Night"),
+            "and it's saved"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn test_messages_window_opens_only_once(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let click = |cx: &mut TestAppContext| {
+            cx.update_window(ui.window.into(), |_, window, cx| {
+                window.click("open-manual", cx);
+            })
+            .unwrap();
+        };
+        click(cx);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+        click(cx);
+        assert_eq!(
+            cx.update(|cx| cx.windows().len()),
+            2,
+            "the open one comes to the front instead"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn invalid_theme_name_is_refused(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("theme-new", cx);
+            window.click("theme-name", cx);
+            window.input("../escape", cx);
+            window.click("theme-create", cx);
+            // The form stays open with the typed name, to correct it.
+            assert_eq!(window.find("theme-name").value(), Some("../escape"));
+        })
+        .unwrap();
+        let error = ui.view.read_with(cx, |view, _| view.theme_error.clone());
+        assert!(error.is_some_and(|e| e.contains("letters")));
+        assert!(!ui.settings_dir.join("escape").exists());
     }
 }

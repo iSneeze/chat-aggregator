@@ -39,6 +39,7 @@ pub(crate) enum Command {
     Start(SourceId, Reply<()>),
     Stop(SourceId, Reply<()>),
     Update(SourceId, SourceConfig, Reply<()>),
+    AddManual(Reply<(SourceId, ManualInput)>),
     UpdateYouTube(YouTubeSettings, Reply<()>),
 }
 
@@ -83,6 +84,24 @@ struct Slot {
     activity: Option<watch::Receiver<Activity>>,
     stats: Arc<Stats>,
     attempt: u32,
+    /// Manual sources only: where their messages arrive. Shared behind a
+    /// Mutex so a stop/start can re-attach: the running task holds the lock,
+    /// aborting it releases the lock for the next run.
+    manual: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ChatEvent>>>>,
+}
+
+/// Sends messages into a manual source (the app's test window). The source
+/// ends when this is dropped, e.g. when the window closes.
+#[derive(Clone)]
+pub struct ManualInput(mpsc::Sender<ChatEvent>);
+
+impl ManualInput {
+    pub async fn send(&self, event: ChatEvent) -> anyhow::Result<()> {
+        self.0
+            .send(event)
+            .await
+            .map_err(|_| anyhow!("the test source has been removed"))
+    }
 }
 
 /// Counted by the forwarding task, read by the actor. Atomics instead of a
@@ -175,10 +194,32 @@ impl<F: SourceFactory> Actor<F> {
                         activity: None,
                         stats: Arc::default(),
                         attempt: 0,
+                        manual: None,
                     },
                 );
                 self.start(id);
                 let _ = reply.send(Ok(id));
+            }
+            Command::AddManual(reply) => {
+                let id = SourceId(self.next_id);
+                self.next_id += 1;
+                let (tx, rx) = mpsc::channel(64);
+                info!(%id, "test window source added");
+                self.slots.insert(
+                    id,
+                    Slot {
+                        config: SourceConfig::Manual,
+                        state: SourceState::Stopped,
+                        generation: 0,
+                        task: None,
+                        activity: None,
+                        stats: Arc::default(),
+                        attempt: 0,
+                        manual: Some(Arc::new(tokio::sync::Mutex::new(rx))),
+                    },
+                );
+                self.start(id);
+                let _ = reply.send(Ok((id, ManualInput(tx))));
             }
             Command::Remove(id, reply) => {
                 let result = match self.slots.remove(&id) {
@@ -278,6 +319,7 @@ impl<F: SourceFactory> Actor<F> {
         let hub = self.hub.clone();
         let stats = slot.stats.clone();
         let config = slot.config.clone();
+        let manual = slot.manual.clone();
         let internal = self.internal_tx.clone();
         info!(source = %config.label(), "starting");
         slot.task = Some(AbortOnDropHandle::new(tokio::spawn(async move {
@@ -292,8 +334,14 @@ impl<F: SourceFactory> Actor<F> {
                 }
                 std::future::pending::<()>().await
             };
+            let run = async {
+                match manual {
+                    Some(input) => run_manual(&input, &hub, &stats, reporter).await,
+                    None => run_source(&*factory, &config, &hub, &stats, reporter).await,
+                }
+            };
             let result = tokio::select! {
-                result = run_source(&*factory, &config, &hub, &stats, reporter) => result,
+                result = run => result,
                 () = relay => unreachable!("the relay never finishes"),
             };
             let _ = internal.send(Internal::Ended {
@@ -425,6 +473,23 @@ async fn run_source<F: SourceFactory>(
         Ok(result) => result,
         Err(e) => Err(anyhow!("the source crashed: {e}")),
     }
+}
+
+/// A manual source: forwards what the test window sends until the window's
+/// `ManualInput` is dropped (then it ends normally).
+async fn run_manual(
+    input: &tokio::sync::Mutex<mpsc::Receiver<ChatEvent>>,
+    hub: &Hub,
+    stats: &Stats,
+    activity: Reporter,
+) -> anyhow::Result<()> {
+    let mut input = input.lock().await;
+    activity.set(Activity::Receiving);
+    while let Some(event) = input.recv().await {
+        stats.record(&event);
+        hub.publish(event);
+    }
+    Ok(())
 }
 
 fn stop(slot: &mut Slot) {
