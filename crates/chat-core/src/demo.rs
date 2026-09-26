@@ -2,7 +2,11 @@
 //! previews and demo mode: lets you style an overlay without waiting for
 //! someone to actually donate.
 
-use crate::{Author, ChatMessage, ChatPlatform, EmoteRef, MessageKind};
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+
+use crate::{Author, ChatEvent, ChatMessage, ChatPlatform, ChatSource, EmoteRef, MessageKind};
 
 const KAPPA: &str = "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0";
 const HEY_GUYS: &str = "https://static-cdn.jtvnw.net/emoticons/v2/30259/default/dark/2.0";
@@ -167,4 +171,103 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             MessageKind::Text,
         ),
     ]
+}
+
+/// Plays `sample_messages` in a loop, one every `interval`, and exercises
+/// moderation along the way: halfway through each round the round's first
+/// message is deleted, and at the end the user who posted HTML is cleared.
+pub struct DemoSource {
+    pub interval: Duration,
+}
+
+impl Default for DemoSource {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_millis(1500),
+        }
+    }
+}
+
+impl ChatSource for DemoSource {
+    async fn run(self, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
+        for round in 0.. {
+            let messages = sample_messages(round);
+            let count = messages.len();
+            let first_id = messages[0].id.clone();
+
+            for (i, msg) in messages.into_iter().enumerate() {
+                tokio::time::sleep(self.interval).await;
+                let last_author = (i == count - 1).then(|| msg.author.id.clone());
+
+                // Receiver gone = nobody listening anymore: stop quietly.
+                if tx.send(ChatEvent::Message(msg)).await.is_err() {
+                    return Ok(());
+                }
+                let moderation = if i == count / 2 {
+                    Some(ChatEvent::Delete {
+                        platform: ChatPlatform::Twitch,
+                        message_id: first_id.clone(),
+                    })
+                } else {
+                    last_author.map(|user_id| ChatEvent::ClearUser {
+                        platform: ChatPlatform::Twitch,
+                        user_id,
+                    })
+                };
+                if let Some(event) = moderation {
+                    tokio::time::sleep(self.interval).await;
+                    if tx.send(event).await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_ids_are_unique_across_rounds() {
+        let mut ids = std::collections::HashSet::new();
+        for round in 0..2 {
+            for msg in sample_messages(round) {
+                assert!(ids.insert(msg.id.clone()), "duplicate id {}", msg.id);
+            }
+        }
+    }
+
+    #[test]
+    fn demo_moderation_targets_twitch_messages() {
+        // DemoSource deletes/clears on Twitch; the targets must be Twitch too.
+        let messages = sample_messages(0);
+        assert_eq!(messages[0].platform, ChatPlatform::Twitch);
+        assert_eq!(messages.last().unwrap().platform, ChatPlatform::Twitch);
+    }
+
+    #[tokio::test]
+    async fn demo_source_deletes_its_first_message() {
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(
+            DemoSource {
+                interval: Duration::from_millis(1),
+            }
+            .run(tx),
+        );
+
+        let first_id = sample_messages(0)[0].id.clone();
+        loop {
+            match rx.recv().await.expect("demo keeps running") {
+                ChatEvent::Delete { message_id, .. } => {
+                    assert_eq!(message_id, first_id);
+                    break;
+                }
+                ChatEvent::Message(_) => continue,
+                other => panic!("expected a delete first, got {other:?}"),
+            }
+        }
+    }
 }

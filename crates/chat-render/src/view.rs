@@ -5,7 +5,7 @@
 //! Every field borrows from the message (`&'a str`) instead of cloning: the
 //! view only lives for the duration of one render call.
 
-use chat_core::{ChatMessage, ChatPlatform, EmoteRef, MessageKind};
+use chat_core::{ChatMessage, EmoteRef, MessageKind};
 
 #[derive(serde::Serialize)]
 pub(crate) struct MessageView<'a> {
@@ -45,11 +45,7 @@ impl<'a> MessageView<'a> {
     pub(crate) fn new(msg: &'a ChatMessage) -> Self {
         let mut view = MessageView {
             id: &msg.id,
-            platform: match msg.platform {
-                ChatPlatform::Twitch => "twitch",
-                ChatPlatform::YouTube => "youtube",
-                ChatPlatform::Rplay => "rplay",
-            },
+            platform: msg.platform.as_str(),
             kind: "text",
             paid: false,
             author: AuthorView {

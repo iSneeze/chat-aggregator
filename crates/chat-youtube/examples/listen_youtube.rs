@@ -4,6 +4,14 @@ use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Without a subscriber, the source's tracing logs would go nowhere.
+    // RUST_LOG=chat_youtube=debug also shows the routine reconnects.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
     // usage: listen_youtube <video_id>            (API key)
     //        listen_youtube --member <video_id>   (OAuth, e.g. members-only stream)
     //        listen_youtube --own                 (OAuth, your own broadcast)
@@ -37,11 +45,11 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatEvent>(256);
     let mut source_task = tokio::spawn(
-        Box::new(YouTubeSource {
+        YouTubeSource {
             target,
             auth,
             emojis,
-        })
+        }
         .run(tx),
     );
 

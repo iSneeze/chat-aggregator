@@ -168,13 +168,14 @@ pub async fn resolve_own_broadcast(
     // lifeCycleStatus classification is visible. Later polls stay quiet.
     if log_all {
         for item in &resp.items {
-            eprintln!(
-                "[youtube] own broadcast {} status={:?} scheduled={:?}",
-                item.id,
-                life_cycle(&item.status),
-                item.snippet
+            tracing::debug!(
+                id = %item.id,
+                status = ?life_cycle(&item.status),
+                scheduled = ?item
+                    .snippet
                     .as_ref()
                     .and_then(|s| s.scheduled_start_time.as_deref()),
+                "own broadcast"
             );
         }
     }

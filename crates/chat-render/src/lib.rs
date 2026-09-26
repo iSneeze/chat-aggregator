@@ -66,6 +66,12 @@ impl Theme {
     }
 }
 
+/// Just the stylesheet from `dir` (or the built-in one). Separate from
+/// [`Theme::load`] so a broken template doesn't also discard working CSS.
+pub fn read_css(dir: impl AsRef<Path>) -> anyhow::Result<String> {
+    read_or_default(&dir.as_ref().join(CSS_FILE), DEFAULT_CSS)
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self::builtin()

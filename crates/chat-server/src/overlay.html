@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat overlay</title>
+<link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+<main class="chat" role="log" aria-live="polite"></main>
+<script>
+"use strict";
+// The server sends ready-rendered, escaped HTML for each message; this
+// script only inserts messages and removes deleted ones. Styling is all
+// in overlay.css. (Relative URLs, so the page also works under a subpath.)
+(() => {
+  const chat = document.querySelector(".chat");
+
+  // Overlay settings are CSS variables, so streamers only ever edit CSS.
+  // The stylesheet <link> above is loaded before this script runs.
+  const style = getComputedStyle(document.documentElement);
+  const maxMessages = parseInt(style.getPropertyValue("--max-messages"), 10) || 20;
+  const deleteDelay = parseDuration(style.getPropertyValue("--delete-delay"));
+
+  // "0.3s" / "300ms" -> milliseconds
+  function parseDuration(value) {
+    const v = value.trim();
+    if (v.endsWith("ms")) return parseFloat(v) || 0;
+    if (v.endsWith("s")) return (parseFloat(v) || 0) * 1000;
+    return 0;
+  }
+
+  // Ids come from the platforms: escape them before putting them in a selector.
+  const attr = (name, value) => `[${name}="${CSS.escape(String(value))}"]`;
+
+  // Mark as deleted (CSS decides what that looks like), then remove after
+  // --delete-delay so a CSS transition has time to play.
+  function remove(selector) {
+    for (const el of chat.querySelectorAll(selector)) {
+      if (el.classList.contains("msg--deleted")) continue;
+      el.classList.add("msg--deleted");
+      setTimeout(() => el.remove(), deleteDelay);
+    }
+  }
+
+  const events = new EventSource("events");
+
+  // EventSource reconnects by itself, and on every (re)connect the server
+  // replays its recent history. Start from a clean slate so nothing shows
+  // twice: the history is the source of truth.
+  events.addEventListener("open", () => chat.replaceChildren());
+
+  events.addEventListener("chat", (e) => {
+    chat.insertAdjacentHTML("beforeend", e.data);
+    // Keep at most --max-messages; deleted ones are on their way out anyway.
+    const shown = chat.querySelectorAll(".msg:not(.msg--deleted)");
+    for (let i = 0; i < shown.length - maxMessages; i++) shown[i].remove();
+  });
+
+  events.addEventListener("delete", (e) => {
+    const d = JSON.parse(e.data);
+    remove(`.msg${attr("data-platform", d.platform)}${attr("data-id", d.message_id)}`);
+  });
+
+  events.addEventListener("clear_user", (e) => {
+    const d = JSON.parse(e.data);
+    remove(`.msg${attr("data-platform", d.platform)}${attr("data-author", d.user_id)}`);
+  });
+
+  events.addEventListener("clear_all", (e) => {
+    const d = JSON.parse(e.data);
+    remove(`.msg${attr("data-platform", d.platform)}`);
+  });
+})();
+</script>
+</body>
+</html>

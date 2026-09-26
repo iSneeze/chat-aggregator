@@ -2,14 +2,18 @@ use std::future::Future;
 use tokio::sync::mpsc;
 
 pub mod demo;
+pub mod hub;
+
+pub use hub::Hub;
 
 pub trait ChatSource {
     /// Connects to the platform and pushes normalized events until
     /// the stream ends or an unrecoverable error occurs.
-    fn run(
-        self: Box<Self>,
-        tx: mpsc::Sender<ChatEvent>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    ///
+    /// Takes `self` by value: a source is spawned once and consumed by its
+    /// task. `Ok(())` means the stream ended normally (e.g. the broadcast is
+    /// over), `Err` means it failed.
+    fn run(self, tx: mpsc::Sender<ChatEvent>) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 /// Everything a source can report. Moderation actions are separate
@@ -60,11 +64,24 @@ pub struct EmoteRef {
     pub url: String,  // platform-resolved image URL
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+// `Copy`: a fieldless enum is just a small tag, so passing it by value is
+// as cheap as passing a reference. `PartialEq`/`Eq` let us compare platforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ChatPlatform {
     Twitch,
     YouTube,
     Rplay,
+}
+
+impl ChatPlatform {
+    /// Lowercase name, as used in HTML classes and event payloads.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChatPlatform::Twitch => "twitch",
+            ChatPlatform::YouTube => "youtube",
+            ChatPlatform::Rplay => "rplay",
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -112,7 +129,7 @@ pub struct MockSource {
 }
 
 impl ChatSource for MockSource {
-    async fn run(self: Box<Self>, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
+    async fn run(self, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
         for i in 0..self.count {
             tokio::time::sleep(self.delay).await;
 
@@ -150,10 +167,10 @@ mod tests {
 
         // Spawn the source as a task, exactly like the server will.
         tokio::spawn(
-            Box::new(MockSource {
+            MockSource {
                 count: 5,
                 delay: Duration::from_millis(1),
-            })
+            }
             .run(tx),
         );
 
@@ -178,10 +195,10 @@ mod tests {
         // Drop the receiver immediately: sends must fail, not hang.
         drop(rx);
 
-        let result = Box::new(MockSource {
+        let result = MockSource {
             count: 3,
             delay: Duration::from_millis(1),
-        })
+        }
         .run(tx)
         .await;
 

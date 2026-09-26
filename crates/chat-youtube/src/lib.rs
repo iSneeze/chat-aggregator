@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::{Code, Request, Status};
+use tracing::{debug, info, warn};
 
 mod convert;
 mod emoji;
@@ -78,7 +79,7 @@ pub struct YouTubeSource {
 }
 
 impl ChatSource for YouTubeSource {
-    async fn run(self: Box<Self>, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
+    async fn run(self, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
         // Before the resolution loop, so we don't move self.target twice.
         let is_own_broadcast = matches!(self.target, YouTubeTarget::OwnBroadcast);
 
@@ -117,9 +118,7 @@ impl ChatSource for YouTubeSource {
                     match resolved {
                         Some(stream) => stream,
                         None => {
-                            eprintln!(
-                                "[youtube] nothing live or scheduled; scanning again in {POLL_FAR:?}"
-                            );
+                            info!(next_check = ?POLL_FAR, "nothing live or scheduled");
                             tokio::time::sleep(POLL_FAR).await;
                             continue 'outer;
                         }
@@ -131,9 +130,10 @@ impl ChatSource for YouTubeSource {
             // polling, faster as the start time approaches.
             if !stream.is_live {
                 let wait = scan_interval(stream.scheduled_start_time);
-                eprintln!(
-                    "[youtube] waiting for broadcast {} to start (next check in {wait:?})",
-                    stream.video_id
+                info!(
+                    video_id = %stream.video_id,
+                    next_check = ?wait,
+                    "waiting for broadcast to start"
                 );
                 tokio::time::sleep(wait).await;
                 continue 'outer;
@@ -173,9 +173,7 @@ impl ChatSource for YouTubeSource {
                     }
                 }
 
-                // Exactly one reconnect line is emitted per iteration,
-                // carrying the reason and the current backoff.
-                let reason = match consume_stream(
+                match consume_stream(
                     &mut client,
                     request,
                     &mut page_token,
@@ -189,17 +187,22 @@ impl ChatSource for YouTubeSource {
                         if n > 0 {
                             backoff = Duration::from_secs(2); // stream was healthy
                         }
-                        "stream ended".to_string()
+                        // The ~10s server EOF: routine, so debug level only.
+                        debug!(
+                            page_token_set = page_token.is_some(),
+                            ?backoff,
+                            "stream ended, reconnecting"
+                        );
                     }
                     Ok((_, StreamEnd::Offline)) => {
                         if is_own_broadcast {
-                            eprintln!("[youtube] broadcast ended; back to scan mode");
+                            info!("broadcast ended; back to scan mode");
                             tokio::time::sleep(SETTLE_AFTER_END).await;
                             first_scan = true; // re-list all broadcasts next scan
                             break 'inner;
                         }
                         // One-shot Video target: normal completion.
-                        eprintln!("[youtube] stream offline, done");
+                        info!("stream offline, done");
                         return Ok(());
                     }
                     Ok((_, StreamEnd::ReceiverGone)) => {
@@ -209,14 +212,10 @@ impl ChatSource for YouTubeSource {
                         if is_fatal(&status) {
                             return Err(status).context("YouTube gRPC stream failed");
                         }
-                        format!("stream error: {status}")
+                        warn!(%status, ?backoff, "stream error, reconnecting");
                     }
-                };
+                }
 
-                eprintln!(
-                    "[youtube] reconnecting after {reason} (page_token set: {}, backoff: {backoff:?})",
-                    page_token.is_some()
-                );
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }

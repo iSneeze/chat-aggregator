@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatEvent>(256);
 
-    tokio::spawn(Box::new(TwitchSource { channel }).run(tx));
+    tokio::spawn(TwitchSource { channel }.run(tx));
 
     while let Some(event) = rx.recv().await {
         let msg = match event {

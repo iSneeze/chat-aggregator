@@ -16,7 +16,7 @@ pub struct TwitchSource {
 impl ChatSource for TwitchSource {
     // `async fn` satisfies the trait's `impl Future + Send` as long as the
     // compiler can prove the future is Send; it checks this for us.
-    async fn run(self: Box<Self>, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
+    async fn run(self, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
         let config = ClientConfig::new_simple(StaticLoginCredentials::anonymous());
         let (mut incoming_messages, client) =
             TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);

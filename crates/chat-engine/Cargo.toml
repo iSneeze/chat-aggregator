@@ -1,19 +1,18 @@
 [package]
-name = "chat-server"
+name = "chat-engine"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 chat-core = { path = "../chat-core" }
-chat-render = { path = "../chat-render" }
-axum.workspace = true
-futures-util.workspace = true
-serde_json.workspace = true
+chat-server = { path = "../chat-server" }
+chat-twitch = { path = "../chat-twitch" }
+chat-youtube = { path = "../chat-youtube" }
+anyhow.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-chrono.workspace = true
 reqwest.workspace = true
+tracing-subscriber.workspace = true

@@ -7,19 +7,21 @@ message stream, exposed as a stylable HTML overlay for OBS/browser sources.
 
 ## How it works
 
-sources → mpsc → merger → broadcast → SSE → your overlay
+sources → mpsc → hub (broadcast + replay history) → SSE → your overlay
 
 Each platform is its own crate behind a `ChatSource` trait; the server never
-knows what Twitch or YouTube look like, only `ChatMessage`.
+knows what Twitch or YouTube look like, only `ChatEvent`s (messages plus
+moderation: deletes, bans, clears).
 
 | crate          | role                                        |
 |----------------|---------------------------------------------|
-| `chat-core`    | stable message model + source trait         |
+| `chat-core`    | message model, source trait, hub, demo data |
 | `chat-twitch`  | Twitch IRC (anonymous read)                 |
 | `chat-youtube` | YouTube gRPC live chat (`streamList`)       |
 | `chat-rplay`   | rplay — research in progress                |
 | `chat-render`  | templates + CSS, emote replacement          |
-| `chat-server`  | HTTP server, SSE, source orchestration      |
+| `chat-server`  | HTTP: overlay page, CSS, SSE event stream   |
+| `chat-engine`  | runs sources, hub and server together       |
 
 ## Building
 
@@ -55,7 +57,25 @@ cargo test          # or: cargo nextest run
 
 ## Running
 
-See each crate's `examples/` for standalone listeners:
+The whole pipeline, headless:
+
+```sh
+cargo run -p chat-engine --example run -- --demo                  # every message kind, no account needed
+cargo run -p chat-engine --example run -- --twitch <channel>
+YOUTUBE_API_KEY=... cargo run -p chat-engine --example run -- --youtube <video_id>
+```
+
+Sources can be combined; see the top of `crates/chat-engine/examples/run.rs`
+for all flags. Then add `http://127.0.0.1:7878/` as a **Browser Source** in
+OBS (e.g. 450×800).
+
+**Styling:** pass `--theme <dir>` with your own `message.html` and/or
+`overlay.css` (start from the defaults in `crates/chat-render/templates/`).
+Both are re-read when the overlay (re)connects: edit, then hit *Refresh* on
+the browser source. To iterate without a server:
+`cargo run -p chat-render --example preview -- <dir> > preview.html`.
+
+Standalone listeners for a single platform:
 
 ```sh
 cargo run -p chat-twitch --example listen_twitch -- <channel>
@@ -65,8 +85,12 @@ YOUTUBE_API_KEY=... cargo run -p chat-youtube --example listen_youtube -- <video
 
 ## Status
 
+Details, design decisions and next steps: [ROADMAP.md](ROADMAP.md).
+
 - [x] Twitch IRC source
 - [ ] YouTube gRPC source (quota impact of reconnects under measurement)
 - [ ] rplay source
-- [ ] merger + broadcast
-- [ ] HTML overlay + templates
+- [x] hub (broadcast + replay history)
+- [x] HTML overlay + templates (SSE)
+- [ ] JSON WebSocket API
+- [ ] control plane + GPUI app
