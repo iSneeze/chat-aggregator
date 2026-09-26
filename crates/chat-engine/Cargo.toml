@@ -10,11 +10,16 @@ chat-server = { path = "../chat-server" }
 chat-twitch = { path = "../chat-twitch" }
 chat-youtube = { path = "../chat-youtube" }
 anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Paused, fast-forwarding clock for exact retry-timing tests; tests only.
+tokio = { workspace = true, features = ["test-util"] }
 reqwest.workspace = true
+serde_json.workspace = true
 tracing-subscriber.workspace = true
 webbrowser.workspace = true

@@ -1,5 +1,5 @@
 use anyhow::Context;
-use chat_core::{ChatEvent, ChatMessage, ChatSource, MessageKind};
+use chat_core::{ChatEvent, ChatMessage, ChatSource, MessageKind, Reporter};
 use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
 use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
 
@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
             auth,
             emojis,
         }
-        .run(tx),
+        .run(tx, Reporter::detached()),
     );
 
     loop {

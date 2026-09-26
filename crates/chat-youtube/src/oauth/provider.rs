@@ -24,6 +24,12 @@ const REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
 #[derive(Debug)]
 pub struct LoginRequired(String);
 
+impl LoginRequired {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self(reason.into())
+    }
+}
+
 impl fmt::Display for LoginRequired {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "YouTube login required: {}", self.0)

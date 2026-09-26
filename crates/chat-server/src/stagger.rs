@@ -72,6 +72,19 @@ pub(crate) async fn run(
     loop {
         let release_at = next_release(&queue, last_sent, stagger);
         tokio::select! {
+            // `biased`: check the branches in this order instead of picking
+            // a random ready one (tokio's default, for fairness). A message
+            // that is due goes out before more input is read, so the output
+            // order is the same on every run.
+            biased;
+            // Only armed while something is queued (`release_at` is Some).
+            () = sleep_until(release_at), if release_at.is_some() => {
+                let (msg, _) = queue.pop_front().expect("armed only with a queued message");
+                if out.send(ChatEvent::Message(msg)).await.is_err() {
+                    return;
+                }
+                last_sent = Some(Instant::now());
+            }
             event = events.next() => match event {
                 Some(ChatEvent::Message(msg)) => queue.push_back((msg, Instant::now())),
                 Some(moderation) => {
@@ -82,14 +95,6 @@ pub(crate) async fn run(
                 }
                 None => return, // hub closed or server shutting down
             },
-            // Only armed while something is queued (`release_at` is Some).
-            () = sleep_until(release_at), if release_at.is_some() => {
-                let (msg, _) = queue.pop_front().expect("armed only with a queued message");
-                if out.send(ChatEvent::Message(msg)).await.is_err() {
-                    return;
-                }
-                last_sent = Some(Instant::now());
-            }
             // The overlay disconnected: stop now rather than at the next event.
             () = out.closed() => return,
         }

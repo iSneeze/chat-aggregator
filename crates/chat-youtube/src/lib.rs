@@ -24,7 +24,7 @@ pub use crate::resolver::{Auth, channel_title};
 use std::time::Duration;
 
 use anyhow::Context;
-use chat_core::{ChatEvent, ChatSource};
+use chat_core::{Activity, ChatEvent, ChatSource, Reporter};
 use tokio::sync::mpsc;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
@@ -90,7 +90,8 @@ pub struct YouTubeSource {
 }
 
 impl ChatSource for YouTubeSource {
-    async fn run(self, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
+    async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
+        activity.set(Activity::Connecting);
         // Before the resolution loop, so we don't move self.target twice.
         let is_own_broadcast = matches!(self.target, YouTubeTarget::OwnBroadcast);
 
@@ -114,6 +115,10 @@ impl ChatSource for YouTubeSource {
             let stream = match self.resolve(&http, &mut first_scan).await {
                 Ok(Some(stream)) => stream,
                 Ok(None) => {
+                    activity.set(Activity::Idle(
+                        "no live or scheduled broadcast on your channel; checking every 5 min"
+                            .into(),
+                    ));
                     info!(next_check = ?POLL_FAR, "nothing live or scheduled");
                     tokio::time::sleep(POLL_FAR).await;
                     continue 'outer;
@@ -121,7 +126,7 @@ impl ChatSource for YouTubeSource {
                 // Every call fails until the daily reset: wait for it
                 // instead of ending the source.
                 Err(e) if e.is::<QuotaExhausted>() => {
-                    quota::wait_for_reset(&format!("{e:#}")).await;
+                    quota::wait_for_reset(&format!("{e:#}"), &activity).await;
                     continue 'outer;
                 }
                 Err(e) => return Err(e),
@@ -131,6 +136,18 @@ impl ChatSource for YouTubeSource {
             // polling, faster as the start time approaches.
             if !stream.is_live {
                 let wait = scan_interval(stream.scheduled_start_time);
+                let when = stream
+                    .scheduled_start_time
+                    .map(|t| {
+                        format!(
+                            " (scheduled for {})",
+                            t.with_timezone(&chrono::Local).format("%H:%M")
+                        )
+                    })
+                    .unwrap_or_default();
+                activity.set(Activity::Idle(format!(
+                    "waiting for your broadcast to start{when}"
+                )));
                 info!(
                     video_id = %stream.video_id,
                     next_check = ?wait,
@@ -176,6 +193,7 @@ impl ChatSource for YouTubeSource {
                     &mut dedupe,
                     &self.emojis,
                     &tx,
+                    &activity,
                 )
                 .await
                 {
@@ -192,6 +210,9 @@ impl ChatSource for YouTubeSource {
                     }
                     Ok((_, StreamEnd::Offline)) => {
                         if is_own_broadcast {
+                            activity.set(Activity::Idle(
+                                "broadcast ended; waiting for your next one".into(),
+                            ));
                             info!("broadcast ended; back to scan mode");
                             tokio::time::sleep(SETTLE_AFTER_END).await;
                             first_scan = true; // re-list all broadcasts next scan
@@ -206,19 +227,29 @@ impl ChatSource for YouTubeSource {
                     }
                     Err(status) => match quota::classify(&status) {
                         Some(Exhaustion::Daily) => {
-                            quota::wait_for_reset(status.message()).await;
+                            quota::wait_for_reset(status.message(), &activity).await;
                             // Hours may have passed: find the broadcast anew.
                             first_scan = true;
                             continue 'outer;
                         }
                         Some(Exhaustion::RateLimit) => {
                             backoff = backoff.max(RATE_LIMIT_BACKOFF);
+                            activity.set(Activity::Degraded(format!(
+                                "rate limited by YouTube, retrying in {} s",
+                                backoff.as_secs()
+                            )));
                             warn!(%status, ?backoff, "rate limited by YouTube, reconnecting");
                         }
                         None if is_fatal(&status) => {
                             return Err(status).context("YouTube gRPC stream failed");
                         }
-                        None => warn!(%status, ?backoff, "stream error, reconnecting"),
+                        None => {
+                            activity.set(Activity::Degraded(format!(
+                                "connection problem, reconnecting: {}",
+                                status.message()
+                            )));
+                            warn!(%status, ?backoff, "stream error, reconnecting");
+                        }
                     },
                 }
 
@@ -283,8 +314,12 @@ async fn consume_stream(
     dedupe: &mut BoundedIdSet,
     emojis: &EmojiMap,
     tx: &mpsc::Sender<ChatEvent>,
+    activity: &Reporter,
 ) -> Result<(usize, StreamEnd), Status> {
     let mut stream = client.stream_list(request).await?.into_inner();
+    // Attached to the chat. (The routine ~10 s disconnects don't change
+    // this: the reconnect follows right away.)
+    activity.set(Activity::Receiving);
     let mut count = 0;
 
     while let Some(response) = stream.message().await? {

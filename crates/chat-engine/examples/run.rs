@@ -1,16 +1,17 @@
-//! Runs the engine headless: sources in, overlay out.
+//! Runs the engine headless: sources in, overlay out, status in the terminal.
 //!
 //!   cargo run -p chat-engine --example run -- --demo
-//!   cargo run -p chat-engine --example run -- --twitch somechannel --youtube VIDEO_ID
+//!   cargo run -p chat-engine --example run -- --twitch your_channel --youtube-own
 //!
 //! Then add http://127.0.0.1:7878/ as a Browser Source in OBS.
 //!
 //! Flags (combine freely; --twitch and --youtube may repeat):
 //!   --demo                sample messages of every kind, including deletions
 //!   --twitch <channel>
-//!   --youtube <video_id>  any public video; needs YOUTUBE_API_KEY (testing path)
 //!   --youtube-own         your own current/next broadcast (the streamer path);
 //!                         needs a login, see below
+//!   --youtube <video_id>  a specific public video (testing path); uses
+//!                         YOUTUBE_API_KEY if set, otherwise the login
 //!   --theme <dir>         custom message.html and/or overlay.css
 //!   --port <n>            default 7878
 //!   --history <n>         messages replayed to a new overlay, default 20
@@ -20,21 +21,22 @@
 //! YouTube login (once; the token is kept in the system keyring):
 //!   cargo run -p chat-engine --example run -- --youtube-login
 //!   cargo run -p chat-engine --example run -- --youtube-logout
-//! Both, and --youtube-own, need YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET
-//! from your own Google Cloud project (docs/youtube-setup.md).
 //!
-//! YOUTUBE_EMOJIS=<export.json> adds custom emoji to all YouTube sources.
+//! YouTube settings come from the environment (the config file follows):
+//!   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET  your OAuth client (docs/youtube-setup.md)
+//!   YOUTUBE_API_KEY                           optional, for --youtube <video_id>
+//!   YOUTUBE_EMOJIS=<export.json>              optional custom emoji
+//!
 //! RUST_LOG=debug shows more detail (e.g. YouTube's routine reconnects).
 
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use chat_core::demo::DemoSource;
-use chat_engine::{Engine, EngineConfig, SourceSpec, Stagger};
-use chat_twitch::TwitchSource;
+use chat_engine::{Engine, EngineConfig, Health, SourceConfig, Stagger, Status, YouTubeSettings};
+use chat_youtube::Auth;
 use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
-use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,17 +46,19 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    let youtube = youtube_settings_from_env();
     match std::env::args().nth(1).as_deref() {
-        Some("--youtube-login") => return youtube_login(&OAuthApp::from_env()?).await,
+        Some("--youtube-login") => return youtube_login(&youtube.oauth_app()?).await,
         Some("--youtube-logout") => {
-            oauth::logout(&OAuthApp::from_env()?).await?;
+            oauth::logout(&youtube.oauth_app()?).await?;
             println!("logged out of YouTube");
             return Ok(());
         }
         _ => {}
     }
 
-    let config = parse_args().await?;
+    let mut config = parse_args()?;
+    config.youtube = youtube;
     if config.sources.is_empty() {
         bail!("no sources given; try --demo (see the top of examples/run.rs)");
     }
@@ -64,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
         "\n  overlay: http://{}/   (Ctrl+C to stop)\n",
         engine.addr()
     );
+    tokio::spawn(print_status_changes(engine.handle().status()));
 
     tokio::signal::ctrl_c().await?;
     println!("shutting down…");
@@ -71,40 +76,61 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn parse_args() -> anyhow::Result<EngineConfig> {
+/// Prints a line with a status light whenever a source's state changes.
+async fn print_status_changes(mut status: tokio::sync::watch::Receiver<Status>) {
+    let mut shown = HashMap::new();
+    loop {
+        // `borrow_and_update` marks the value as seen, so `changed()` below
+        // waits for the next one.
+        for source in &status.borrow_and_update().sources {
+            // Compare state and activity, not the summary text: a retry's
+            // text contains a countdown that would print a line per second.
+            let key = format!("{:?}{:?}", source.state, source.activity);
+            if shown.get(&source.id) != Some(&key) {
+                let light = match source.health() {
+                    Health::Ok => "🟢",
+                    Health::Warning => "🟡",
+                    Health::Error => "🔴",
+                    Health::Off => "⚪",
+                };
+                println!("{light} {}: {}", source.label(), source.summary());
+                shown.insert(source.id, key);
+            }
+        }
+        if status.changed().await.is_err() {
+            return; // engine shut down
+        }
+    }
+}
+
+fn youtube_settings_from_env() -> YouTubeSettings {
+    let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
+    YouTubeSettings {
+        client_id: var("YOUTUBE_CLIENT_ID"),
+        client_secret: var("YOUTUBE_CLIENT_SECRET"),
+        api_key: var("YOUTUBE_API_KEY"),
+        emojis: var("YOUTUBE_EMOJIS").map(Into::into),
+    }
+}
+
+fn parse_args() -> anyhow::Result<EngineConfig> {
     let mut config = EngineConfig::default();
     let mut port = chat_engine::DEFAULT_PORT;
     let (mut stagger_ms, mut stagger_max_ms) = (250, 2000);
-    let mut emojis: Option<EmojiMap> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--demo" => config.sources.push(SourceSpec::Demo(DemoSource::default())),
-            "--twitch" => {
-                let channel = next_value(&mut args, "--twitch")?;
-                config
-                    .sources
-                    .push(SourceSpec::Twitch(TwitchSource { channel }));
-            }
-            "--youtube" => {
-                let video_id = next_value(&mut args, "--youtube")?;
-                config.sources.push(SourceSpec::YouTube(YouTubeSource {
-                    target: YouTubeTarget::Video(video_id),
-                    auth: Auth::ApiKey(env("YOUTUBE_API_KEY")?),
-                    emojis: youtube_emojis(&mut emojis)?,
-                }));
-            }
-            "--youtube-own" => {
-                let tokens = TokenProvider::from_store(OAuthApp::from_env()?)
-                    .await
-                    .context("log in first: run with --youtube-login")?;
-                config.sources.push(SourceSpec::YouTube(YouTubeSource {
-                    target: YouTubeTarget::OwnBroadcast,
-                    auth: Auth::OAuth(tokens),
-                    emojis: youtube_emojis(&mut emojis)?,
-                }))
-            }
+            "--demo" => config.sources.push(SourceConfig::Demo),
+            "--twitch" => config.sources.push(SourceConfig::Twitch {
+                channel: next_value(&mut args, "--twitch")?,
+            }),
+            "--youtube" => config.sources.push(SourceConfig::YouTube {
+                video_id: Some(next_value(&mut args, "--youtube")?),
+            }),
+            "--youtube-own" => config
+                .sources
+                .push(SourceConfig::YouTube { video_id: None }),
             "--theme" => config.theme_dir = Some(next_value(&mut args, "--theme")?.into()),
             "--port" => port = next_value(&mut args, "--port")?.parse().context("--port")?,
             "--history" => {
@@ -150,27 +176,7 @@ async fn youtube_login(app: &OAuthApp) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Loads YOUTUBE_EMOJIS once and hands out copies for each YouTube source.
-fn youtube_emojis(cache: &mut Option<EmojiMap>) -> anyhow::Result<EmojiMap> {
-    if cache.is_none() {
-        let map = match std::env::var("YOUTUBE_EMOJIS") {
-            Ok(path) => {
-                let map = EmojiMap::load(&path)?;
-                println!("loaded {} custom emoji from {path}", map.len());
-                map
-            }
-            Err(_) => EmojiMap::default(),
-        };
-        *cache = Some(map);
-    }
-    Ok(cache.clone().unwrap_or_default())
-}
-
 /// The argument following a flag, e.g. the channel after --twitch.
 fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Result<String> {
     args.next().with_context(|| format!("{flag} needs a value"))
-}
-
-fn env(name: &str) -> anyhow::Result<String> {
-    std::env::var(name).with_context(|| format!("{name} must be set"))
 }

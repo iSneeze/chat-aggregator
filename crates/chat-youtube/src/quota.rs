@@ -10,6 +10,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use chat_core::{Activity, Reporter};
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::America::Los_Angeles;
 use tonic::{Code, Status};
@@ -100,15 +101,19 @@ pub(crate) fn wait_duration(now: DateTime<Utc>) -> Duration {
     (reset - now).to_std().unwrap_or_default() + RESET_GRACE
 }
 
-/// Logs a clear message and sleeps until the quota should be back.
-pub(crate) async fn wait_for_reset(detail: &str) {
+/// Reports and logs a clear message, then sleeps until the quota should be
+/// back.
+pub(crate) async fn wait_for_reset(detail: &str, activity: &Reporter) {
     let now = Utc::now();
     let wait = wait_duration(now);
     let resume = now + chrono::Duration::from_std(wait).unwrap_or_default();
+    let resume = resume.with_timezone(&chrono::Local).format("%H:%M");
+    activity.set(Activity::Blocked(format!(
+        "YouTube quota used up for today; resuming at {resume}"
+    )));
     tracing::warn!(
-        "YouTube API quota used up for today ({detail}); resuming at {} (in {}h {:02}m). \
+        "YouTube API quota used up for today ({detail}); resuming at {resume} (in {}h {:02}m). \
          The quota resets at midnight Pacific time.",
-        resume.with_timezone(&chrono::Local).format("%H:%M"),
         wait.as_secs() / 3600,
         wait.as_secs() % 3600 / 60,
     );

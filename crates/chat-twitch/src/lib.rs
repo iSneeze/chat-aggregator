@@ -1,5 +1,8 @@
 use anyhow::Context;
-use chat_core::{Author, ChatEvent, ChatMessage, ChatPlatform, ChatSource, EmoteRef, MessageKind};
+use chat_core::{
+    Activity, Author, ChatEvent, ChatMessage, ChatPlatform, ChatSource, EmoteRef, MessageKind,
+    Reporter,
+};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use twitch_irc::login::StaticLoginCredentials;
@@ -13,10 +16,22 @@ pub struct TwitchSource {
     pub channel: String,
 }
 
+/// Turns what a user typed ("#Some_Channel ") into a valid Twitch login
+/// ("some_channel"), or explains what's wrong with it. Checking this up
+/// front matters: an invalid name can never work, so it shouldn't be
+/// retried like a network problem.
+pub fn normalize_channel(input: &str) -> Result<String, String> {
+    let channel = input.trim().trim_start_matches('#').to_lowercase();
+    twitch_irc::validate::validate_login(&channel)
+        .map(|()| channel)
+        .map_err(|e| format!("invalid Twitch channel name: {e}"))
+}
+
 impl ChatSource for TwitchSource {
     // `async fn` satisfies the trait's `impl Future + Send` as long as the
     // compiler can prove the future is Send; it checks this for us.
-    async fn run(self, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
+    async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
+        activity.set(Activity::Connecting);
         let config = ClientConfig::new_simple(StaticLoginCredentials::anonymous());
         let (mut incoming_messages, client) =
             TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
@@ -26,6 +41,18 @@ impl ChatSource for TwitchSource {
             .context("failed to join Twitch channel")?;
 
         while let Some(message) = incoming_messages.recv().await {
+            match message {
+                // Twitch confirms our (anonymous) join before any chat
+                // arrives. A channel that doesn't exist never confirms, so
+                // it stays "connecting", which is the right signal.
+                ServerMessage::Join(_) | ServerMessage::Privmsg(_) => {
+                    activity.set(Activity::Receiving)
+                }
+                // Twitch asks clients to reconnect now and then; twitch-irc
+                // does that by itself, and we'll see the join again.
+                ServerMessage::Reconnect(_) => activity.set(Activity::Connecting),
+                _ => {}
+            }
             let Some(event) = convert(message) else {
                 continue;
             };
@@ -204,6 +231,17 @@ mod tests {
             Some(ChatEvent::Message(m)) => m,
             other => panic!("expected a message, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn channel_names_are_normalized_and_validated() {
+        assert_eq!(
+            normalize_channel(" #Your_Channel ").unwrap(),
+            "your_channel"
+        );
+        assert!(normalize_channel("").is_err());
+        assert!(normalize_channel("has space").is_err());
+        assert!(normalize_channel("a_name_that_is_way_too_long_for_twitch").is_err());
     }
 
     #[test]

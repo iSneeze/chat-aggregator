@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::{Author, ChatEvent, ChatMessage, ChatPlatform, ChatSource, EmoteRef, MessageKind};
+use crate::{
+    Activity, Author, ChatEvent, ChatMessage, ChatPlatform, ChatSource, EmoteRef, MessageKind,
+    Reporter,
+};
 
 const KAPPA: &str = "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0";
 const HEY_GUYS: &str = "https://static-cdn.jtvnw.net/emoticons/v2/30259/default/dark/2.0";
@@ -189,7 +192,8 @@ impl Default for DemoSource {
 }
 
 impl ChatSource for DemoSource {
-    async fn run(self, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
+    async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
+        activity.set(Activity::Receiving);
         for round in 0.. {
             let messages = sample_messages(round);
             let count = messages.len();
@@ -255,7 +259,7 @@ mod tests {
             DemoSource {
                 interval: Duration::from_millis(1),
             }
-            .run(tx),
+            .run(tx, Reporter::detached()),
         );
 
         let first_id = sample_messages(0)[0].id.clone();

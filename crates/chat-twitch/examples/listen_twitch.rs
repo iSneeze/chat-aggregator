@@ -1,4 +1,4 @@
-use chat_core::{ChatEvent, ChatSource, MessageKind};
+use chat_core::{ChatEvent, ChatSource, MessageKind, Reporter};
 use chat_twitch::TwitchSource;
 
 /// example to test twitch message collection on live channels - live integration test
@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatEvent>(256);
 
-    tokio::spawn(TwitchSource { channel }.run(tx));
+    tokio::spawn(TwitchSource { channel }.run(tx, Reporter::detached()));
 
     while let Some(event) = rx.recv().await {
         let msg = match event {

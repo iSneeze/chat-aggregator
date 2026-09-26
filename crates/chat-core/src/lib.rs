@@ -1,9 +1,11 @@
 use std::future::Future;
 use tokio::sync::mpsc;
 
+pub mod activity;
 pub mod demo;
 pub mod hub;
 
+pub use activity::{Activity, Reporter};
 pub use hub::Hub;
 
 pub trait ChatSource {
@@ -13,7 +15,14 @@ pub trait ChatSource {
     /// Takes `self` by value: a source is spawned once and consumed by its
     /// task. `Ok(())` means the stream ended normally (e.g. the broadcast is
     /// over), `Err` means it failed.
-    fn run(self, tx: mpsc::Sender<ChatEvent>) -> impl Future<Output = anyhow::Result<()>> + Send;
+    ///
+    /// `activity` is for status displays: report what's happening (see
+    /// [`Activity`]), especially anything that stops chat from arriving.
+    fn run(
+        self,
+        tx: mpsc::Sender<ChatEvent>,
+        activity: Reporter,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 // JSON format: every type below is part of the public WebSocket API
@@ -171,7 +180,8 @@ pub struct MockSource {
 }
 
 impl ChatSource for MockSource {
-    async fn run(self, tx: mpsc::Sender<ChatEvent>) -> anyhow::Result<()> {
+    async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
+        activity.set(Activity::Receiving);
         for i in 0..self.count {
             tokio::time::sleep(self.delay).await;
 
@@ -213,7 +223,7 @@ mod tests {
                 count: 5,
                 delay: Duration::from_millis(1),
             }
-            .run(tx),
+            .run(tx, Reporter::detached()),
         );
 
         let mut received = Vec::new();
@@ -241,7 +251,7 @@ mod tests {
             count: 3,
             delay: Duration::from_millis(1),
         }
-        .run(tx)
+        .run(tx, Reporter::detached())
         .await;
 
         assert!(result.is_err());
