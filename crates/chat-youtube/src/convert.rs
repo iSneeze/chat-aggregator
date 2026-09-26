@@ -98,7 +98,7 @@ pub fn convert(
         ),
         Some(DisplayedContent::SuperStickerDetails(d)) => (
             MessageKind::Special {
-                emote_url: None, // the API gives no sticker image URL
+                image_url: None, // the API gives no sticker image URL
                 amount: d.amount_display_string,
                 info: d.super_sticker_metadata.and_then(|m| m.alt_text),
             },
@@ -106,7 +106,7 @@ pub fn convert(
         ),
         Some(DisplayedContent::GiftDetails(gift)) => (
             MessageKind::Special {
-                emote_url: gift.gift_url,
+                image_url: gift.gift_url,
                 amount: gift.jewels_amount.map(|j| format!("{j} jewels")),
                 info: gift.gift_name.or(gift.alt_text),
             },
@@ -135,7 +135,7 @@ pub fn convert(
         ),
         Some(DisplayedContent::MembershipGiftingDetails(d)) => (
             MessageKind::MembershipGift {
-                amount: d.gift_memberships_count().max(0) as usize,
+                count: d.gift_memberships_count().max(0) as usize,
             },
             String::new(),
         ),

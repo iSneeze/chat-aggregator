@@ -193,7 +193,7 @@ mod tests {
             ChatPlatform::YouTube,
             "",
             MessageKind::Special {
-                emote_url: None,
+                image_url: None,
                 amount: Some("€2.00".into()),
                 info: Some("dancing cat".into()),
             },
@@ -209,11 +209,11 @@ mod tests {
 
     #[test]
     fn gift_wording_follows_platform_and_count() {
-        let gift = |platform, amount| {
+        let gift = |platform, count| {
             render(&message(
                 platform,
                 "",
-                MessageKind::MembershipGift { amount },
+                MessageKind::MembershipGift { count },
             ))
         };
         assert!(gift(ChatPlatform::Twitch, 5).contains(r#"5</data> subs</p>"#));

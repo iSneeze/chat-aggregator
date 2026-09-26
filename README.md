@@ -7,7 +7,8 @@ message stream, exposed as a stylable HTML overlay for OBS/browser sources.
 
 ## How it works
 
-sources → mpsc → hub (broadcast + replay history) → SSE → your overlay
+sources → mpsc → hub (broadcast + replay history) ─┬→ SSE → your overlay
+                                                    └→ WebSocket → your programs (JSON API)
 
 Each platform is its own crate behind a `ChatSource` trait; the server never
 knows what Twitch or YouTube look like, only `ChatEvent`s (messages plus
@@ -20,7 +21,7 @@ moderation: deletes, bans, clears).
 | `chat-youtube` | YouTube gRPC live chat (`streamList`)       |
 | `chat-rplay`   | rplay — research in progress                |
 | `chat-render`  | templates + CSS, emote replacement          |
-| `chat-server`  | HTTP: overlay page, CSS, SSE event stream   |
+| `chat-server`  | HTTP: overlay page, SSE stream, JSON API    |
 | `chat-engine`  | runs sources, hub and server together       |
 
 ## Building
@@ -75,6 +76,12 @@ Both are re-read when the overlay (re)connects: edit, then hit *Refresh* on
 the browser source. To iterate without a server:
 `cargo run -p chat-render --example preview -- <dir> > preview.html`.
 
+**JSON API** for your own programs (games, bots, ...):
+`ws://127.0.0.1:7878/api/v1/ws`, one JSON event per WebSocket message.
+See [docs/api.md](docs/api.md); formal spec in
+[docs/asyncapi.yaml](docs/asyncapi.yaml). Quick look:
+`websocat ws://127.0.0.1:7878/api/v1/ws`.
+
 Standalone listeners for a single platform:
 
 ```sh
@@ -92,5 +99,5 @@ Details, design decisions and next steps: [ROADMAP.md](ROADMAP.md).
 - [ ] rplay source
 - [x] hub (broadcast + replay history)
 - [x] HTML overlay + templates (SSE)
-- [ ] JSON WebSocket API
+- [x] JSON WebSocket API
 - [ ] control plane + GPUI app

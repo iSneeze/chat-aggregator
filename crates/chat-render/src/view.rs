@@ -77,13 +77,13 @@ impl<'a> MessageView<'a> {
                 view.amount = Some(amount);
             }
             MessageKind::Special {
-                emote_url,
+                image_url,
                 amount,
                 info,
             } => {
                 view.kind = "special";
                 view.paid = true;
-                view.sticker_url = emote_url.as_deref();
+                view.sticker_url = image_url.as_deref();
                 view.amount = amount.as_deref();
                 view.info = info.as_deref();
             }
@@ -91,9 +91,9 @@ impl<'a> MessageView<'a> {
                 view.kind = "membership";
                 view.info = Some(info);
             }
-            MessageKind::MembershipGift { amount } => {
+            MessageKind::MembershipGift { count } => {
                 view.kind = "gift";
-                view.count = Some(*amount);
+                view.count = Some(*count);
             }
             MessageKind::SystemNotice { info } => {
                 view.kind = "notice";

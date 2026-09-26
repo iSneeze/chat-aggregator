@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
             MessageKind::Donation { amount } => format!("DONATION {amount}"),
             MessageKind::Special { .. } => "special".to_string(),
             MessageKind::MembershipJoin { .. } => "SUB".to_string(),
-            MessageKind::MembershipGift { amount } => format!("GIFT x{amount}"),
+            MessageKind::MembershipGift { count } => format!("GIFT x{count}"),
             MessageKind::SystemNotice { info } => format!("notice: {info}"),
         };
         println!(

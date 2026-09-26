@@ -1,0 +1,151 @@
+# Formal description of the JSON WebSocket API (AsyncAPI 3.0).
+# Human-friendly introduction: api.md. To browse this file visually, paste it
+# into AsyncAPI Studio (https://studio.asyncapi.com).
+#
+# The event payload schema (schema/chat-event.json) is generated from the
+# Rust types; a test fails if it's out of date. See
+# crates/chat-server/tests/api_schema.rs.
+
+asyncapi: 3.0.0
+
+info:
+  title: chat-aggregator chat events
+  version: 1.0.0
+  description: |
+    Live chat from Twitch and YouTube, merged into one stream of JSON events.
+    Connect a WebSocket and the server pushes one event per text frame.
+    Consumers should ignore event and kind types they don't know: new ones
+    may be added without a version bump. Renaming or removing anything
+    means a new version (`/api/v2/...`).
+
+defaultContentType: application/json
+
+servers:
+  local:
+    host: 127.0.0.1:7878
+    protocol: ws
+    description: |
+      The aggregator running on the streamer's machine. Only reachable
+      from the same machine; the port is configurable.
+
+channels:
+  events:
+    address: /api/v1/ws
+    title: Chat events
+    description: |
+      Every chat event, live. Messages sent by the client are ignored.
+      The server pings idle connections every 30 seconds and sends a Close
+      frame (code 1001) when it shuts down.
+    messages:
+      chatEvent:
+        $ref: '#/components/messages/chatEvent'
+      lagged:
+        $ref: '#/components/messages/lagged'
+    bindings:
+      ws:
+        bindingVersion: 0.1.0
+        query:
+          type: object
+          properties:
+            history:
+              type: boolean
+              default: false
+              description: |
+                `true`: first replay the most recent messages (default: up
+                to 20), then continue live. Off by default so clients that
+                react to chat commands don't re-run old ones on reconnect.
+
+operations:
+  sendChatEvents:
+    action: send
+    channel:
+      $ref: '#/channels/events'
+    summary: The server pushes chat events to every connected client.
+    messages:
+      - $ref: '#/channels/events/messages/chatEvent'
+      - $ref: '#/channels/events/messages/lagged'
+
+components:
+  messages:
+    chatEvent:
+      name: ChatEvent
+      title: Chat event
+      summary: A chat message or a moderation event; `type` tells which.
+      payload:
+        schemaFormat: application/schema+json;version=draft-07
+        schema:
+          $ref: './schema/chat-event.json'
+      examples:
+        - name: message
+          summary: A YouTube message consisting of one custom emoji.
+          payload:
+            type: message
+            id: LCC.EhwKGkNKUEgzTzZ3aXBjREZlQVlyUVlkandvN25n
+            platform: youtube
+            author:
+              id: UCxxxxxxxxxxxxxxxxxxxxxx
+              name: NufPro.
+              color: null
+              badges: [member]
+              avatar_url: https://yt3.ggpht.com/example
+            text: ':_charmMittyPat:'
+            emotes:
+              - code: ':_charmMittyPat:'
+                url: https://yt3.ggpht.com/example-emote
+            timestamp: '2026-09-25T18:40:44.516Z'
+            kind:
+              type: emote_only
+        - name: donation
+          summary: Twitch bits with a message.
+          payload:
+            type: message
+            id: 7c4e9a61-0000-4000-8000-000000000000
+            platform: twitch
+            author:
+              id: '123456789'
+              name: Eve
+              color: '#ff8906'
+              badges: [subscriber]
+              avatar_url: null
+            text: Cheer100 take my bits
+            emotes: []
+            timestamp: '2026-09-25T18:41:02.000Z'
+            kind:
+              type: donation
+              amount: 100 bits
+        - name: delete
+          summary: A moderator deleted a message.
+          payload:
+            type: delete
+            platform: twitch
+            message_id: 7c4e9a61-0000-4000-8000-000000000000
+        - name: clear_user
+          summary: A user was banned or timed out; remove all their messages.
+          payload:
+            type: clear_user
+            platform: youtube
+            user_id: UCxxxxxxxxxxxxxxxxxxxxxx
+
+    lagged:
+      name: Lagged
+      title: Events were skipped
+      summary: |
+        The client read too slowly and fell more than the server's buffer
+        behind; `missed` events were dropped for it. Live events continue
+        right after this message.
+      payload:
+        type: object
+        required: [type, missed]
+        properties:
+          type:
+            type: string
+            const: lagged
+          missed:
+            type: integer
+            minimum: 1
+            description: Number of events this client did not receive.
+      examples:
+        - name: lagged
+          payload:
+            type: lagged
+            missed: 12

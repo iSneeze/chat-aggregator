@@ -8,6 +8,7 @@ chat-core = { path = "../chat-core" }
 chat-render = { path = "../chat-render" }
 axum.workspace = true
 futures-util.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -17,3 +18,9 @@ tracing.workspace = true
 [dev-dependencies]
 chrono.workspace = true
 reqwest.workspace = true
+# Same version axum uses internally, so it isn't compiled twice.
+tokio-tungstenite = "0.29"
+# The schema test (tests/api_schema.rs) needs the JSON Schema derives, which
+# chat-core only compiles with this feature: tests only, not normal builds.
+chat-core = { path = "../chat-core", features = ["schema"] }
+schemars.workspace = true

@@ -1,0 +1,340 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChatEvent",
+  "description": "Everything a source can report. Moderation actions are separate\nvariants rather than message kinds: they have no author or text, and\nconsumers must remove already-displayed messages when they arrive.",
+  "oneOf": [
+    {
+      "description": "A chat message or a platform event (donation, sub, raid, ...).",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "message"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/ChatMessage"
+        }
+      ],
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A single message was deleted by a moderator.",
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "description": "The `id` of the deleted message.",
+          "type": "string"
+        },
+        "platform": {
+          "$ref": "#/definitions/ChatPlatform"
+        },
+        "type": {
+          "type": "string",
+          "const": "delete"
+        }
+      },
+      "required": [
+        "type",
+        "platform",
+        "message_id"
+      ]
+    },
+    {
+      "description": "All messages by one user should go (ban or timeout).",
+      "type": "object",
+      "properties": {
+        "platform": {
+          "$ref": "#/definitions/ChatPlatform"
+        },
+        "type": {
+          "type": "string",
+          "const": "clear_user"
+        },
+        "user_id": {
+          "description": "The `author.id` whose messages should be removed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "platform",
+        "user_id"
+      ]
+    },
+    {
+      "description": "The whole chat of this platform was cleared.",
+      "type": "object",
+      "properties": {
+        "platform": {
+          "$ref": "#/definitions/ChatPlatform"
+        },
+        "type": {
+          "type": "string",
+          "const": "clear_all"
+        }
+      },
+      "required": [
+        "type",
+        "platform"
+      ]
+    }
+  ],
+  "definitions": {
+    "Author": {
+      "type": "object",
+      "properties": {
+        "avatar_url": {
+          "description": "Profile picture URL (YouTube only).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "badges": {
+          "description": "Badge names, e.g. `moderator`, `subscriber`, `member`, `vip`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "color": {
+          "description": "Name color chosen by the user, as `#rrggbb` (Twitch only).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Platform-specific user id (Twitch user id, YouTube channel id).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "color",
+        "badges",
+        "avatar_url"
+      ]
+    },
+    "ChatMessage": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/definitions/Author"
+        },
+        "emotes": {
+          "description": "Emotes used in `text`, each listed once. Occurrences in `text` are\nwritten exactly as `code`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/EmoteRef"
+          }
+        },
+        "id": {
+          "description": "Platform-assigned message id; delete events refer to it.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/MessageKind"
+        },
+        "platform": {
+          "$ref": "#/definitions/ChatPlatform"
+        },
+        "text": {
+          "description": "What the user typed; may be empty (e.g. a raid or a resub without a\nmessage). Descriptions of the event itself live in `kind`.",
+          "type": "string"
+        },
+        "timestamp": {
+          "description": "When the message was sent (RFC 3339, UTC).",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "platform",
+        "author",
+        "text",
+        "emotes",
+        "timestamp",
+        "kind"
+      ]
+    },
+    "ChatPlatform": {
+      "type": "string",
+      "enum": [
+        "twitch",
+        "youtube",
+        "rplay"
+      ]
+    },
+    "EmoteRef": {
+      "description": "Emotes are stored with each message because their images can differ per\nchannel or change over time: this keeps code and image in sync.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "The emote as it appears in the text, e.g. `Kappa` or `:_hype:`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Image URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "url"
+      ]
+    },
+    "MessageKind": {
+      "description": "What kind of message this is. The names match the `kind` values of the\noverlay template (with `_` instead of `-`).",
+      "oneOf": [
+        {
+          "description": "Normal chat.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Only emotes and whitespace; which ones is in `emotes`.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "emote_only"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Paid message: Twitch bits, YouTube Super Chat.",
+          "type": "object",
+          "properties": {
+            "amount": {
+              "description": "As displayed by the platform: \"€5.00\", \"100 bits\".",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "donation"
+            }
+          },
+          "required": [
+            "type",
+            "amount"
+          ]
+        },
+        {
+          "description": "Paid visual items: YouTube Super Stickers and gifts, later maybe\nTwitch giant emotes.",
+          "type": "object",
+          "properties": {
+            "amount": {
+              "description": "\"€2.00\", \"10 jewels\"",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "image_url": {
+              "description": "Image, if the platform provides one (Super Stickers: no).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "info": {
+              "description": "Name or description of the item, e.g. the sticker's alt text.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "special"
+            }
+          },
+          "required": [
+            "type",
+            "image_url",
+            "amount",
+            "info"
+          ]
+        },
+        {
+          "description": "New subscriber/member, resub, membership milestone.",
+          "type": "object",
+          "properties": {
+            "info": {
+              "description": "The platform's description, e.g. \"subscribed for 12 months\".",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "membership"
+            }
+          },
+          "required": [
+            "type",
+            "info"
+          ]
+        },
+        {
+          "description": "Gifted subs (Twitch) or memberships (YouTube).",
+          "type": "object",
+          "properties": {
+            "count": {
+              "description": "Number of gifted subs/memberships.",
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "gift"
+            }
+          },
+          "required": [
+            "type",
+            "count"
+          ]
+        },
+        {
+          "description": "Raids, announcements, etc.",
+          "type": "object",
+          "properties": {
+            "info": {
+              "description": "The platform's description.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "notice"
+            }
+          },
+          "required": [
+            "type",
+            "info"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -6,6 +6,7 @@
 //! | `/`            | the overlay page (add it to OBS as a Browser Source)     |
 //! | `/overlay.css` | the theme's CSS, re-read on every request                |
 //! | `/events`      | SSE: replay history, then live chat as rendered HTML     |
+//! | `/api/v1/ws`   | WebSocket: live events as JSON (see `api`, docs/api.md)  |
 
 use std::convert::Infallible;
 use std::path::PathBuf;
@@ -21,12 +22,13 @@ use axum::routing::get;
 use chat_core::{ChatEvent, Hub};
 use chat_render::Theme;
 use futures_util::{Stream, StreamExt, stream};
-use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
+
+mod api;
 
 const OVERLAY_HTML: &str = include_str!("overlay.html");
 
@@ -64,6 +66,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/", get(overlay_page))
         .route("/overlay.css", get(overlay_css))
         .route("/events", get(events))
+        .route("/api/v1/ws", get(api::ws))
         .with_state(state)
 }
 
@@ -118,7 +121,7 @@ async fn events(
 
     let stream = replay
         .chain(live)
-        .filter_map(move |event| std::future::ready(to_sse(&theme, event)))
+        .filter_map(move |event| std::future::ready(to_sse(&theme, &event)))
         .map(Ok)
         // An SSE response never ends by itself, and graceful shutdown waits
         // for open responses to finish: without this, shutdown would hang
@@ -130,30 +133,20 @@ async fn events(
 }
 
 /// One named SSE event per chat event; the overlay script listens by name.
-fn to_sse(theme: &Theme, event: ChatEvent) -> Option<Event> {
+/// Messages are sent as rendered HTML, moderation events as the same JSON
+/// the API uses.
+fn to_sse(theme: &Theme, event: &ChatEvent) -> Option<Event> {
     let (name, data) = match event {
-        ChatEvent::Message(msg) => match theme.render(&msg) {
+        ChatEvent::Message(msg) => match theme.render(msg) {
             Ok(html) => ("chat", html),
             Err(e) => {
                 error!(id = %msg.id, "failed to render message: {e:#}");
                 return None;
             }
         },
-        ChatEvent::Delete {
-            platform,
-            message_id,
-        } => (
-            "delete",
-            json!({ "platform": platform.as_str(), "message_id": message_id }).to_string(),
-        ),
-        ChatEvent::ClearUser { platform, user_id } => (
-            "clear_user",
-            json!({ "platform": platform.as_str(), "user_id": user_id }).to_string(),
-        ),
-        ChatEvent::ClearAll { platform } => (
-            "clear_all",
-            json!({ "platform": platform.as_str() }).to_string(),
-        ),
+        ChatEvent::Delete { .. } => ("delete", api::to_json(event)),
+        ChatEvent::ClearUser { .. } => ("clear_user", api::to_json(event)),
+        ChatEvent::ClearAll { .. } => ("clear_all", api::to_json(event)),
     };
     Some(Event::default().event(name).data(data))
 }
@@ -166,16 +159,16 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
 
-    const WAIT: Duration = Duration::from_secs(5);
+    pub(crate) const WAIT: Duration = Duration::from_secs(5);
 
-    struct TestServer {
-        addr: SocketAddr,
-        hub: Arc<Hub>,
-        shutdown: CancellationToken,
-        task: JoinHandle<std::io::Result<()>>,
+    pub(crate) struct TestServer {
+        pub(crate) addr: SocketAddr,
+        pub(crate) hub: Arc<Hub>,
+        pub(crate) shutdown: CancellationToken,
+        pub(crate) task: JoinHandle<std::io::Result<()>>,
     }
 
-    async fn start(theme_dir: Option<PathBuf>) -> TestServer {
+    pub(crate) async fn start(theme_dir: Option<PathBuf>) -> TestServer {
         // Port 0: the OS picks a free port, so tests can run in parallel.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -195,7 +188,7 @@ mod tests {
         }
     }
 
-    fn message(id: &str) -> ChatEvent {
+    pub(crate) fn message(id: &str) -> ChatEvent {
         ChatEvent::Message(ChatMessage {
             id: id.into(),
             platform: ChatPlatform::Twitch,

@@ -137,14 +137,14 @@ fn convert_user_notice(un: UserNoticeMessage) -> Option<ChatMessage> {
         UserNoticeEvent::SubGift { .. } if un.source.tags.0.contains_key(COMMUNITY_GIFT_TAG) => {
             return None;
         }
-        UserNoticeEvent::SubGift { .. } => MessageKind::MembershipGift { amount: 1 },
+        UserNoticeEvent::SubGift { .. } => MessageKind::MembershipGift { count: 1 },
         UserNoticeEvent::SubMysteryGift {
             mass_gift_count, ..
         }
         | UserNoticeEvent::AnonSubMysteryGift {
             mass_gift_count, ..
         } => MessageKind::MembershipGift {
-            amount: mass_gift_count as usize,
+            count: mass_gift_count as usize,
         },
         _ => return None,
     };
@@ -288,10 +288,7 @@ mod tests {
     #[test]
     fn direct_sub_gift_counts_one() {
         let out = convert_msg(SUBGIFT);
-        assert!(matches!(
-            out.kind,
-            MessageKind::MembershipGift { amount: 1 }
-        ));
+        assert!(matches!(out.kind, MessageKind::MembershipGift { count: 1 }));
     }
 
     #[test]
@@ -309,9 +306,6 @@ mod tests {
         let out = convert_msg(
             "@badge-info=;badges=;color=;display-name=Gifter;emotes=;flags=;id=g0;login=gifter;mod=0;msg-id=submysterygift;msg-param-mass-gift-count=5;msg-param-origin-id=abc;msg-param-sender-count=5;msg-param-sub-plan=1000;room-id=123;subscriber=0;system-msg=Gifter\\sis\\sgifting\\s5\\ssubs;tmi-sent-ts=1700000000000;user-id=46;user-type= :tmi.twitch.tv USERNOTICE #somechannel",
         );
-        assert!(matches!(
-            out.kind,
-            MessageKind::MembershipGift { amount: 5 }
-        ));
+        assert!(matches!(out.kind, MessageKind::MembershipGift { count: 5 }));
     }
 }

@@ -91,7 +91,7 @@ fn print_message(msg: &ChatMessage) {
         MessageKind::Donation { amount } => format!("DONATION {amount}"),
         MessageKind::Special { .. } => "special".into(),
         MessageKind::MembershipJoin { .. } => "MEMBER".into(),
-        MessageKind::MembershipGift { amount } => format!("GIFT x{amount}"),
+        MessageKind::MembershipGift { count } => format!("GIFT x{count}"),
         MessageKind::SystemNotice { info } => format!("notice: {info}"),
     };
     let badges = if msg.author.badges.is_empty() {

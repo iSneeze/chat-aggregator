@@ -8,3 +8,12 @@ chrono.workspace = true
 serde.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
+# Only for generating the API's JSON Schema (docs/schema/), not in normal builds.
+schemars = { workspace = true, optional = true }
+
+[features]
+# Derives `schemars::JsonSchema` for the public event types.
+schema = ["dep:schemars"]
+
+[dev-dependencies]
+serde_json.workspace = true

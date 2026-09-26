@@ -42,6 +42,7 @@
             rustlings
             taplo
             protobuf       # required by youtube gRPC connection
+            websocat       # manual testing of the JSON WebSocket API
             cmake          # some crates need it transitively
           ];
 

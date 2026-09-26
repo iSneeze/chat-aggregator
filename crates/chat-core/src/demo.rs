@@ -111,7 +111,7 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             "",
             vec![],
             MessageKind::Special {
-                emote_url: None,
+                image_url: None,
                 amount: Some("€2.00".into()),
                 info: Some("Super Sticker: cat doing a little dance".into()),
             },
@@ -142,7 +142,7 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             twitch("Ivan", "#3da9fc", &["sub-gifter"]),
             "",
             vec![],
-            MessageKind::MembershipGift { amount: 5 },
+            MessageKind::MembershipGift { count: 5 },
         ),
         msg(
             9,
@@ -150,7 +150,7 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             youtube("Jo", &["member"]),
             "",
             vec![],
-            MessageKind::MembershipGift { amount: 1 },
+            MessageKind::MembershipGift { count: 1 },
         ),
         msg(
             10,
