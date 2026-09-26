@@ -17,6 +17,9 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Paused, fast-forwarding clock for exact timing tests (`start_paused`);
+# test builds only.
+tokio = { workspace = true, features = ["test-util"] }
 chrono.workspace = true
 reqwest.workspace = true
 # Same version axum uses internally, so it isn't compiled twice.

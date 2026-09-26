@@ -59,6 +59,12 @@ Google's menus move around from time to time; the section is called
    **not** require Google's verification for an app only you use; Google
    just shows a warning when you log in (see step 6).
 
+   Afterwards Google shows a yellow banner: *"Your app requires
+   verification … please submit your app for review."* **Ignore it; don't
+   submit.** Verification is meant for apps used by many strangers (it asks
+   for a demo video and domain ownership). Unverified, your app works fine
+   for up to 100 accounts; you'll just see the warning at login.
+
 **Just trying it out?** You can skip branding and publishing: stay in
 *Testing* and add the Google account that owns your YouTube channel under
 **Audience → Test users** (without that, Google refuses the login). You'll

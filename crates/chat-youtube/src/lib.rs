@@ -35,11 +35,14 @@ mod convert;
 mod emoji;
 pub mod oauth;
 mod pb;
+mod quota;
 mod resolver;
 
 use convert::BoundedIdSet;
 use pb::LiveChatMessageListRequest;
 use pb::v3_data_live_chat_message_service_client::V3DataLiveChatMessageServiceClient;
+use quota::Exhaustion;
+pub use quota::QuotaExhausted;
 use resolver::ResolvedStream;
 
 const ENDPOINT: &str = "https://youtube.googleapis.com:443";
@@ -56,6 +59,9 @@ const NEAR_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
 /// still reads as `live` would re-attach to a closed chat, which the
 /// server rejects with a fatal `FailedPrecondition`.
 const SETTLE_AFTER_END: Duration = Duration::from_secs(15);
+
+/// Minimum wait after a short-term rate limit ("too many requests").
+const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(60);
 
 pub enum YouTubeTarget {
     /// Watch a specific video (public path, API key auth).
@@ -105,30 +111,20 @@ impl ChatSource for YouTubeSource {
         // come back here to scan for the next one once it ends.
         'outer: loop {
             // --- Resolve phase (REST, 1 quota unit) ---
-            let stream = match &self.target {
-                YouTubeTarget::Video(video_id) => {
-                    let live_chat_id =
-                        resolver::resolve_live_chat_id(&http, &self.auth, video_id).await?;
-                    ResolvedStream {
-                        video_id: video_id.clone(),
-                        live_chat_id: Some(live_chat_id),
-                        is_live: true,
-                        scheduled_start_time: None,
-                    }
+            let stream = match self.resolve(&http, &mut first_scan).await {
+                Ok(Some(stream)) => stream,
+                Ok(None) => {
+                    info!(next_check = ?POLL_FAR, "nothing live or scheduled");
+                    tokio::time::sleep(POLL_FAR).await;
+                    continue 'outer;
                 }
-                YouTubeTarget::OwnBroadcast => {
-                    let resolved =
-                        resolver::resolve_own_broadcast(&http, &self.auth, first_scan).await?;
-                    first_scan = false;
-                    match resolved {
-                        Some(stream) => stream,
-                        None => {
-                            info!(next_check = ?POLL_FAR, "nothing live or scheduled");
-                            tokio::time::sleep(POLL_FAR).await;
-                            continue 'outer;
-                        }
-                    }
+                // Every call fails until the daily reset: wait for it
+                // instead of ending the source.
+                Err(e) if e.is::<QuotaExhausted>() => {
+                    quota::wait_for_reset(&format!("{e:#}")).await;
+                    continue 'outer;
                 }
+                Err(e) => return Err(e),
             };
 
             // A scheduled broadcast has no chat yet: idle cheaply by
@@ -208,12 +204,22 @@ impl ChatSource for YouTubeSource {
                     Ok((_, StreamEnd::ReceiverGone)) => {
                         return Ok(()); // server shutting down
                     }
-                    Err(status) => {
-                        if is_fatal(&status) {
+                    Err(status) => match quota::classify(&status) {
+                        Some(Exhaustion::Daily) => {
+                            quota::wait_for_reset(status.message()).await;
+                            // Hours may have passed: find the broadcast anew.
+                            first_scan = true;
+                            continue 'outer;
+                        }
+                        Some(Exhaustion::RateLimit) => {
+                            backoff = backoff.max(RATE_LIMIT_BACKOFF);
+                            warn!(%status, ?backoff, "rate limited by YouTube, reconnecting");
+                        }
+                        None if is_fatal(&status) => {
                             return Err(status).context("YouTube gRPC stream failed");
                         }
-                        warn!(%status, ?backoff, "stream error, reconnecting");
-                    }
+                        None => warn!(%status, ?backoff, "stream error, reconnecting"),
+                    },
                 }
 
                 tokio::time::sleep(backoff).await;
@@ -221,6 +227,35 @@ impl ChatSource for YouTubeSource {
             }
             // Fell out of 'inner: for OwnBroadcast the broadcast is over,
             // so 'outer re-resolves (the next one, or nothing).
+        }
+    }
+}
+
+impl YouTubeSource {
+    /// Finds the chat to attach to. `Ok(None)`: nothing live or scheduled
+    /// (only for `OwnBroadcast`).
+    async fn resolve(
+        &self,
+        http: &reqwest::Client,
+        first_scan: &mut bool,
+    ) -> anyhow::Result<Option<ResolvedStream>> {
+        match &self.target {
+            YouTubeTarget::Video(video_id) => {
+                let live_chat_id =
+                    resolver::resolve_live_chat_id(http, &self.auth, video_id).await?;
+                Ok(Some(ResolvedStream {
+                    video_id: video_id.clone(),
+                    live_chat_id: Some(live_chat_id),
+                    is_live: true,
+                    scheduled_start_time: None,
+                }))
+            }
+            YouTubeTarget::OwnBroadcast => {
+                let resolved =
+                    resolver::resolve_own_broadcast(http, &self.auth, *first_scan).await?;
+                *first_scan = false;
+                Ok(resolved)
+            }
         }
     }
 }
@@ -277,7 +312,8 @@ async fn consume_stream(
     Ok((count, StreamEnd::Eof))
 }
 
-/// Permanent failures: retrying cannot help. Transient failures (EOF bug,
+/// Permanent failures: retrying cannot help. (`ResourceExhausted` is
+/// handled before this, see `quota::classify`.) Transient failures (EOF bug,
 /// network blips) fall through to the reconnect loop.
 fn is_fatal(status: &Status) -> bool {
     matches!(
@@ -286,7 +322,6 @@ fn is_fatal(status: &Status) -> bool {
             | Code::NotFound
             | Code::PermissionDenied
             | Code::Unauthenticated
-            | Code::ResourceExhausted
             | Code::Unimplemented
             | Code::FailedPrecondition // live chat closed or invalid id!
     )

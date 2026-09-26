@@ -6,6 +6,18 @@
 use anyhow::Context;
 
 use crate::oauth::TokenProvider;
+use crate::quota::{QuotaExhausted, is_quota_body};
+
+/// Turns a failed REST response into an error. Checking the status before
+/// parsing matters: Google's error body says *why*. A used-up daily quota
+/// becomes `QuotaExhausted`, so the source can wait for the reset.
+fn http_error(api: &str, status: reqwest::StatusCode, body: String) -> anyhow::Error {
+    if is_quota_body(&body) {
+        QuotaExhausted(format!("{api}: HTTP {status}")).into()
+    } else {
+        anyhow::anyhow!("{api} failed: HTTP {status}: {body}")
+    }
+}
 
 #[derive(serde::Deserialize)]
 struct VideosResponse {
@@ -46,7 +58,7 @@ pub async fn resolve_live_chat_id(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("videos.list failed: HTTP {status}: {body}");
+        return Err(http_error("videos.list", status, body));
     }
 
     let resp: VideosResponse = response
@@ -124,7 +136,7 @@ pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Resul
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("channels.list failed: HTTP {status}: {body}");
+        return Err(http_error("channels.list", status, body));
     }
     let resp: ChannelsResponse = response
         .json()
@@ -215,7 +227,7 @@ pub async fn resolve_own_broadcast(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("liveBroadcasts.list failed: HTTP {status}: {body}");
+        return Err(http_error("liveBroadcasts.list", status, body));
     }
     let resp: BroadcastsResponse = response
         .json()

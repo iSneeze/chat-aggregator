@@ -15,6 +15,7 @@ use anyhow::Context;
 use chat_core::demo::DemoSource;
 use chat_core::{ChatEvent, ChatSource, Hub};
 use chat_server::ServerState;
+pub use chat_server::Stagger;
 use chat_twitch::TwitchSource;
 use chat_youtube::{YouTubeSource, YouTubeTarget};
 use tokio::net::TcpListener;
@@ -69,6 +70,8 @@ pub struct EngineConfig {
     pub history: usize,
     /// Folder with a custom `message.html` / `overlay.css`.
     pub theme_dir: Option<PathBuf>,
+    /// Spacing of message bursts in the overlay.
+    pub stagger: Stagger,
 }
 
 impl Default for EngineConfig {
@@ -78,6 +81,7 @@ impl Default for EngineConfig {
             bind: (Ipv4Addr::LOCALHOST, DEFAULT_PORT).into(),
             history: DEFAULT_HISTORY,
             theme_dir: None,
+            stagger: Stagger::default(),
         }
     }
 }
@@ -125,6 +129,7 @@ impl Engine {
             hub: hub.clone(),
             theme_dir: config.theme_dir,
             shutdown: shutdown.clone(),
+            stagger: config.stagger,
         };
         tasks.spawn(async move {
             if let Err(e) = chat_server::serve(listener, state).await {

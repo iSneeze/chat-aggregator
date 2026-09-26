@@ -21,6 +21,7 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use chat_core::{ChatEvent, Hub};
 use chat_render::Theme;
+use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, stream};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::BroadcastStream;
@@ -29,6 +30,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
 mod api;
+mod stagger;
+
+pub use stagger::Stagger;
 
 const OVERLAY_HTML: &str = include_str!("overlay.html");
 
@@ -41,6 +45,8 @@ pub struct ServerState {
     pub theme_dir: Option<PathBuf>,
     /// Cancelled when the app shuts down.
     pub shutdown: CancellationToken,
+    /// Spacing of message bursts in the overlay (not in the API).
+    pub stagger: Stagger,
 }
 
 impl ServerState {
@@ -118,6 +124,17 @@ async fn events(
             }
         }
     });
+    // Live events go through the pacer (its own task per overlay); the
+    // replay above doesn't: after a reload the history should appear at once.
+    // The two branches produce different stream types, so both are boxed
+    // into one type ("type erasure") to fit in the same variable.
+    let live: BoxStream<'static, ChatEvent> = if state.stagger.is_off() {
+        live.boxed()
+    } else {
+        let (tx, paced) = tokio::sync::mpsc::channel(256);
+        tokio::spawn(stagger::run(live, tx, state.stagger));
+        tokio_stream::wrappers::ReceiverStream::new(paced).boxed()
+    };
 
     let stream = replay
         .chain(live)
@@ -178,6 +195,7 @@ mod tests {
             hub: hub.clone(),
             theme_dir,
             shutdown: shutdown.clone(),
+            stagger: Stagger::default(),
         };
         let task = tokio::spawn(serve(listener, state));
         TestServer {

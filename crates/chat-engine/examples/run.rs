@@ -14,6 +14,8 @@
 //!   --theme <dir>         custom message.html and/or overlay.css
 //!   --port <n>            default 7878
 //!   --history <n>         messages replayed to a new overlay, default 20
+//!   --stagger <ms>        spacing of message bursts in the overlay, default 250 (0 = off)
+//!   --stagger-max <ms>    most a message may be delayed by it, default 2000 (max 5000)
 //!
 //! YouTube login (once; the token is kept in the system keyring):
 //!   cargo run -p chat-engine --example run -- --youtube-login
@@ -25,10 +27,11 @@
 //! RUST_LOG=debug shows more detail (e.g. YouTube's routine reconnects).
 
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use chat_core::demo::DemoSource;
-use chat_engine::{Engine, EngineConfig, SourceSpec};
+use chat_engine::{Engine, EngineConfig, SourceSpec, Stagger};
 use chat_twitch::TwitchSource;
 use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
 use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
@@ -71,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
 async fn parse_args() -> anyhow::Result<EngineConfig> {
     let mut config = EngineConfig::default();
     let mut port = chat_engine::DEFAULT_PORT;
+    let (mut stagger_ms, mut stagger_max_ms) = (250, 2000);
     let mut emojis: Option<EmojiMap> = None;
 
     let mut args = std::env::args().skip(1);
@@ -108,10 +112,24 @@ async fn parse_args() -> anyhow::Result<EngineConfig> {
                     .parse()
                     .context("--history")?
             }
+            "--stagger" => {
+                stagger_ms = next_value(&mut args, "--stagger")?
+                    .parse()
+                    .context("--stagger")?
+            }
+            "--stagger-max" => {
+                stagger_max_ms = next_value(&mut args, "--stagger-max")?
+                    .parse()
+                    .context("--stagger-max")?
+            }
             other => bail!("unknown flag {other:?} (see the top of examples/run.rs)"),
         }
     }
     config.bind = (Ipv4Addr::LOCALHOST, port).into();
+    config.stagger = Stagger::new(
+        Duration::from_millis(stagger_ms),
+        Duration::from_millis(stagger_max_ms),
+    );
     Ok(config)
 }
 
