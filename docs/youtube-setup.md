@@ -33,12 +33,13 @@ No billing account or payment method is needed.
 
 ## 3. Set up the consent screen
 
-Google's menus move around from time to time; the section is called
-**Google Auth Platform** (older name: *OAuth consent screen*).
+This is the page Google shows when you log in. Google's menus move around
+from time to time; the section is called **Google Auth Platform** (older
+name: *OAuth consent screen*).
 
 1. **Get started**: app name, e.g. `chat-aggregator`, and your email as the
    support address. **Audience**: choose **External**. Add your contact
-   email and finish.
+   email, agree to Google's policy and **Create**.
 2. **Branding**: to be allowed to publish (next step), Google needs a
    homepage, a privacy policy and their domain. Use chat-aggregator's:
 
@@ -51,32 +52,39 @@ Google's menus move around from time to time; the section is called
 
    **Don't upload a logo**: with a logo, Google requires a full app
    verification. Click **Save** at the bottom.
-3. **Audience**: click **Publish app** so the status becomes **In
-   production**.
+3. **Audience**: click **Publish app** and confirm, so the status becomes
+   **In production**.
 
    Why: while an app is in *Testing*, Google makes logins expire after
    **7 days**, and you'd have to log in again every week. Publishing does
-   **not** require Google's verification for an app only you use; Google
-   just shows a warning when you log in (see step 6).
+   **not** require Google's verification for an app only you use: Google
+   just shows a warning when you log in (step 5), and allows up to 100
+   accounts.
 
    Afterwards Google shows a yellow banner: *"Your app requires
-   verification … please submit your app for review."* **Ignore it; don't
+   verification … please submit your app for review."* That's because
+   reading YouTube counts as a *sensitive* permission. **Ignore it; don't
    submit.** Verification is meant for apps used by many strangers (it asks
-   for a demo video and domain ownership). Unverified, your app works fine
-   for up to 100 accounts; you'll just see the warning at login.
+   for a demo video and domain ownership).
 
 **Just trying it out?** You can skip branding and publishing: stay in
 *Testing* and add the Google account that owns your YouTube channel under
 **Audience → Test users** (without that, Google refuses the login). You'll
 have to log in again every 7 days.
 
+You don't need to add anything under **Data Access** (scopes):
+chat-aggregator asks for its one permission, read-only access to your
+YouTube account, when you log in.
+
 ## 4. Create the OAuth client
 
 1. **Clients → Create client**.
 2. Application type: **Desktop app**. Name: anything, e.g.
    `chat-aggregator desktop`.
-3. **Create**, then copy the **Client ID** and the **Client secret** right
-   away (download the JSON too): Google may not show the secret again later.
+3. **Create**. The next dialog shows the **Client ID** and the **Client
+   secret**: copy both, or **Download JSON**. **This is the only time Google
+   shows the secret**; later you only see its last four characters. Lost
+   it? Open the client and add a new secret (then delete the old one).
 
 It must be the *Desktop app* type: other types don't accept the local login
 address the app uses (`http://127.0.0.1:<port>`).
@@ -85,19 +93,63 @@ The client secret of a desktop app isn't a real secret in Google's eyes
 (any installed program could be taken apart to find it), but don't post it
 publicly either.
 
-## 5. Tell chat-aggregator
+## 5. Connect in the app
 
-Until the settings window exists, in the config file. Create it once:
+1. Start chat-aggregator. The **YouTube** section of the main window says
+   *Not set up yet*: paste the **Client ID** and **Client secret** and click
+   **Save**. (They're saved in `config.toml` in chat-aggregator's settings
+   folder, readable only by your user account.)
+2. Click **Connect YouTube**. Your browser opens Google's login page:
+   1. Pick the Google account that owns your **YouTube channel**.
+   2. Google warns **"Google hasn't verified this app"**. That's expected
+      for your own app: **Advanced → Go to chat-aggregator (unsafe)**.
+   3. Allow **"View your YouTube account"** (read-only access).
+   4. The tab says *Connected to YouTube*; close it.
+3. The app shows **Connected as "*your channel*"**.
+
+The login is stored in your system's keyring (Keychain on macOS,
+Credential Manager on Windows, Secret Service such as gnome-keyring or
+KWallet on Linux; without one, a file only you can read in the settings
+folder). You only do this once. **Log out** in the YouTube section (e.g. to
+switch channels) removes it.
+
+## 6. Add your broadcasts as a source
+
+Under **Add a source**, choose **YouTube (your broadcasts)** → **Add**.
+
+chat-aggregator finds your current or next broadcast by itself (including
+unlisted and members-only streams), waits cheaply until it starts, and
+attaches to its chat. After the stream it goes back to waiting for the next
+one. The source's light: 🟢 working (or waiting for your broadcast), 🟡
+recovering by itself, 🔴 no chat until something changes (e.g. log in
+again, or the daily quota runs out; the text next to it says which), ⚪
+switched off.
+
+To follow someone else's stream instead: **YouTube (a video)** with the
+video's id (the part after `watch?v=` in its URL). It uses your login too.
+
+### Optional: an API key
+
+Only needed to read a video's chat *without* logging in. Same project:
+**APIs & Services → Credentials → Create credentials → API key**. Then
+edit the key: under **API restrictions** choose **Restrict key** and tick
+only **YouTube Data API v3**, so the key is useless for anything else. In
+the app, paste it into **⚙ Settings → Connection → YouTube API key**. It
+uses the same project's quota.
+
+## Without the app (headless)
+
+The same settings work from the terminal. Create a commented config file
+once:
 
 ```sh
 cargo run -p chat-engine --example run -- --init-config
 ```
 
-This writes a commented `config.toml` to chat-aggregator's settings folder
+It goes into chat-aggregator's settings folder
 (`~/.config/chat-aggregator/` on Linux, `~/Library/Application
 Support/chat-aggregator/` on macOS, `%APPDATA%\chat-aggregator\` on
-Windows). Open it and fill in the `[youtube]` section, and add your own
-broadcasts as a source:
+Windows). Fill in the `[youtube]` section and add your broadcasts:
 
 ```toml
 [youtube]
@@ -108,52 +160,24 @@ client_secret = "GOCSPX-…"
 type = "youtube"
 ```
 
-The file is readable only by your user account. (Alternatively, the
-environment variables `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`
-override the file.)
-
-## 6. Log in
+(The environment variables `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`
+override the file.) Then log in once, and start:
 
 ```sh
-cargo run -p chat-engine --example run -- --youtube-login
+cargo run -p chat-engine --example run -- --youtube-login    # as in step 5
+cargo run -p chat-engine --example run                       # everything in config.toml
+cargo run -p chat-engine --example run -- --youtube-logout   # to log out
 ```
 
-Your browser opens Google's login page:
-
-1. Pick the Google account that owns your **YouTube channel**.
-2. Google warns **"Google hasn't verified this app"**. That's expected for
-   your own unpublished-to-the-world app: **Advanced → Go to
-   chat-aggregator (unsafe)**.
-3. Allow **"View your YouTube account"** (read-only access).
-4. The tab says *Connected to YouTube*; the terminal prints
-   `logged in to YouTube as "<your channel>"`.
-
-The login is stored in your system's keyring (Keychain on macOS,
-Credential Manager on Windows, Secret Service such as gnome-keyring or
-KWallet on Linux; without one, a file only you can read in the app's config
-folder). You only do this once.
-
-## 7. Go live
-
-```sh
-cargo run -p chat-engine --example run
-```
-
-Without arguments, everything in your config file starts. chat-aggregator
-finds your current or next broadcast by itself (including unlisted and
-members-only streams), waits cheaply until it starts, and attaches to its
-chat. After the stream it goes back to waiting for the next one. The
-terminal shows a status light per source: 🟢 working (or waiting for your
-broadcast), 🟡 recovering by itself, 🔴 needs you (e.g. log in again), ⚪
-stopped.
-
-To log out (e.g. to switch channels):
-`cargo run -p chat-engine --example run -- --youtube-logout`.
+The terminal shows the same status lights per source.
 
 ## Quota: keeping an eye on it
 
-- Current usage: **APIs & Services → YouTube Data API v3 → Quotas**. The
-  daily quota resets at **midnight Pacific time** (09:00 in Central Europe).
+- Current usage: **APIs & Services → Enabled APIs & services → YouTube
+  Data API v3 → Quotas & System Limits**. The daily quota resets at
+  **midnight Pacific time** (09:00 in Central Europe).
+- When it's used up, the YouTube source turns red with *"YouTube quota used
+  up for today; resuming at …"* and continues by itself after the reset.
 - If you stream more than ~5 hours a day, request more quota for free via
   YouTube's [quota extension and compliance
   audit](https://developers.google.com/youtube/v3/guides/quota_and_compliance_audits).
@@ -164,9 +188,10 @@ To log out (e.g. to switch channels):
 
 | message | cause and fix |
 |---------|---------------|
-| `YOUTUBE_CLIENT_ID must be set` | step 5 missing in this terminal |
 | Google shows `redirect_uri_mismatch` or `invalid_request` | the client isn't of type **Desktop app** (step 4) |
-| `invalid_client` | client ID or secret mistyped, or from another project |
-| `YouTube login required: Google rejected the stored login` | the login expired or was revoked. If it happens weekly, the app is still in *Testing* (step 3). Log in again (step 6). |
-| `this Google account has no YouTube channel` | you logged in with a different Google account than the channel's |
-| `quotaExceeded` / `ResourceExhausted` | today's quota is used up; it resets at midnight Pacific time |
+| `invalid_client` | client ID or secret mistyped, or from another project: **Change client** in the YouTube section |
+| `access_denied` / "app is being tested" | the app is still in *Testing* and your account isn't a test user (step 3) |
+| `YouTube login required: Google rejected the stored login` | the login expired or was revoked. If it happens weekly, the app is still in *Testing* (step 3). **Connect YouTube** again. |
+| `this Google account has no YouTube channel` | you logged in with a different Google account than the channel's: **Log out**, connect again with the right one |
+| `YouTube quota used up for today; resuming at …` | the daily quota is used up; the source continues by itself after midnight Pacific time |
+| `YOUTUBE_CLIENT_ID must be set` (headless) | the `[youtube]` section of `config.toml` is missing |

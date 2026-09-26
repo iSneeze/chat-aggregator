@@ -14,13 +14,15 @@ use std::rc::Rc;
 
 use anyhow::Context as _;
 use chat_engine::{ConfigFile, Engine};
-use gpui_kit::component::{Root, Theme};
+use gpui_kit::component::Root;
 use gpui_kit::*;
 
 mod app_config;
 mod app_view;
+mod appearance;
 mod emoji_import;
 mod manual_window;
+mod settings_window;
 mod youtube_panel;
 
 use app_config::AppConfig;
@@ -110,8 +112,11 @@ fn main() -> anyhow::Result<()> {
             };
             let window = cx
                 .open_window(options, |window, cx| {
-                    // Follow the system's light/dark setting, now and later.
-                    Theme::sync_system_appearance(Some(window), cx);
+                    // The look chosen in the settings (by default: follow
+                    // the system's light/dark mode, now and later).
+                    appearance::apply(config.app().appearance, Some(window), cx);
+                    // Shared with the settings window from here on.
+                    let config = cx.new(|_| config);
                     let view = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 })

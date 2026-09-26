@@ -21,12 +21,18 @@ stagger_max_ms = 2000
 # https://isneeze.github.io/chat-aggregator/youtube-setup
 # client_id = "1234567890-abc….apps.googleusercontent.com"
 # client_secret = "GOCSPX-…"
-# Only needed to watch other channels' videos by id:
+# Only needed to read a video's chat by id without logging in:
 # api_key = "…"
 # Custom channel emoji, exported with scripts/yt-emoji-export.user.js:
 # emojis = "/path/to/youtube-emojis.json"
 
-# One [[sources]] block per chat to read.
+[app]
+# The desktop app's look: "system" (follows light/dark mode), "light",
+# "dark" or "high-contrast". Headless mode ignores this.
+appearance = "system"
+
+# One [[sources]] block per chat to read. Add `enabled = false` to keep a
+# source listed in the app but switched off.
 
 # [[sources]]
 # type = "twitch"

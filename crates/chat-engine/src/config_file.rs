@@ -23,7 +23,61 @@ pub const TEMPLATE: &str = include_str!("../config.example.toml");
 pub struct ConfigFile {
     pub server: ServerSettings,
     pub youtube: YouTubeSettings,
-    pub sources: Vec<SourceConfig>,
+    pub app: AppSettings,
+    pub sources: Vec<SourceEntry>,
+}
+
+/// One `[[sources]]` block: what to read, and whether it's switched on.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SourceEntry {
+    // `flatten`: the source's own keys (`type`, `channel`, …) sit directly
+    // in the block next to `enabled`, instead of in a nested table. Unknown
+    // keys still get caught: whatever `enabled` doesn't claim goes to
+    // `SourceConfig`, which refuses keys it doesn't know.
+    #[serde(flatten)]
+    pub config: SourceConfig,
+    /// Switched off in the app: listed, but not connected at start. Only
+    /// written when `false`, so a hand-written file doesn't need it.
+    #[serde(default = "on", skip_serializing_if = "is_on")]
+    pub enabled: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+// serde passes the field by reference, hence `&bool`.
+fn is_on(enabled: &bool) -> bool {
+    *enabled
+}
+
+impl From<SourceConfig> for SourceEntry {
+    /// A new source is switched on.
+    fn from(config: SourceConfig) -> Self {
+        Self {
+            config,
+            enabled: true,
+        }
+    }
+}
+
+/// The desktop app's own settings; headless mode ignores them.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppSettings {
+    pub appearance: Appearance,
+}
+
+/// The app's look. `System` follows the operating system's light/dark
+/// setting; the others stay put.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+    HighContrast,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -105,7 +159,14 @@ impl ConfigFile {
     pub fn into_engine_config(self, settings_dir: &Path) -> EngineConfig {
         let server = self.server;
         EngineConfig {
-            sources: self.sources,
+            // Switched-off sources aren't started; headless mode has no
+            // switch to turn them on, the app adds them itself.
+            sources: self
+                .sources
+                .into_iter()
+                .filter(|entry| entry.enabled)
+                .map(|entry| entry.config)
+                .collect(),
             youtube: self.youtube,
             bind: (Ipv4Addr::LOCALHOST, server.port).into(),
             history: server.history,
@@ -171,6 +232,14 @@ mod tests {
             type = "twitch"
             channel = "your_channel"
 
+            [app]
+            appearance = "high-contrast"
+
+            [[sources]]
+            type = "twitch"
+            channel = "other_channel"
+            enabled = false
+
             [[sources]]
             type = "youtube"
             "#,
@@ -179,17 +248,31 @@ mod tests {
         assert_eq!(file.server.port, 8080);
         assert_eq!(file.server.theme.as_deref(), Some("cozy"));
         assert_eq!(file.youtube.client_id.as_deref(), Some("id"));
+        assert_eq!(file.app.appearance, Appearance::HighContrast);
+        let twitch = |channel: &str| SourceConfig::Twitch {
+            channel: channel.into(),
+        };
         assert_eq!(
             file.sources,
             [
-                SourceConfig::Twitch {
-                    channel: "your_channel".into()
+                twitch("your_channel").into(),
+                SourceEntry {
+                    config: twitch("other_channel"),
+                    enabled: false,
                 },
-                SourceConfig::YouTube { video_id: None },
+                SourceConfig::YouTube { video_id: None }.into(),
             ]
         );
 
         let engine = file.into_engine_config(Path::new("/settings"));
+        assert_eq!(
+            engine.sources,
+            [
+                twitch("your_channel"),
+                SourceConfig::YouTube { video_id: None }
+            ],
+            "switched-off sources don't start"
+        );
         assert_eq!(engine.bind.port(), 8080);
         assert_eq!(engine.history, 5);
         assert_eq!(
@@ -232,12 +315,21 @@ mod tests {
         assert!(format!("{err:#}").contains("vidoe_id"), "{err:#}");
         let err = ConfigFile::parse("[youtube]\nclient_secert = \"x\"").unwrap_err();
         assert!(format!("{err:#}").contains("client_secert"), "{err:#}");
+        // (Not caught next to `type = "demo"`: serde doesn't check extra
+        // keys for variants without fields. Harmless for the demo.)
+        let err =
+            ConfigFile::parse("[[sources]]\ntype = \"twitch\"\nchannel = \"x\"\nenabeld = false")
+                .unwrap_err();
+        assert!(format!("{err:#}").contains("enabeld"), "{err:#}");
+        let err = ConfigFile::parse("[app]\nappearance = \"blue\"").unwrap_err();
+        assert!(format!("{err:#}").contains("blue"), "{err:#}");
     }
 
     #[test]
     fn the_template_is_valid() {
         let file = ConfigFile::parse(TEMPLATE).unwrap();
-        assert_eq!(file.sources, [SourceConfig::Demo]);
+        assert_eq!(file.sources, [SourceConfig::Demo.into()]);
+        assert_eq!(file.app, AppSettings::default());
         assert_eq!(file.server, ServerSettings::default());
     }
 
@@ -248,11 +340,26 @@ mod tests {
         let path = dir.join("sub").join("config.toml");
         let mut file = ConfigFile::default();
         file.youtube.client_secret = Some("secret".into());
-        file.sources.push(SourceConfig::Twitch {
-            channel: "your_channel".into(),
+        file.app.appearance = Appearance::Dark;
+        file.sources.push(
+            SourceConfig::Twitch {
+                channel: "your_channel".into(),
+            }
+            .into(),
+        );
+        file.sources.push(SourceEntry {
+            config: SourceConfig::Demo,
+            enabled: false,
         });
 
         file.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text.matches("enabled").count(),
+            1,
+            "only written for the switched-off source:\n{text}"
+        );
+        assert!(text.contains(r#"appearance = "dark""#), "{text}");
         assert_eq!(ConfigFile::load(&path).unwrap(), file);
         #[cfg(unix)]
         {

@@ -44,6 +44,16 @@ impl Hub {
         let _ = self.tx.send(event);
     }
 
+    /// Changes how many messages are kept for replay. Shrinking drops the
+    /// oldest ones right away; growing keeps what's there and fills up
+    /// with new messages.
+    pub fn set_history(&self, history: usize) {
+        let mut guard = self.lock_history();
+        guard.cap = history;
+        let excess = guard.messages.len().saturating_sub(history);
+        guard.messages.drain(..excess);
+    }
+
     /// Returns the replay history (oldest first) and a receiver for
     /// everything published afterwards.
     ///
@@ -131,6 +141,22 @@ mod tests {
             hub.publish(msg(ChatPlatform::Twitch, id, "u"));
         }
         assert_eq!(history_ids(&hub), ["b", "c"]);
+    }
+
+    #[test]
+    fn history_size_can_change_while_running() {
+        let hub = Hub::new(3);
+        for id in ["a", "b", "c"] {
+            hub.publish(msg(ChatPlatform::Twitch, id, "u"));
+        }
+        hub.set_history(2);
+        assert_eq!(history_ids(&hub), ["b", "c"], "the oldest go first");
+        hub.set_history(3);
+        hub.publish(msg(ChatPlatform::Twitch, "d", "u"));
+        assert_eq!(history_ids(&hub), ["b", "c", "d"], "grows with new ones");
+        hub.set_history(0);
+        hub.publish(msg(ChatPlatform::Twitch, "e", "u"));
+        assert!(history_ids(&hub).is_empty());
     }
 
     #[test]

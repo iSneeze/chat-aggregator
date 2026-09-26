@@ -3,9 +3,9 @@
 //!
 //! The login needs tokio (it runs a small local server for Google's
 //! redirect), so it runs on the engine's tokio runtime; GPUI awaits its
-//! results. Saving new settings is the owner's job: the panel just emits a
-//! `SettingsChanged` event (GPUI's `EventEmitter`), so it doesn't need to
-//! know where settings are stored.
+//! results. The settings themselves live in the shared `AppConfig`: the
+//! settings window changes the API key there too, so the panel keeps no
+//! copy of its own that could go stale.
 
 use chat_engine::{EngineHandle, Health, YouTubeSettings};
 use chat_youtube::oauth::{self, LoginRequired};
@@ -19,14 +19,12 @@ use std::path::PathBuf;
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
 
+use crate::app_config::AppConfig;
 use crate::app_view::{light, report};
 use crate::emoji_import;
 
 const SETUP_GUIDE: &str = "https://isneeze.github.io/chat-aggregator/youtube-setup";
 const EMOJI_GUIDE: &str = "https://isneeze.github.io/chat-aggregator/youtube-emoji";
-
-/// Emitted when the YouTube settings changed (client credentials, emoji).
-pub struct SettingsChanged(pub YouTubeSettings);
 
 /// The custom emoji export in use.
 #[derive(Clone)]
@@ -58,9 +56,7 @@ enum Login {
 pub struct YouTubePanel {
     engine: EngineHandle,
     tokio: Handle,
-    settings: YouTubeSettings,
-    /// Where the emoji export is copied to.
-    settings_dir: PathBuf,
+    config: Entity<AppConfig>,
     login: Login,
     emoji: Emoji,
     /// Showing the client id/secret form.
@@ -70,17 +66,15 @@ pub struct YouTubePanel {
     client_secret: Entity<InputState>,
 }
 
-impl EventEmitter<SettingsChanged> for YouTubePanel {}
-
 impl YouTubePanel {
     pub fn new(
         engine: EngineHandle,
         tokio: Handle,
-        settings: YouTubeSettings,
-        settings_dir: PathBuf,
+        config: Entity<AppConfig>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let settings = config.read(cx).youtube().clone();
         let client_id =
             cx.new(|cx| InputState::new(window, cx).placeholder("….apps.googleusercontent.com"));
         // Masked: shown as dots, like a password.
@@ -100,8 +94,7 @@ impl YouTubePanel {
         let mut panel = Self {
             engine,
             tokio,
-            settings,
-            settings_dir,
+            config,
             login: Login::Checking,
             emoji,
             editing: !set_up,
@@ -115,9 +108,14 @@ impl YouTubePanel {
         panel
     }
 
+    /// The current settings, a copy: the config may change them any time.
+    fn settings(&self, cx: &App) -> YouTubeSettings {
+        self.config.read(cx).youtube().clone()
+    }
+
     /// Asks YouTube which channel the stored login belongs to.
     fn check_login(&mut self, cx: &mut Context<Self>) {
-        let Ok(app) = self.settings.oauth_app() else {
+        let Ok(app) = self.settings(cx).oauth_app() else {
             return;
         };
         self.login = Login::Checking;
@@ -148,7 +146,7 @@ impl YouTubePanel {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(app) = self.settings.oauth_app() else {
+        let Ok(app) = self.settings(cx).oauth_app() else {
             return;
         };
         let (url_tx, url_rx) = tokio::sync::oneshot::channel();
@@ -164,7 +162,7 @@ impl YouTubePanel {
         cx.notify();
 
         let engine = self.engine.clone();
-        let settings = self.settings.clone();
+        let settings = self.settings(cx);
         cx.spawn_in(window, async move |this, cx| {
             // First result: the consent page's URL, to open in the browser.
             if let Ok(url) = url_rx.await {
@@ -216,14 +214,14 @@ impl YouTubePanel {
     }
 
     fn log_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(app) = self.settings.oauth_app() else {
+        let Ok(app) = self.settings(cx).oauth_app() else {
             return;
         };
         self.login = Login::NotConnected { error: None };
         cx.notify();
         let task = self.tokio.spawn(async move { oauth::logout(&app).await });
         let engine = self.engine.clone();
-        let settings = self.settings.clone();
+        let settings = self.settings(cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = match task.await {
                 Ok(result) => result,
@@ -244,7 +242,7 @@ impl YouTubePanel {
     }
 
     fn edit_client(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let id = self.settings.client_id.clone().unwrap_or_default();
+        let id = self.settings(cx).client_id.unwrap_or_default();
         self.client_id
             .update(cx, |input, cx| input.set_value(id, window, cx));
         self.client_secret
@@ -254,24 +252,17 @@ impl YouTubePanel {
         cx.notify();
     }
 
-    /// New settings take effect: the window saves them (event), and the
-    /// engine restarts the YouTube sources with them.
-    fn apply_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(SettingsChanged(self.settings.clone()));
-        let engine = self.engine.clone();
-        let settings = self.settings.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            if let Err(e) = engine.update_youtube(settings).await {
-                let _ = this.update_in(cx, |_, window, cx| {
-                    report(
-                        window,
-                        cx,
-                        format!("Couldn't apply the YouTube settings: {e:#}"),
-                    );
-                });
-            }
-        })
-        .detach();
+    /// Changes the settings (`change` edits a copy), saves them and
+    /// restarts the YouTube sources with them.
+    fn change_settings(
+        &mut self,
+        change: impl FnOnce(&mut YouTubeSettings),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut settings = self.settings(cx);
+        change(&mut settings);
+        apply_youtube(&self.config, &self.engine, settings, window, cx);
     }
 
     fn choose_emoji_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -308,7 +299,7 @@ impl YouTubePanel {
     fn import_emoji(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let before = std::mem::replace(&mut self.emoji, Emoji::Importing);
         cx.notify();
-        let dir = self.settings_dir.clone();
+        let dir = self.config.read(cx).settings_dir();
         // File work off the UI thread, so the window never stutters.
         let task = cx
             .background_executor()
@@ -319,8 +310,7 @@ impl YouTubePanel {
                 match result {
                     Ok((copy, count)) => {
                         panel.emoji = Emoji::Loaded(count);
-                        panel.settings.emojis = Some(copy);
-                        panel.apply_settings(window, cx);
+                        panel.change_settings(|s| s.emojis = Some(copy), window, cx);
                         window.push_notification(
                             gpui_kit::component::notification::Notification::success(format!(
                                 "{count} custom emoji loaded"
@@ -341,12 +331,18 @@ impl YouTubePanel {
     }
 
     fn remove_emoji(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = self.settings.emojis.take() {
-            // Our own copy in the settings folder; the original is untouched.
-            let _ = std::fs::remove_file(path);
-        }
+        self.change_settings(
+            |settings| {
+                if let Some(path) = settings.emojis.take() {
+                    // Our own copy in the settings folder; the original is
+                    // untouched.
+                    let _ = std::fs::remove_file(path);
+                }
+            },
+            window,
+            cx,
+        );
         self.emoji = Emoji::None;
-        self.apply_settings(window, cx);
         cx.notify();
     }
 
@@ -366,23 +362,28 @@ impl YouTubePanel {
             cx.notify();
             return;
         }
-        self.settings.client_id = Some(id);
-        self.settings.client_secret = Some(secret);
         self.editing = false;
         self.form_error = None;
-        self.apply_settings(window, cx);
+        self.change_settings(
+            |settings| {
+                settings.client_id = Some(id);
+                settings.client_secret = Some(secret);
+            },
+            window,
+            cx,
+        );
         self.check_login(cx);
     }
 
     /// Only offer "Cancel" if there's a working client to go back to.
-    fn can_cancel_editing(&self) -> bool {
-        self.settings.oauth_app().is_ok()
+    fn can_cancel_editing(&self, cx: &App) -> bool {
+        self.settings(cx).oauth_app().is_ok()
     }
 
     // ---- drawing ----
 
     fn render_client_form(&self, cx: &mut Context<Self>) -> AnyElement {
-        let set_up = self.can_cancel_editing();
+        let set_up = self.can_cancel_editing(cx);
         let label = |text: &'static str| {
             div()
                 .w(px(110.))
@@ -604,4 +605,35 @@ impl Render for YouTubePanel {
                     .into_any_element()
             })
     }
+}
+
+/// New YouTube settings take effect: saved to the config, and the engine
+/// restarts the YouTube sources with them. Shared with the settings window
+/// (API key). A free function rather than a method: it needs no panel, only
+/// the window to report problems in.
+pub(crate) fn apply_youtube(
+    config: &Entity<AppConfig>,
+    engine: &EngineHandle,
+    settings: YouTubeSettings,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let saved = config.update(cx, |config, _| config.set_youtube(settings.clone()));
+    if let Err(e) = saved {
+        report(window, cx, format!("Couldn't save the settings: {e:#}"));
+    }
+    let engine = engine.clone();
+    window
+        .spawn(cx, async move |cx| {
+            if let Err(e) = engine.update_youtube(settings).await {
+                let _ = cx.update(|window, cx| {
+                    report(
+                        window,
+                        cx,
+                        format!("Couldn't apply the YouTube settings: {e:#}"),
+                    );
+                });
+            }
+        })
+        .detach();
 }

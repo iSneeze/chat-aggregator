@@ -1,0 +1,69 @@
+{
+  "name": "chat-aggregator",
+  "themes": [
+    {
+      "name": "High Contrast",
+      "mode": "dark",
+      "colors": {
+        "background": "#000000",
+        "foreground": "#ffffff",
+        "border": "#ffffff",
+        "input.border": "#ffffff",
+        "ring": "#ffd500",
+        "caret": "#ffd500",
+        "selection.background": "#0050c8",
+
+        "muted.background": "#1a1a1a",
+        "muted.foreground": "#e6e6e6",
+        "accent.background": "#333333",
+        "accent.foreground": "#ffffff",
+
+        "primary.background": "#ffd500",
+        "primary.hover.background": "#ffe45c",
+        "primary.active.background": "#e6c000",
+        "primary.foreground": "#000000",
+        "secondary.background": "#000000",
+        "secondary.hover.background": "#333333",
+        "secondary.active.background": "#4d4d4d",
+        "secondary.foreground": "#ffffff",
+
+        "success.background": "#3dff6e",
+        "success.foreground": "#3dff6e",
+        "warning.background": "#ffd500",
+        "warning.foreground": "#ffd500",
+        "danger.background": "#ff5c5c",
+        "danger.foreground": "#ff5c5c",
+        "info.background": "#5ce1ff",
+        "info.foreground": "#5ce1ff",
+
+        "link.foreground": "#5ce1ff",
+        "link.hover.foreground": "#ffffff",
+        "link.active.foreground": "#ffd500",
+
+        "popover.background": "#000000",
+        "popover.foreground": "#ffffff",
+        "list.background": "#000000",
+        "list.active.background": "#ffd50033",
+        "list.active.border": "#ffd500",
+        "group_box.background": "#000000",
+        "group_box.foreground": "#ffffff",
+
+        "sidebar.background": "#000000",
+        "sidebar.foreground": "#ffffff",
+        "sidebar.border": "#ffffff",
+        "sidebar.accent.background": "#333333",
+        "sidebar.accent.foreground": "#ffffff",
+        "sidebar.primary.background": "#ffd500",
+        "sidebar.primary.foreground": "#000000",
+
+        "switch.background": "#595959",
+        "scrollbar.thumb.background": "#ffffffb3",
+        "scrollbar.thumb.hover.background": "#ffffff",
+        "title_bar.background": "#000000",
+        "title_bar.border": "#ffffff",
+        "window.border": "#ffffff",
+        "overlay": "#000000b3"
+      }
+    }
+  ]
+}

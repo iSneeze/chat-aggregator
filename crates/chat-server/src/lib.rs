@@ -53,8 +53,10 @@ pub struct ServerState {
     pub theme_dir: watch::Receiver<Option<PathBuf>>,
     /// Cancelled when the app shuts down.
     pub shutdown: CancellationToken,
-    /// Spacing of message bursts in the overlay (not in the API).
-    pub stagger: Stagger,
+    /// Spacing of message bursts in the overlay (not in the API). Read when
+    /// an overlay connects: a change applies to overlays connecting (or
+    /// reloading) afterwards.
+    pub stagger: watch::Receiver<Stagger>,
     pub connections: Arc<Connections>,
 }
 
@@ -197,11 +199,14 @@ async fn events(
     // replay above doesn't: after a reload the history should appear at once.
     // The two branches produce different stream types, so both are boxed
     // into one type ("type erasure") to fit in the same variable.
-    let live: BoxStream<'static, ChatEvent> = if state.stagger.is_off() {
+    // `Stagger` is `Copy`: `*` copies the value out, so the watch's read
+    // lock is released right away instead of being held by this overlay.
+    let pacing = *state.stagger.borrow();
+    let live: BoxStream<'static, ChatEvent> = if pacing.is_off() {
         live.boxed()
     } else {
         let (tx, paced) = tokio::sync::mpsc::channel(256);
-        tokio::spawn(stagger::run(live, tx, state.stagger));
+        tokio::spawn(stagger::run(live, tx, pacing));
         tokio_stream::wrappers::ReceiverStream::new(paced).boxed()
     };
 
@@ -279,6 +284,7 @@ mod tests {
         pub(crate) shutdown: CancellationToken,
         pub(crate) task: JoinHandle<std::io::Result<()>>,
         pub(crate) theme_dir: watch::Sender<Option<PathBuf>>,
+        pub(crate) stagger: watch::Sender<Stagger>,
         pub(crate) connections: Arc<Connections>,
     }
 
@@ -290,11 +296,12 @@ mod tests {
         let shutdown = CancellationToken::new();
         let (theme_tx, theme_rx) = watch::channel(theme_dir);
         let connections = Arc::new(Connections::default());
+        let (stagger_tx, stagger_rx) = watch::channel(Stagger::default());
         let state = ServerState {
             hub: hub.clone(),
             theme_dir: theme_rx,
             shutdown: shutdown.clone(),
-            stagger: Stagger::default(),
+            stagger: stagger_rx,
             connections: connections.clone(),
         };
         let task = tokio::spawn(serve(listener, state));
@@ -304,6 +311,7 @@ mod tests {
             shutdown,
             task,
             theme_dir: theme_tx,
+            stagger: stagger_tx,
             connections,
         }
     }
@@ -380,6 +388,32 @@ mod tests {
         read_until(&mut resp, &mut seen, r#"data-id="new""#).await;
         assert!(seen.contains("event: delete"), "{seen}");
         assert!(seen.contains(r#""message_id":"old""#), "{seen}");
+    }
+
+    #[tokio::test]
+    async fn overlays_connecting_after_a_stagger_change_use_the_new_values() {
+        let server = start(None).await;
+        // Very slow pacing: a burst of three would take 4 s...
+        server
+            .stagger
+            .send_replace(Stagger::new(Duration::from_secs(2), Duration::from_secs(5)));
+        // ...but it's switched off before this overlay connects.
+        server.stagger.send_replace(Stagger::off());
+        let mut resp = reqwest::get(format!("http://{}/events", server.addr))
+            .await
+            .unwrap();
+        eventually(|| server.connections.overlays() == 1).await;
+
+        for id in ["b1", "b2", "b3"] {
+            server.hub.publish(message(id));
+        }
+        let mut seen = String::new();
+        timeout(
+            Duration::from_secs(1),
+            read_until(&mut resp, &mut seen, r#"data-id="b3""#),
+        )
+        .await
+        .expect("unpaced: the whole burst arrives at once");
     }
 
     #[tokio::test]

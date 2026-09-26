@@ -17,6 +17,8 @@ or bots, can receive the same chat as a live JSON feed.
 - Moderation carries over: messages deleted on a platform disappear from the
   overlay too.
 - Fully stylable with your own HTML template and CSS.
+- A small desktop app to set it up: add channels, connect YouTube, pick a
+  theme, send test messages.
 - Runs locally: no account with us, no server of ours in between.
 
 ## Documentation

@@ -198,7 +198,7 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
     // Source flags replace the file's sources, so a quick `--demo` doesn't
     // also start everything from your config.
     if !flag_sources.is_empty() {
-        file.sources = flag_sources;
+        file.sources = flag_sources.into_iter().map(Into::into).collect();
     }
     apply_env(&mut file.youtube);
     let mut config = file.into_engine_config(&settings_dir);

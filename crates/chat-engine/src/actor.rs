@@ -34,7 +34,8 @@ pub(crate) type Reply<T> = oneshot::Sender<anyhow::Result<T>>;
 /// What `EngineHandle` asks for. Each carries a `oneshot` sender for the
 /// answer: a channel that is used exactly once.
 pub(crate) enum Command {
-    Add(SourceConfig, Reply<SourceId>),
+    /// The `bool`: start it right away.
+    Add(SourceConfig, bool, Reply<SourceId>),
     Remove(SourceId, Reply<()>),
     Start(SourceId, Reply<()>),
     Stop(SourceId, Reply<()>),
@@ -180,7 +181,7 @@ impl<F: SourceFactory> Actor<F> {
 
     fn handle(&mut self, command: Command) {
         match command {
-            Command::Add(config, reply) => {
+            Command::Add(config, start, reply) => {
                 let id = SourceId(self.next_id);
                 self.next_id += 1;
                 info!(source = %config.label(), %id, "added");
@@ -197,7 +198,9 @@ impl<F: SourceFactory> Actor<F> {
                         manual: None,
                     },
                 );
-                self.start(id);
+                if start {
+                    self.start(id);
+                }
                 let _ = reply.send(Ok(id));
             }
             Command::AddManual(reply) => {

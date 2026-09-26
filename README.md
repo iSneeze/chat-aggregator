@@ -60,8 +60,10 @@ cargo test          # or: cargo nextest run
 
 ## Running
 
-The desktop app (window with status lights, add/remove/start/stop sources;
-settings are saved to the same config file):
+The desktop app: sources with status lights and on/off switches, YouTube
+login and custom emoji, overlay themes, a test messages window and ⚙
+settings (appearance, replay, pacing, port). Everything is saved to the
+same config file the headless mode uses:
 
 ```sh
 cargo run -p chat-app
@@ -113,12 +115,13 @@ YOUTUBE_API_KEY=... cargo run -p chat-youtube --example listen_youtube -- <video
 Details, design decisions and next steps: [ROADMAP.md](ROADMAP.md).
 
 - [x] Twitch IRC source
-- [ ] YouTube gRPC source (quota impact of reconnects under measurement)
+- [x] YouTube gRPC source (OAuth login or API key; quota handling)
 - [ ] rplay source
 - [x] hub (broadcast + replay history)
-- [x] HTML overlay + templates (SSE)
+- [x] HTML overlay + themes (SSE)
 - [x] JSON WebSocket API
-- [ ] control plane + GPUI app
+- [x] control plane + GPUI desktop app
+- [ ] release builds / installers
 
 ## License
 

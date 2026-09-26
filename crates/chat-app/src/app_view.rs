@@ -23,9 +23,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::appearance;
+use chat_engine::Appearance;
+
 use crate::app_config::AppConfig;
 use crate::manual_window::ManualWindow;
-use crate::youtube_panel::{SettingsChanged, YouTubePanel};
+use crate::settings_window::SettingsWindow;
+use crate::youtube_panel::YouTubePanel;
 
 /// What the add form creates.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -77,7 +81,7 @@ impl NewSource {
 
 pub struct AppView {
     engine: EngineHandle,
-    config: AppConfig,
+    config: Entity<AppConfig>,
     youtube: Entity<YouTubePanel>,
     status: Status,
     new_source: NewSource,
@@ -89,8 +93,10 @@ pub struct AppView {
     /// The "New theme" name field, while that form is open.
     new_theme: Option<Entity<InputState>>,
     theme_error: Option<String>,
-    /// The test messages window, once opened (it may be closed since).
+    /// The test messages and settings windows, once opened (they may be
+    /// closed since).
     manual_window: Option<WindowHandle<Root>>,
+    settings_window: Option<WindowHandle<Root>>,
     // Subscriptions end when dropped; keeping them here ties them to the
     // view's lifetime.
     _subscriptions: Vec<Subscription>,
@@ -103,24 +109,17 @@ const DEFAULT_THEME: &str = "Default";
 impl AppView {
     pub fn new(
         engine: EngineHandle,
-        config: AppConfig,
+        config: Entity<AppConfig>,
         tokio: tokio::runtime::Handle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("channel name"));
-        let youtube = cx.new(|cx| {
-            YouTubePanel::new(
-                engine.clone(),
-                tokio,
-                config.youtube().clone(),
-                config.settings_dir(),
-                window,
-                cx,
-            )
-        });
-        let themes = themes::list(&config.themes_dir());
-        let current = SharedString::from(config.theme().unwrap_or(DEFAULT_THEME).to_string());
+        let youtube =
+            cx.new(|cx| YouTubePanel::new(engine.clone(), tokio, config.clone(), window, cx));
+        let themes = themes::list(&config.read(cx).themes_dir());
+        let current =
+            SharedString::from(config.read(cx).theme().unwrap_or(DEFAULT_THEME).to_string());
         let theme_select = cx.new(|cx| {
             let mut select = SelectState::new(theme_items(&themes), None, window, cx);
             select.set_selected_value(&current, window, cx);
@@ -145,26 +144,19 @@ impl AppView {
                     this.rescan_themes(window, cx);
                 }
             }),
-            // The panel reports new credentials; this view owns the config
-            // file, so it saves them.
-            cx.subscribe_in(
-                &youtube,
-                window,
-                |this, _, event: &SettingsChanged, window, cx| {
-                    if let Err(e) = this.config.set_youtube(event.0.clone()) {
-                        this.report_save_error(e, window, cx);
-                    }
-                },
-            ),
             // Enter in the text field adds the source.
             cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
                     this.add_source(window, cx);
                 }
             }),
-            // Follow the system's light/dark setting when it changes.
-            cx.observe_window_appearance(window, |_, window, cx| {
-                gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+            // Follow the system's light/dark setting when it changes, unless
+            // a fixed look is chosen in the settings.
+            cx.observe_window_appearance(window, |this, window, cx| {
+                let appearance = this.config.read(cx).app().appearance;
+                if appearance == Appearance::System {
+                    appearance::apply(appearance, Some(window), cx);
+                }
             }),
         ];
 
@@ -185,6 +177,7 @@ impl AppView {
             new_theme: None,
             theme_error: None,
             manual_window: None,
+            settings_window: None,
             _subscriptions: subscriptions,
         }
     }
@@ -192,12 +185,13 @@ impl AppView {
     // ---- overlay themes ----
 
     fn rescan_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let themes = themes::list(&self.config.themes_dir());
+        let config = self.config.read(cx);
+        let themes = themes::list(&config.themes_dir());
         if themes == self.themes {
             return;
         }
+        let current = SharedString::from(config.theme().unwrap_or(DEFAULT_THEME).to_string());
         self.themes = themes;
-        let current = SharedString::from(self.config.theme().unwrap_or(DEFAULT_THEME).to_string());
         let items = theme_items(&self.themes);
         self.theme_select.update(cx, |select, cx| {
             select.set_items(items, window, cx);
@@ -210,12 +204,11 @@ impl AppView {
     /// tells them to) and the choice is saved.
     fn select_theme(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let theme = (name != DEFAULT_THEME).then(|| name.to_string());
-        self.engine.set_theme_dir(
-            theme
-                .as_ref()
-                .map(|name| self.config.themes_dir().join(name)),
-        );
-        if let Err(e) = self.config.set_theme(theme) {
+        let themes_dir = self.config.read(cx).themes_dir();
+        self.engine
+            .set_theme_dir(theme.as_ref().map(|name| themes_dir.join(name)));
+        let saved = self.config.update(cx, |config, _| config.set_theme(theme));
+        if let Err(e) = saved {
             self.report_save_error(e, window, cx);
         }
         cx.notify();
@@ -226,7 +219,7 @@ impl AppView {
             return;
         };
         let name = input.read(cx).value().trim().to_string();
-        match themes::create_from_default(&self.config.themes_dir(), &name) {
+        match themes::create_from_default(&self.config.read(cx).themes_dir(), &name) {
             Ok(dir) => {
                 self.new_theme = None;
                 self.theme_error = None;
@@ -250,7 +243,7 @@ impl AppView {
     }
 
     fn open_themes_folder(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let dir = self.config.themes_dir();
+        let dir = self.config.read(cx).themes_dir();
         // It only exists once there's a theme; create it so there's
         // something to open (and to put themes into).
         if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -328,7 +321,8 @@ impl AppView {
             let result = engine.add_source(config.clone()).await;
             let _ = this.update_in(cx, |view, window, cx| match result {
                 Ok(id) => {
-                    if let Err(e) = view.config.added(id, config) {
+                    let saved = view.config.update(cx, |c, _| c.added(id, config));
+                    if let Err(e) = saved {
                         view.report_save_error(e, window, cx);
                     }
                 }
@@ -338,6 +332,7 @@ impl AppView {
         .detach();
     }
 
+    /// Switches a source on or off, and remembers that for the next start.
     fn set_running(&mut self, id: SourceId, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -346,11 +341,15 @@ impl AppView {
             } else {
                 engine.stop_source(id).await
             };
-            if let Err(e) = result {
-                let _ = this.update_in(cx, |_, window, cx| {
-                    report(window, cx, format!("Couldn't switch the source: {e:#}"));
-                });
-            }
+            let _ = this.update_in(cx, |view, window, cx| match result {
+                Ok(()) => {
+                    let saved = view.config.update(cx, |c, _| c.set_enabled(id, on));
+                    if let Err(e) = saved {
+                        view.report_save_error(e, window, cx);
+                    }
+                }
+                Err(e) => report(window, cx, format!("Couldn't switch the source: {e:#}")),
+            });
         })
         .detach();
     }
@@ -361,7 +360,8 @@ impl AppView {
             let result = engine.remove_source(id).await;
             let _ = this.update_in(cx, |view, window, cx| match result {
                 Ok(()) => {
-                    if let Err(e) = view.config.removed(id) {
+                    let saved = view.config.update(cx, |c, _| c.removed(id));
+                    if let Err(e) = saved {
                         view.report_save_error(e, window, cx);
                     }
                 }
@@ -371,50 +371,40 @@ impl AppView {
         .detach();
     }
 
-    /// Opens the test messages window, or brings it to the front if it's
-    /// already open: one test source is enough.
+    /// Opens the test messages window (one test source is enough).
     fn open_manual_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // `update` fails once the window is closed; then open a new one.
-        if let Some(handle) = self.manual_window
-            && handle
-                .update(cx, |_, window, _| window.activate_window())
-                .is_ok()
-        {
-            return;
-        }
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(520.), px(420.)),
-                cx,
-            ))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Test messages – chat-aggregator".into()),
-                ..Default::default()
-            }),
-            app_id: Some("chat-aggregator".into()),
-            window_min_size: Some(size(px(400.), px(320.))),
-            ..Default::default()
-        };
         let engine = self.engine.clone();
-        match cx.open_window(options, |window, cx| {
-            let view = cx.new(|cx| ManualWindow::new(engine, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        }) {
-            Ok(handle) => self.manual_window = Some(handle),
-            Err(e) => report(window, cx, format!("Couldn't open the window: {e:#}")),
-        }
+        open_or_focus(
+            &mut self.manual_window,
+            "Test messages",
+            size(px(520.), px(420.)),
+            move |window, cx| {
+                let view = cx.new(|cx| ManualWindow::new(engine, window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn open_settings_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (engine, config) = (self.engine.clone(), self.config.clone());
+        open_or_focus(
+            &mut self.settings_window,
+            "Settings",
+            size(px(640.), px(480.)),
+            move |window, cx| {
+                let view = cx.new(|cx| SettingsWindow::new(engine, config, window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+            window,
+            cx,
+        );
     }
 
     fn report_save_error(&self, e: anyhow::Error, window: &mut Window, cx: &mut App) {
-        report(
-            window,
-            cx,
-            format!(
-                "Couldn't save {}: {e:#}",
-                self.config.config_path().display()
-            ),
-        );
+        let path = self.config.read(cx).config_path().display().to_string();
+        report(window, cx, format!("Couldn't save {path}: {e:#}"));
     }
 
     // ---- drawing ----
@@ -442,7 +432,17 @@ impl AppView {
                     .gap_2()
                     .items_center()
                     .child(light(overall, cx))
-                    .child(div().text_lg().font_semibold().child(headline)),
+                    .child(div().flex_1().text_lg().font_semibold().child(headline))
+                    .child(
+                        Button::new("open-settings")
+                            .icon(IconName::Settings)
+                            .small()
+                            .ghost()
+                            .tooltip("Settings")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings_window(window, cx)
+                            })),
+                    ),
             )
             .child(
                 h_flex()
@@ -485,6 +485,7 @@ impl AppView {
         let muted = cx.theme().muted_foreground;
         let missing = self
             .config
+            .read(cx)
             .theme()
             .filter(|name| !self.themes.iter().any(|t| t == name))
             .map(str::to_string);
@@ -758,6 +759,42 @@ fn theme_items(themes: &[String]) -> Vec<SharedString> {
         .collect()
 }
 
+/// Brings the window in `slot` to the front if it's still open; otherwise
+/// opens a new one with `build` and remembers it there. For the side
+/// windows: one of each is enough.
+fn open_or_focus(
+    slot: &mut Option<WindowHandle<Root>>,
+    title: &str,
+    size: Size<Pixels>,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<Root>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // `update` fails once the window is closed; then open a new one.
+    if let Some(handle) = *slot
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        return;
+    }
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
+        titlebar: Some(TitlebarOptions {
+            title: Some(format!("{title} – chat-aggregator").into()),
+            ..Default::default()
+        }),
+        // Same Wayland app id as the main window: window managers group them.
+        app_id: Some("chat-aggregator".into()),
+        window_min_size: Some(gpui_kit::size(px(400.), px(320.))),
+        ..Default::default()
+    };
+    match cx.open_window(options, build) {
+        Ok(handle) => *slot = Some(handle),
+        Err(e) => report(window, cx, format!("Couldn't open the window: {e:#}")),
+    }
+}
+
 /// The status light: a small coloured dot.
 pub(crate) fn light(health: Health, cx: &App) -> impl IntoElement + use<> {
     let theme = cx.theme();
@@ -836,6 +873,7 @@ mod tests {
         // and handed out through `view` for the test to inspect.
         let mut view = None;
         let window = cx.add_window(|window, cx| {
+            let config = cx.new(|_| config);
             let app = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));
             view = Some(app.clone());
             Root::new(app, window, cx)
@@ -936,6 +974,57 @@ mod tests {
             Some("Cozy Night"),
             "and it's saved"
         );
+    }
+
+    /// Lets GPUI tasks run until `done`; the engine answers from tokio's
+    /// threads in real time (see `manual_window::tests::run_until`).
+    fn run_until(cx: &mut TestAppContext, mut done: impl FnMut() -> bool) {
+        cx.executor().allow_parking();
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if done() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("timed out");
+    }
+
+    #[gpui_kit::test]
+    fn switching_a_source_off_is_saved(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let path = ui.settings_dir.join("config.toml");
+        let saved_sources = || {
+            ConfigFile::load(&path)
+                .map(|file| file.sources)
+                .unwrap_or_default()
+        };
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click(("kind", 3usize), cx); // Demo
+            window.click("add", cx);
+        })
+        .unwrap();
+        run_until(cx, || saved_sources().len() == 1);
+        assert!(saved_sources()[0].enabled);
+
+        let id = ui.engine.handle().status().borrow().sources[0].id;
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click(("running", id.get() as usize), cx);
+        })
+        .unwrap();
+        run_until(cx, || !saved_sources()[0].enabled);
+    }
+
+    #[gpui_kit::test]
+    fn settings_window_opens_only_once(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        for _ in 0..2 {
+            cx.update_window(ui.window.into(), |_, window, cx| {
+                window.click("open-settings", cx);
+            })
+            .unwrap();
+        }
+        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
     }
 
     #[gpui_kit::test]

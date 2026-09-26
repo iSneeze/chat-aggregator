@@ -67,8 +67,8 @@ pub struct YouTubeSettings {
     /// OAuth client of type "Desktop app".
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
-    /// Only for `video_id` sources (any public video); your own broadcasts
-    /// use the login instead.
+    /// Optional, only used by `video_id` sources (any public video): with
+    /// a key they don't need the login. Your own broadcasts always use it.
     pub api_key: Option<String>,
     /// Custom emoji export (scripts/yt-emoji-export.user.js).
     pub emojis: Option<PathBuf>,

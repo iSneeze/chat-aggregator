@@ -34,7 +34,7 @@ mod status;
 
 pub use chat_server::Stagger;
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
-pub use config_file::{ConfigFile, ServerSettings};
+pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
 
 pub use actor::ManualInput;
@@ -82,12 +82,20 @@ pub struct EngineHandle {
     // Server settings, not source state, so they bypass the actor. `Arc`
     // because a `watch::Sender` can't be cloned; all handles share one.
     theme_dir: Arc<watch::Sender<Option<PathBuf>>>,
+    stagger: Arc<watch::Sender<Stagger>>,
+    hub: Arc<Hub>,
 }
 
 impl EngineHandle {
     /// Adds a source and starts it.
     pub async fn add_source(&self, config: SourceConfig) -> anyhow::Result<SourceId> {
-        self.call(|reply| Command::Add(config, reply)).await
+        self.call(|reply| Command::Add(config, true, reply)).await
+    }
+
+    /// Adds a source switched off, e.g. one the user turned off last time:
+    /// it's listed as stopped and doesn't connect until started.
+    pub async fn add_stopped_source(&self, config: SourceConfig) -> anyhow::Result<SourceId> {
+        self.call(|reply| Command::Add(config, false, reply)).await
     }
 
     /// Adds a source whose messages come from the returned `ManualInput`
@@ -139,6 +147,22 @@ impl EngineHandle {
 
     pub fn theme_dir(&self) -> Option<PathBuf> {
         self.theme_dir.borrow().clone()
+    }
+
+    /// How many messages a newly connected overlay gets replayed. Applies
+    /// right away; shrinking drops the oldest ones.
+    pub fn set_history(&self, history: usize) {
+        self.hub.set_history(history);
+    }
+
+    /// New burst spacing, used by overlays that connect (or reload) from
+    /// now on. Already connected ones keep theirs until they reload.
+    pub fn set_stagger(&self, stagger: Stagger) {
+        self.stagger.send_replace(stagger);
+    }
+
+    pub fn stagger(&self) -> Stagger {
+        *self.stagger.borrow()
     }
 
     /// The live status. A `watch` receiver always holds the latest value;
@@ -204,11 +228,12 @@ impl Engine {
         tasks.spawn(actor.run(commands_rx, shutdown.clone()));
 
         let (theme_tx, theme_rx) = watch::channel(config.theme_dir);
+        let (stagger_tx, stagger_rx) = watch::channel(config.stagger);
         let state = ServerState {
             hub: hub.clone(),
             theme_dir: theme_rx,
             shutdown: shutdown.clone(),
-            stagger: config.stagger,
+            stagger: stagger_rx,
             connections,
         };
         tasks.spawn(async move {
@@ -221,6 +246,8 @@ impl Engine {
             commands: commands_tx,
             status: status_rx,
             theme_dir: Arc::new(theme_tx),
+            stagger: Arc::new(stagger_tx),
+            hub: hub.clone(),
         };
         for source in config.sources {
             handle.add_source(source).await?;
@@ -601,6 +628,40 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_source_added_stopped_doesnt_run_until_started() {
+        let (engine, factory) = start_scripted(&[]).await;
+        let handle = engine.handle();
+        let id = handle.add_stopped_source(script("emit:1")).await.unwrap();
+        let s = wait_for(&handle, |s| s.source(id).is_some()).await;
+        assert_eq!(s.source(id).unwrap().state, SourceState::Stopped);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(factory.builds("emit:1"), 0, "never connected");
+
+        handle.start_source(id).await.unwrap();
+        wait_for(&handle, |s| s.source(id).unwrap().messages == 1).await;
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn history_and_stagger_change_at_runtime() {
+        let (engine, _) = start_scripted(&[]).await;
+        let handle = engine.handle();
+        for i in 0..3 {
+            let mut msg = chat_core::demo::sample_messages(0).remove(0);
+            msg.id = format!("m{i}");
+            engine.hub().publish(ChatEvent::Message(msg));
+        }
+        handle.set_history(1);
+        let (history, _) = engine.hub().subscribe();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, "m2", "the newest one stays");
+
+        handle.set_stagger(Stagger::off());
+        assert!(handle.stagger().is_off());
+        engine.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn messages_are_counted() {
         let (engine, _) = start_scripted(&["emit:3"]).await;
         let s = wait_for(&engine.handle(), |s| s.sources[0].messages == 3).await;
@@ -706,7 +767,7 @@ mod tests {
     #[test]
     fn manual_sources_never_end_up_in_the_config_file() {
         let file = ConfigFile {
-            sources: vec![SourceConfig::Demo, SourceConfig::Manual],
+            sources: vec![SourceConfig::Demo.into(), SourceConfig::Manual.into()],
             ..ConfigFile::default()
         };
         // serde skips the variant: serializing it is an error rather than

@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy policy
 
-_Effective 2026-09-26._
+_Effective 2026-09-27._
 
 chat-aggregator is a program that runs **on your own computer**. It has no
 servers, no user accounts and no analytics. The developers never receive
@@ -32,9 +32,10 @@ From YouTube, with your permission:
 - your channel's name, to confirm which account you logged in with;
 - your live broadcasts (their ids, status and scheduled start time), to
   find the stream to follow;
-- the live chat of your broadcasts: messages, and for each message the
-  author's public display name, channel id, profile picture link and badges,
-  plus the details of Super Chats, Super Stickers, memberships and gifts.
+- the live chat of your broadcasts, or of a video whose id you enter:
+  messages, and for each message the author's public display name, channel
+  id, profile picture link and badges, plus the details of Super Chats,
+  Super Stickers, memberships and gifts.
 
 From Twitch: the public chat of the channels you enter, read anonymously
 without any login.
@@ -46,11 +47,13 @@ without any login.
   Windows, Secret Service on Linux). If none is available, it's stored in a
   file in chat-aggregator's settings folder that only your user account can
   read. It stays there until you log out or revoke access (see below).
-- **Your settings** (for example your Google project's client id, channel
-  names, overlay theme) are stored on your computer.
+- **Your settings** (for example your Google project's client id and
+  secret, an optional API key, channel names, overlay theme, a copy of your
+  custom emoji list) are stored in chat-aggregator's settings folder on your
+  computer.
 - **Chat messages are not saved.** They're kept in memory while the program
-  runs (the most recent 20, so a reloaded overlay isn't empty) and are gone
-  when you close it.
+  runs (the most recent ones, 20 by default, so a reloaded overlay isn't
+  empty) and are gone when you close it.
 
 ## What is shared, and with whom
 
@@ -69,10 +72,12 @@ without any login.
 
 ## Removing access and data
 
-- Log out in chat-aggregator (`--youtube-logout` in the command-line
-  version): this deletes the stored login from your computer.
-- Revoke chat-aggregator's access at any time in your Google Account:
-  [security.google.com/settings/security/permissions](https://security.google.com/settings/security/permissions).
+- Log out in chat-aggregator (**Log out** in the app's YouTube section,
+  `--youtube-logout` in the command-line version): this deletes the stored
+  login from your computer.
+- Revoke chat-aggregator's access at any time in your Google Account, under
+  third-party connections:
+  [myaccount.google.com/connections](https://myaccount.google.com/connections).
 - To remove everything, delete chat-aggregator's settings folder (for
   example `~/.config/chat-aggregator` on Linux).
 
