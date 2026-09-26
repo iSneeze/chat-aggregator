@@ -1,5 +1,6 @@
 use anyhow::Context;
 use chat_core::{ChatEvent, ChatMessage, ChatSource, MessageKind};
+use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
 use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
 
 #[tokio::main]
@@ -13,25 +14,33 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // usage: listen_youtube <video_id>            (API key)
-    //        listen_youtube --member <video_id>   (OAuth, e.g. members-only stream)
+    //        listen_youtube --login               (OAuth: log in once in the browser)
     //        listen_youtube --own                 (OAuth, your own broadcast)
+    //        listen_youtube --member <video_id>   (OAuth, e.g. members-only stream)
+    //        listen_youtube --logout
+    // OAuth needs YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET (docs/youtube-setup.md).
     // optional: YOUTUBE_EMOJIS=<export.json> from scripts/yt-emoji-export.js
     let args: Vec<String> = std::env::args().collect();
 
     let (target, auth) = match (args.get(1).map(String::as_str), args.get(2)) {
-        (Some("--own"), _) => (
-            YouTubeTarget::OwnBroadcast,
-            Auth::Bearer(env("YOUTUBE_ACCESS_TOKEN")),
-        ),
+        (Some("--login"), _) => return login(&OAuthApp::from_env()?).await,
+        (Some("--logout"), _) => {
+            oauth::logout(&OAuthApp::from_env()?).await?;
+            println!("logged out");
+            return Ok(());
+        }
+        (Some("--own"), _) => (YouTubeTarget::OwnBroadcast, oauth_auth().await?),
         (Some("--member"), Some(video_id)) => (
             YouTubeTarget::Video(video_id.to_string()),
-            Auth::Bearer(env("YOUTUBE_ACCESS_TOKEN")),
+            oauth_auth().await?,
         ),
         (Some(video_id), None) => (
             YouTubeTarget::Video(video_id.to_string()),
             Auth::ApiKey(env("YOUTUBE_API_KEY")),
         ),
-        _ => anyhow::bail!("usage: listen_youtube <video_id> | --member <video_id> | --own"),
+        _ => anyhow::bail!(
+            "usage: listen_youtube <video_id> | --login | --own | --member <video_id> | --logout"
+        ),
     };
 
     let emojis = match std::env::var("YOUTUBE_EMOJIS") {
@@ -109,6 +118,30 @@ fn print_message(msg: &ChatMessage) {
         "[{}] {}{}: {} <{}> id={}{}",
         kind, msg.author.name, badges, msg.text, msg.timestamp, msg.id, emotes
     );
+}
+
+/// Logs in once: the browser shows Google's consent page, the refresh token
+/// ends up in the system keyring.
+async fn login(app: &OAuthApp) -> anyhow::Result<()> {
+    let pending = oauth::begin_login(app).await?;
+    println!(
+        "Opening Google's login page. If no browser opens, visit:\n\n  {}\n",
+        pending.url()
+    );
+    let _ = webbrowser::open(pending.url());
+    pending.complete().await?;
+
+    let auth = Auth::OAuth(TokenProvider::from_store(app.clone()).await?);
+    let channel = chat_youtube::channel_title(&reqwest::Client::new(), &auth).await?;
+    println!("logged in as \"{channel}\"");
+    Ok(())
+}
+
+async fn oauth_auth() -> anyhow::Result<Auth> {
+    let provider = TokenProvider::from_store(OAuthApp::from_env()?)
+        .await
+        .context("run `listen_youtube --login` first")?;
+    Ok(Auth::OAuth(provider))
 }
 
 fn env(name: &str) -> String {

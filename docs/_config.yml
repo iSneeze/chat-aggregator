@@ -1,0 +1,11 @@
+# GitHub Pages builds this folder with Jekyll:
+# https://isneeze.github.io/chat-aggregator/
+#
+# index.md is the homepage and privacy.md the privacy policy that Google's
+# OAuth consent screen links to (see youtube-setup.md, step 3). The other
+# Markdown files (api.md, youtube-setup.md) are published as pages too, and
+# links between them like [setup](youtube-setup.md) are rewritten to the
+# generated HTML automatically.
+title: chat-aggregator
+description: Twitch and YouTube live chat in one overlay for your stream.
+theme: jekyll-theme-minimal

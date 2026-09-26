@@ -21,3 +21,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 schemars = { version = "1", features = ["chrono04"] }
+oauth2 = { version = "5", default-features = false }
+keyring = "4"
+webbrowser = "1"
+directories = "6"

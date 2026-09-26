@@ -10,13 +10,17 @@
 //! goes back to scanning for the next one — polling cheaply (REST, 1 unit)
 //! while nothing is live instead of idling on an expensive gRPC stream.
 //!
-//! The gRPC stream is known to drop (EOF after ~10s, see Google issue
-//! tracker), so a reconnect loop resumes via `page_token` with backoff.
+//! The gRPC stream is known to drop (EOF after ~10s; a Google bug with an
+//! open issue-tracker ticket, not intended behaviour), so a reconnect loop
+//! resumes via `page_token` with backoff. Nothing here depends on the
+//! stream length: it works the same once Google fixes it.
+//!
+//! OAuth login and token refresh live in [`oauth`].
 //!
 //! `Video` is one-shot: it resolves once and completes when the stream ends.
 
 pub use crate::emoji::EmojiMap;
-pub use crate::resolver::Auth;
+pub use crate::resolver::{Auth, channel_title};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -29,6 +33,7 @@ use tracing::{debug, info, warn};
 
 mod convert;
 mod emoji;
+pub mod oauth;
 mod pb;
 mod resolver;
 
@@ -160,18 +165,13 @@ impl ChatSource for YouTubeSource {
                     part: vec!["id".into(), "snippet".into(), "authorDetails".into()],
                 });
 
-                match &self.auth {
-                    Auth::ApiKey(key) => {
-                        let value: MetadataValue<_> = key.parse().context("invalid api key")?;
-                        request.metadata_mut().insert("x-goog-api-key", value);
-                    }
-                    Auth::Bearer(token) => {
-                        let value: MetadataValue<_> = format!("Bearer {token}")
-                            .parse()
-                            .context("invalid access token")?;
-                        request.metadata_mut().insert("authorization", value);
-                    }
-                }
+                // Asked on every reconnect: with OAuth this hands out the
+                // cached token, refreshing it shortly before it expires.
+                let (name, value) = self.auth.header().await?;
+                let value: MetadataValue<_> = value
+                    .parse()
+                    .context("credentials contain characters invalid in a header")?;
+                request.metadata_mut().insert(name, value);
 
                 match consume_stream(
                     &mut client,

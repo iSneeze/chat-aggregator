@@ -15,9 +15,18 @@ tokio.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+# OAuth login (loopback flow): the callback server, the OAuth protocol
+# (without its own HTTP client; we plug in our reqwest), token storage in the
+# OS keyring, and the per-OS config dir for the keyring-less fallback.
+axum.workspace = true
+oauth2.workspace = true
+keyring.workspace = true
+directories.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+# The examples open the login page; the library leaves that to the caller.
+webbrowser.workspace = true
 
 [build-dependencies]
 tonic-build = "0.13"

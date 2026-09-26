@@ -16,3 +16,4 @@ tracing.workspace = true
 [dev-dependencies]
 reqwest.workspace = true
 tracing-subscriber.workspace = true
+webbrowser.workspace = true

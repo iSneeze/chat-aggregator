@@ -2,6 +2,8 @@
 
 *Multi platform, single chat.*
 
+Website and docs: <https://isneeze.github.io/chat-aggregator/>
+
 Aggregates live chat from Twitch, YouTube, and Rplay (soon™️) into a single unified
 message stream, exposed as a stylable HTML overlay for OBS/browser sources.
 
@@ -63,8 +65,14 @@ The whole pipeline, headless:
 ```sh
 cargo run -p chat-engine --example run -- --demo                  # every message kind, no account needed
 cargo run -p chat-engine --example run -- --twitch <channel>
-YOUTUBE_API_KEY=... cargo run -p chat-engine --example run -- --youtube <video_id>
+cargo run -p chat-engine --example run -- --youtube-own         # your own broadcast, after logging in:
+cargo run -p chat-engine --example run -- --youtube-login       # once; see docs/youtube-setup.md
+YOUTUBE_API_KEY=... cargo run -p chat-engine --example run -- --youtube <video_id>   # any public video (testing)
 ```
+
+YouTube needs your own (free) Google Cloud project, because YouTube's API
+quota is counted per project: [docs/youtube-setup.md](docs/youtube-setup.md)
+walks through it.
 
 Sources can be combined; see the top of `crates/chat-engine/examples/run.rs`
 for all flags. Then add `http://127.0.0.1:7878/` as a **Browser Source** in

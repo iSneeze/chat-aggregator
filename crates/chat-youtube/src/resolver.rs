@@ -5,6 +5,8 @@
 
 use anyhow::Context;
 
+use crate::oauth::TokenProvider;
+
 #[derive(serde::Deserialize)]
 struct VideosResponse {
     items: Vec<VideoItem>,
@@ -35,6 +37,7 @@ pub async fn resolve_live_chat_id(
     )?;
     let response = auth
         .apply(http.get(url))
+        .await?
         .send()
         .await
         .context("videos.list request failed")?;
@@ -67,17 +70,71 @@ pub async fn resolve_live_chat_id(
 /// to an account allowed to see them.
 #[derive(Clone)]
 pub enum Auth {
+    /// Public data only (the testing path: any public video by id).
     ApiKey(String),
-    Bearer(String),
+    /// A logged-in account (the streamer path, see `crate::oauth`).
+    OAuth(TokenProvider),
 }
 
 impl Auth {
-    fn apply(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match self {
-            Auth::ApiKey(key) => rb.header("x-goog-api-key", key.as_str()),
-            Auth::Bearer(token) => rb.bearer_auth(token),
-        }
+    /// The header that authenticates a request, as (name, value). Async
+    /// because an OAuth access token may have to be refreshed first.
+    pub(crate) async fn header(&self) -> anyhow::Result<(&'static str, String)> {
+        Ok(match self {
+            Auth::ApiKey(key) => ("x-goog-api-key", key.clone()),
+            // The scheme is required: without "Bearer " the gRPC endpoint
+            // answers `PermissionDenied: unregistered callers`.
+            Auth::OAuth(tokens) => (
+                "authorization",
+                format!("Bearer {}", tokens.access_token().await?),
+            ),
+        })
     }
+
+    async fn apply(&self, rb: reqwest::RequestBuilder) -> anyhow::Result<reqwest::RequestBuilder> {
+        let (name, value) = self.header().await?;
+        Ok(rb.header(name, value))
+    }
+}
+
+/// The logged-in account's channel name, e.g. to confirm a login worked.
+/// Costs 1 quota unit.
+pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Result<String> {
+    #[derive(serde::Deserialize)]
+    struct ChannelsResponse {
+        #[serde(default)]
+        items: Vec<Channel>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Channel {
+        snippet: ChannelSnippet,
+    }
+    #[derive(serde::Deserialize)]
+    struct ChannelSnippet {
+        title: String,
+    }
+
+    let url = "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true";
+    let response = auth
+        .apply(http.get(url))
+        .await?
+        .send()
+        .await
+        .context("channels.list request failed")?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("channels.list failed: HTTP {status}: {body}");
+    }
+    let resp: ChannelsResponse = response
+        .json()
+        .await
+        .context("channels.list returned unexpected JSON")?;
+    resp.items
+        .into_iter()
+        .next()
+        .map(|c| c.snippet.title)
+        .context("this Google account has no YouTube channel")
 }
 
 /// A resolved broadcast, with enough information for the caller to decide
@@ -110,7 +167,7 @@ pub async fn resolve_own_broadcast(
     auth: &Auth,
     log_all: bool,
 ) -> anyhow::Result<Option<ResolvedStream>> {
-    if !matches!(auth, Auth::Bearer(_)) {
+    if !matches!(auth, Auth::OAuth(_)) {
         anyhow::bail!("OwnBroadcast requires OAuth; API keys cannot use `mine=true`");
     }
 
@@ -149,6 +206,7 @@ pub async fn resolve_own_broadcast(
 
     let response = auth
         .apply(http.get(url))
+        .await?
         .send()
         .await
         .context("liveBroadcasts.list request failed")?;

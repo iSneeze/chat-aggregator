@@ -8,11 +8,18 @@
 //! Flags (combine freely; --twitch and --youtube may repeat):
 //!   --demo                sample messages of every kind, including deletions
 //!   --twitch <channel>
-//!   --youtube <video_id>  needs YOUTUBE_API_KEY
-//!   --youtube-own         your own broadcast; needs YOUTUBE_ACCESS_TOKEN
+//!   --youtube <video_id>  any public video; needs YOUTUBE_API_KEY (testing path)
+//!   --youtube-own         your own current/next broadcast (the streamer path);
+//!                         needs a login, see below
 //!   --theme <dir>         custom message.html and/or overlay.css
 //!   --port <n>            default 7878
 //!   --history <n>         messages replayed to a new overlay, default 20
+//!
+//! YouTube login (once; the token is kept in the system keyring):
+//!   cargo run -p chat-engine --example run -- --youtube-login
+//!   cargo run -p chat-engine --example run -- --youtube-logout
+//! Both, and --youtube-own, need YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET
+//! from your own Google Cloud project (docs/youtube-setup.md).
 //!
 //! YOUTUBE_EMOJIS=<export.json> adds custom emoji to all YouTube sources.
 //! RUST_LOG=debug shows more detail (e.g. YouTube's routine reconnects).
@@ -23,6 +30,7 @@ use anyhow::{Context, bail};
 use chat_core::demo::DemoSource;
 use chat_engine::{Engine, EngineConfig, SourceSpec};
 use chat_twitch::TwitchSource;
+use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
 use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
 
 #[tokio::main]
@@ -33,7 +41,17 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let config = parse_args()?;
+    match std::env::args().nth(1).as_deref() {
+        Some("--youtube-login") => return youtube_login(&OAuthApp::from_env()?).await,
+        Some("--youtube-logout") => {
+            oauth::logout(&OAuthApp::from_env()?).await?;
+            println!("logged out of YouTube");
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let config = parse_args().await?;
     if config.sources.is_empty() {
         bail!("no sources given; try --demo (see the top of examples/run.rs)");
     }
@@ -50,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse_args() -> anyhow::Result<EngineConfig> {
+async fn parse_args() -> anyhow::Result<EngineConfig> {
     let mut config = EngineConfig::default();
     let mut port = chat_engine::DEFAULT_PORT;
     let mut emojis: Option<EmojiMap> = None;
@@ -73,11 +91,16 @@ fn parse_args() -> anyhow::Result<EngineConfig> {
                     emojis: youtube_emojis(&mut emojis)?,
                 }));
             }
-            "--youtube-own" => config.sources.push(SourceSpec::YouTube(YouTubeSource {
-                target: YouTubeTarget::OwnBroadcast,
-                auth: Auth::Bearer(env("YOUTUBE_ACCESS_TOKEN")?),
-                emojis: youtube_emojis(&mut emojis)?,
-            })),
+            "--youtube-own" => {
+                let tokens = TokenProvider::from_store(OAuthApp::from_env()?)
+                    .await
+                    .context("log in first: run with --youtube-login")?;
+                config.sources.push(SourceSpec::YouTube(YouTubeSource {
+                    target: YouTubeTarget::OwnBroadcast,
+                    auth: Auth::OAuth(tokens),
+                    emojis: youtube_emojis(&mut emojis)?,
+                }))
+            }
             "--theme" => config.theme_dir = Some(next_value(&mut args, "--theme")?.into()),
             "--port" => port = next_value(&mut args, "--port")?.parse().context("--port")?,
             "--history" => {
@@ -90,6 +113,23 @@ fn parse_args() -> anyhow::Result<EngineConfig> {
     }
     config.bind = (Ipv4Addr::LOCALHOST, port).into();
     Ok(config)
+}
+
+/// Logs in once: the browser shows Google's consent page, the refresh token
+/// ends up in the system keyring.
+async fn youtube_login(app: &OAuthApp) -> anyhow::Result<()> {
+    let pending = oauth::begin_login(app).await?;
+    println!(
+        "Opening Google's login page. If no browser opens, visit:\n\n  {}\n",
+        pending.url()
+    );
+    let _ = webbrowser::open(pending.url());
+    pending.complete().await?;
+
+    let auth = Auth::OAuth(TokenProvider::from_store(app.clone()).await?);
+    let channel = chat_youtube::channel_title(&reqwest::Client::new(), &auth).await?;
+    println!("logged in to YouTube as \"{channel}\"; start with --youtube-own");
+    Ok(())
 }
 
 /// Loads YOUTUBE_EMOJIS once and hands out copies for each YouTube source.
