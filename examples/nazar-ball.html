@@ -1,0 +1,626 @@
+<!doctype html>
+<!--
+  Nazar ball: a JSON API demo for chat-aggregator.
+
+  Chat pushes a glass evil-eye bead around the screen. Anyone typing
+  `up`, `down`, `left` or `right` (also `!up`, arrows like ⬆️ or →, or
+  combos like `up left`) gives it a shove in that direction. Donations,
+  gifts and memberships push harder, and without a direction they give it
+  a random "blessing" push.
+
+  Use it as an OBS browser source ("Local file"), sized like your canvas:
+  the ball bounces off the edges of whatever size the source is. The page
+  background is transparent.
+
+  Needs the JSON API switched on (app: ⚙ Settings → Connection → JSON API;
+  headless: `--api`). Everything else is optional, via the URL query:
+
+    ?demo=1        fake chatters push the ball (try it without a stream)
+    ?gravity=0.5   gravity multiplier (1 = default; 0 = float in zero-g)
+    ?force=1.5     push strength multiplier
+    ?size=1.3      ball size multiplier
+    ?cooldown=1.5  seconds before the same chatter can push again
+    ?hint=0        hide the "type up / down / left / right" hint
+    ?bg=%23202030  page background (for testing outside OBS)
+    ?ws=ws://127.0.0.1:7878/api/v1/ws   API address (other port)
+
+  Arrow keys / WASD push it too (space: a blessing), handy for testing.
+
+  Chat is untrusted: names only ever reach the screen through canvas
+  `fillText` (pixels, never HTML), status text through `textContent`.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nazar Ball</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+  .overlay-text {
+    position: fixed;
+    font: 600 clamp(12px, 1.6vmin, 20px) system-ui, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+    pointer-events: none;
+    transition: opacity 0.6s;
+  }
+  #hint {
+    top: 1.2vmin;
+    left: 50%;
+    transform: translateX(-50%);
+    opacity: 0.75;
+    white-space: nowrap;
+  }
+  #status {
+    left: 1.2vmin;
+    bottom: 1.2vmin;
+    opacity: 0;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="hint" class="overlay-text">🧿 type up · down · left · right in chat</div>
+<div id="status" class="overlay-text"></div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- settings
+
+const params = new URLSearchParams(location.search);
+function num(name, fallback) {
+  const v = parseFloat(params.get(name));
+  return Number.isFinite(v) ? v : fallback;
+}
+const CONFIG = {
+  wsUrl: params.get("ws") || "ws://127.0.0.1:7878/api/v1/ws",
+  demo: params.get("demo") === "1",
+  gravity: Math.max(0, num("gravity", 1)),
+  force: Math.max(0, num("force", 1)),
+  size: Math.min(4, Math.max(0.2, num("size", 1))),
+  cooldown: Math.max(0, num("cooldown", 1.5)),
+};
+const floating = CONFIG.gravity === 0;
+
+if (params.get("hint") === "0") document.getElementById("hint").hidden = true;
+const bg = params.get("bg");
+if (bg && CSS.supports("color", bg)) document.body.style.background = bg;
+
+// Physics tuning. Speeds are in px/s; strains (deformation) are fractions
+// of the radius.
+const RESTITUTION = floating ? 0.9 : 0.94; // share of speed kept on a bounce
+const MAX_SPEED_PER_SIZE = 3.5;            // cap: × screen size per second
+const SPRING_K = 380;                      // wobble stiffness (~3 Hz)
+const SPRING_DAMP = 9;                     // wobble damping (a few jiggles)
+const MAX_STRAIN = 0.32;
+
+// ------------------------------------------------------------------ canvas
+
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, dpr = 1;
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ball.r = Math.max(16, Math.min(400, Math.min(W, H) * 0.075 * CONFIG.size));
+  // Keep the ball inside when the source gets smaller.
+  ball.x = Math.min(Math.max(ball.x, ball.r), Math.max(ball.r, W - ball.r));
+  ball.y = Math.min(Math.max(ball.y, ball.r), Math.max(ball.r, H - ball.r));
+}
+
+// The size of the screen sets the scale of everything, so the demo feels
+// the same in a small preview and a 4K canvas.
+const screenSize = () => Math.min(W, H);
+const cruiseSpeed = () => screenSize() * 0.06; // the lazy drift while floating
+// Falls one screen height in about 1.4 s (px/s²).
+const gravity = () => screenSize() * CONFIG.gravity;
+
+// -------------------------------------------------------------------- ball
+
+const ball = {
+  x: window.innerWidth / 2,
+  y: window.innerHeight / 2,
+  vx: 0, vy: 0,
+  r: 40,
+  lookX: 0, lookY: 0, // where the eye looks, as a fraction of r
+  // Squash & stretch as a symmetric 2×2 matrix [xx, xy, yy], added to the
+  // identity when drawing. Each entry is a damped spring pulled back to 0,
+  // so overlapping hits simply add up and wobble out.
+  strain: [0, 0, 0],
+  strainVel: [0, 0, 0],
+};
+
+const trail = []; // recent positions, for the motion ghosts
+
+/** Kicks the wobble springs: flatten along (nx, ny), bulge sideways. */
+function squash(nx, ny, speed) {
+  const k = Math.min((speed / ball.r) * 0.15, 5);
+  ball.strainVel[0] += -k * nx * nx + 0.6 * k * ny * ny;
+  ball.strainVel[1] += -1.6 * k * nx * ny;
+  ball.strainVel[2] += -k * ny * ny + 0.6 * k * nx * nx;
+}
+
+/** Bounces off a wall whose normal (nx, ny) points into the screen. */
+function hitWall(nx, ny) {
+  const vn = ball.vx * nx + ball.vy * ny;
+  if (vn >= 0) return; // already moving away
+  const impact = -vn;
+  ball.vx -= (1 + RESTITUTION) * vn * nx;
+  ball.vy -= (1 + RESTITUTION) * vn * ny;
+
+  // Friction at the contact point: the sliding speed drops a little. With
+  // gravity the ball touches the floor every step once it has settled, so
+  // this is also what slows it down when it rolls along the floor.
+  const tx = -ny, ty = nx;
+  const vt = ball.vx * tx + ball.vy * ty;
+  ball.vx -= vt * tx * 0.005;
+  ball.vy -= vt * ty * 0.005;
+
+  squash(nx, ny, impact);
+  if (impact > screenSize() * 0.5) {
+    const cx = ball.x - nx * ball.r, cy = ball.y - ny * ball.r;
+    burst(cx, cy, nx, ny, Math.min(4 + impact / 120, 24), impact * 0.3, GLASS_COLORS);
+  }
+}
+
+function step(dt) {
+  ball.vy += gravity() * dt;
+
+  let speed = Math.hypot(ball.vx, ball.vy);
+  if (floating) {
+    // Zero-g: fast pushes slow down to a lazy drift, and a slow ball
+    // speeds up to it, so it never quite stops (like a DVD logo).
+    const cruise = cruiseSpeed();
+    if (speed < 1) {
+      const a = Math.random() * Math.PI * 2;
+      ball.vx = Math.cos(a); ball.vy = Math.sin(a); speed = 1;
+    }
+    const rate = speed > cruise ? 0.7 : 0.4;
+    const target = cruise + (speed - cruise) * Math.exp(-rate * dt);
+    ball.vx *= target / speed;
+    ball.vy *= target / speed;
+  } else {
+    const air = Math.exp(-0.02 * dt);
+    ball.vx *= air;
+    ball.vy *= air;
+  }
+  speed = Math.hypot(ball.vx, ball.vy);
+  const max = screenSize() * MAX_SPEED_PER_SIZE;
+  if (speed > max) {
+    ball.vx *= max / speed;
+    ball.vy *= max / speed;
+  }
+
+  ball.x += ball.vx * dt;
+  ball.y += ball.vy * dt;
+  if (ball.x < ball.r)     { ball.x = ball.r;     hitWall(1, 0); }
+  if (ball.x > W - ball.r) { ball.x = W - ball.r; hitWall(-1, 0); }
+  if (ball.y < ball.r)     { ball.y = ball.r;     hitWall(0, 1); }
+  if (ball.y > H - ball.r) { ball.y = H - ball.r; hitWall(0, -1); }
+
+  for (let i = 0; i < 3; i++) {
+    ball.strainVel[i] += (-SPRING_K * ball.strain[i] - SPRING_DAMP * ball.strainVel[i]) * dt;
+    ball.strain[i] += ball.strainVel[i] * dt;
+    ball.strain[i] = Math.max(-MAX_STRAIN, Math.min(MAX_STRAIN, ball.strain[i]));
+  }
+
+  // The eye looks where it's going (smoothed, so bounces don't snap it).
+  const lookScale = 0.13 / (Math.hypot(ball.vx, ball.vy) + cruiseSpeed() * 2);
+  const ease = 1 - Math.exp(-6 * dt);
+  ball.lookX += (ball.vx * lookScale - ball.lookX) * ease;
+  ball.lookY += (ball.vy * lookScale - ball.lookY) * ease;
+}
+
+// ----------------------------------------------------------------- effects
+
+const GLASS_COLORS = ["#0d3b9e", "#2e8fd8", "#ffffff", "#9fd4ff"];
+const GOLD_COLORS = ["#ffd54a", "#fff3b0", "#ffb300", "#ffffff"];
+const sparks = [];
+const rings = [];
+const labels = [];
+
+/** Throws `count` sparks from (x, y), spread around direction (nx, ny). */
+function burst(x, y, nx, ny, count, speed, colors, spread = Math.PI * 0.9) {
+  const base = Math.atan2(ny, nx);
+  for (let i = 0; i < count; i++) {
+    const a = base + (Math.random() - 0.5) * spread;
+    const s = speed * (0.4 + Math.random() * 0.8);
+    sparks.push({
+      x, y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      life: 0.45 + Math.random() * 0.5,
+      age: 0,
+      size: (1.5 + Math.random() * 2.5) * (ball.r / 50),
+      color: colors[(Math.random() * colors.length) | 0],
+    });
+  }
+  if (sparks.length > 400) sparks.splice(0, sparks.length - 400);
+}
+
+const ARROWS = ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"];
+function arrowFor(dx, dy) {
+  const octant = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
+  return ARROWS[(octant + 8) % 8];
+}
+
+function addLabel(text, color) {
+  // Stack on top of labels that just appeared, so a busy chat stays legible.
+  const fresh = labels.filter((l) => l.age < 0.5).length;
+  const y = ball.y - ball.r * 1.25 - fresh * Math.max(14, ball.r * 0.34) * 1.1;
+  labels.push({ text, color, x: ball.x, y, age: 0, life: 1.8 });
+  if (labels.length > 10) labels.shift();
+}
+
+function updateEffects(dt) {
+  for (const s of sparks) {
+    s.age += dt;
+    s.vx *= Math.exp(-2.5 * dt);
+    s.vy = s.vy * Math.exp(-2.5 * dt) + gravity() * 0.3 * dt;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+  }
+  for (const r of rings) r.age += dt;
+  for (const l of labels) {
+    l.age += dt;
+    l.y -= ball.r * 0.6 * dt;
+  }
+  prune(sparks);
+  prune(rings);
+  prune(labels);
+
+  trail.push({ x: ball.x, y: ball.y });
+  if (trail.length > 10) trail.shift();
+}
+
+function prune(list) {
+  let keep = 0;
+  for (const item of list) if (item.age < item.life) list[keep++] = item;
+  list.length = keep;
+}
+
+// ---------------------------------------------------------------- pushing
+
+/**
+ * Applies a push: a change of velocity in direction (dx, dy), so a push
+ * against the current movement brakes the ball first.
+ */
+function push(dx, dy, strength, name, color) {
+  // A few degrees of wobble so a stream of "up"s doesn't look robotic.
+  const a = Math.atan2(dy, dx) + (Math.random() - 0.5) * 0.2;
+  dx = Math.cos(a);
+  dy = Math.sin(a);
+  const dv = screenSize() * 0.8 * CONFIG.force * strength;
+  ball.vx += dx * dv;
+  ball.vy += dy * dv;
+  squash(dx, dy, dv * 0.8);
+
+  // A shockwave and a puff behind the ball, where the "hit" came from.
+  const bx = ball.x - dx * ball.r, by = ball.y - dy * ball.r;
+  rings.push({ x: bx, y: by, age: 0, life: 0.4, color: color === GOLD ? GOLD : "#ffffff" });
+  burst(bx, by, -dx, -dy, 8 * strength, dv * 0.25, color === GOLD ? GOLD_COLORS : GLASS_COLORS, Math.PI * 0.6);
+  if (name) addLabel(`${name} ${arrowFor(dx, dy)}`, color);
+}
+
+const GOLD = "#ffd54a";
+
+function bless(name) {
+  const a = Math.random() * Math.PI * 2;
+  push(Math.cos(a), Math.sin(a), 1.6, null, GOLD);
+  burst(ball.x, ball.y, 1, 0, 36, ball.r * 6, GOLD_COLORS, Math.PI * 2);
+  addLabel(`✨ ${name} ✨`, GOLD);
+}
+
+// ------------------------------------------------------------ chat → game
+
+// First words of a message that count as commands. U+FE0F (the "show as
+// emoji" marker in ⬆️) is stripped before looking words up.
+const DIRECTIONS = new Map([
+  ["up", [0, -1]], ["↑", [0, -1]], ["⬆", [0, -1]], ["🔼", [0, -1]],
+  ["down", [0, 1]], ["↓", [0, 1]], ["⬇", [0, 1]], ["🔽", [0, 1]],
+  ["left", [-1, 0]], ["←", [-1, 0]], ["⬅", [-1, 0]], ["◀", [-1, 0]],
+  ["right", [1, 0]], ["→", [1, 0]], ["➡", [1, 0]], ["▶", [1, 0]],
+]);
+
+/**
+ * Reads the direction commands at the start of a message ("up",
+ * "!left", "up right", "⬆️⬆️"...) and adds them up. Only leading
+ * commands count, so "going up to bed" doesn't push anything.
+ * Returns null if the message isn't a command, [0, 0] if it cancels out.
+ */
+function parseCommand(text) {
+  const words = text.toLowerCase().replace(/️/g, "")
+    // split runs of arrow symbols ("⬆⬆") into single words
+    .replace(/([↑↓←→⬆⬇⬅➡◀▶]|🔼|🔽)/gu, " $1 ")
+    .trim().split(/\s+/);
+  let dx = 0, dy = 0, found = 0;
+  for (const word of words.slice(0, 4)) {
+    const dir = DIRECTIONS.get(word.replace(/^!+|[!.?]+$/g, ""));
+    if (!dir) break;
+    dx += dir[0];
+    dy += dir[1];
+    found++;
+  }
+  return found ? [dx, dy] : null;
+}
+
+const lastPush = new Map(); // "platform:user id" → time of their last push
+
+function onChatEvent(event) {
+  if (event?.type !== "message" || typeof event.text !== "string") return;
+  const kind = event.kind?.type;
+  const special = kind === "donation" || kind === "special" || kind === "gift" || kind === "membership";
+  const command = parseCommand(event.text);
+  if (!command && !special) return;
+
+  // Paid/member events always count; everyone else waits out a cooldown,
+  // so one chatter spamming can't take over the ball.
+  if (!special) {
+    const who = `${event.platform}:${event.author?.id}`;
+    const now = performance.now() / 1000;
+    if (now - (lastPush.get(who) ?? -Infinity) < CONFIG.cooldown) return;
+    if (lastPush.size > 5000) lastPush.clear();
+    lastPush.set(who, now);
+  }
+
+  const name = Array.from(String(event.author?.name ?? "someone")).slice(0, 24).join("");
+  const color = special ? GOLD
+    : /^#[0-9a-f]{6}$/i.test(event.author?.color ?? "") ? event.author.color : "#ffffff";
+
+  if (!command) return bless(name);
+  const [dx, dy] = command;
+  if (dx === 0 && dy === 0) {
+    // "up down": the eye can't decide and shivers.
+    squash(1, 0, screenSize() * 0.6);
+    return addLabel(`${name} ?`, color);
+  }
+  const len = Math.hypot(dx, dy);
+  push(dx / len, dy / len, special ? 2.2 : 1, name, color);
+}
+
+// -------------------------------------------------------------- websocket
+
+const statusEl = document.getElementById("status");
+let statusTimer = 0;
+function setStatus(text, stay) {
+  statusEl.textContent = text;
+  statusEl.style.opacity = "0.85";
+  clearTimeout(statusTimer);
+  if (!stay) statusTimer = setTimeout(() => (statusEl.style.opacity = "0"), 3000);
+}
+
+let retryMs = 1000;
+function connect() {
+  let ws;
+  try {
+    ws = new WebSocket(CONFIG.wsUrl);
+  } catch {
+    return setStatus(`🧿 not a WebSocket address: ${CONFIG.wsUrl}`, true);
+  }
+  ws.onopen = () => {
+    retryMs = 1000;
+    setStatus("🧿 connected to chat", false);
+  };
+  ws.onmessage = (frame) => {
+    try {
+      onChatEvent(JSON.parse(frame.data));
+    } catch (err) {
+      console.warn("ignored an event:", err);
+    }
+  };
+  // Also fires after a failed connect (server not running, API switched
+  // off → HTTP 403), so this is the one place that retries.
+  ws.onclose = () => {
+    setStatus("🧿 waiting for chat… (is the JSON API switched on?)", true);
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 1.5, 10000);
+  };
+}
+
+// ---------------------------------------------------------------- drawing
+
+function drawNazar(R) {
+  // Body: deep cobalt glass, lit from the top left. The drop shadow keeps
+  // it readable on any stream background.
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 20, 0.45)";
+  ctx.shadowBlur = R * 0.35 * dpr; // shadows ignore the transform
+  ctx.shadowOffsetY = R * 0.1 * dpr;
+  const body = ctx.createRadialGradient(-0.3 * R, -0.35 * R, R * 0.05, 0, 0, R);
+  body.addColorStop(0, "#4a8cf0");
+  body.addColorStop(0.5, "#1747b5");
+  body.addColorStop(0.88, "#0b2c80");
+  body.addColorStop(1, "#061a55");
+  disc(0, 0, R, body);
+  ctx.restore();
+
+  // The eye, shifted where it looks; inner layers shift more, for depth.
+  const lx = ball.lookX * R, ly = ball.lookY * R;
+  const white = ctx.createRadialGradient(lx - 0.15 * R, ly - 0.2 * R, 0, lx, ly, 0.62 * R);
+  white.addColorStop(0, "#ffffff");
+  white.addColorStop(1, "#d8e4f6");
+  disc(lx * 0.9, ly * 0.9, 0.62 * R, white);
+  const iris = ctx.createRadialGradient(lx * 1.1, ly * 1.1, 0.1 * R, lx * 1.1, ly * 1.1, 0.42 * R);
+  iris.addColorStop(0, "#8fd2ff");
+  iris.addColorStop(0.6, "#3a9ae6");
+  iris.addColorStop(1, "#1d68bd");
+  disc(lx * 1.1, ly * 1.1, 0.42 * R, iris);
+  disc(lx * 1.3, ly * 1.3, 0.21 * R, "#07070c");
+
+  // Glass reflections: a soft sheen, a sharp window highlight, a glint on
+  // the pupil and a faint rim light at the bottom right.
+  const sheen = ctx.createRadialGradient(-0.4 * R, -0.45 * R, 0, -0.4 * R, -0.45 * R, R * 1.1);
+  sheen.addColorStop(0, "rgba(255, 255, 255, 0.32)");
+  sheen.addColorStop(1, "rgba(255, 255, 255, 0)");
+  disc(0, 0, R, sheen);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.75)";
+  ctx.beginPath();
+  ctx.ellipse(-0.4 * R, -0.5 * R, 0.24 * R, 0.1 * R, -0.65, 0, Math.PI * 2);
+  ctx.fill();
+  disc(lx * 1.3 - 0.07 * R, ly * 1.3 - 0.08 * R, 0.05 * R, "rgba(255, 255, 255, 0.85)");
+  ctx.strokeStyle = "rgba(150, 205, 255, 0.4)";
+  ctx.lineWidth = 0.05 * R;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.arc(0, 0, R * 0.92, Math.PI * 0.1, Math.PI * 0.55);
+  ctx.stroke();
+}
+
+function disc(x, y, r, fill) {
+  ctx.fillStyle = fill;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const speed = Math.hypot(ball.vx, ball.vy);
+
+  // Motion ghosts when it's really flying.
+  const fast = Math.min(1, Math.max(0, (speed - screenSize() * 0.6) / screenSize()));
+  if (fast > 0) {
+    trail.forEach((p, i) => {
+      const t = i / trail.length;
+      ctx.globalAlpha = t * 0.22 * fast;
+      disc(p.x, p.y, ball.r * (0.6 + 0.4 * t), "#1d5fd0");
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  for (const r of rings) {
+    const t = r.age / r.life;
+    ctx.globalAlpha = (1 - t) * 0.8;
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = ball.r * 0.08 * (1 - t);
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, ball.r * (0.3 + t), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Deformation: the wobble springs plus a stretch along the direction of
+  // travel. A matrix built from the direction squared (ux², ux·uy, uy²)
+  // is the same for u and -u, so the stretch doesn't flip on a bounce.
+  const s = 0.12 * (1 - Math.exp(-speed / (ball.r * 25)));
+  const ux = speed > 0 ? ball.vx / speed : 0, uy = speed > 0 ? ball.vy / speed : 0;
+  const xx = 1 + ball.strain[0] + s * ux * ux - 0.5 * s * uy * uy;
+  const xy = ball.strain[1] + 1.5 * s * ux * uy;
+  const yy = 1 + ball.strain[2] + s * uy * uy - 0.5 * s * ux * ux;
+  ctx.save();
+  ctx.translate(ball.x, ball.y);
+  ctx.transform(xx, xy, xy, yy, 0, 0);
+  drawNazar(ball.r);
+  ctx.restore();
+
+  for (const p of sparks) {
+    ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+    disc(p.x, p.y, p.size, p.color);
+  }
+  ctx.globalAlpha = 1;
+
+  const fontSize = Math.max(14, ball.r * 0.34);
+  ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  for (const l of labels) {
+    const half = ctx.measureText(l.text).width / 2 + 4;
+    const x = Math.min(Math.max(l.x, half), Math.max(half, W - half));
+    const y = Math.max(l.y, fontSize);
+    ctx.globalAlpha = Math.min(1, (1 - l.age / l.life) * 2.5);
+    ctx.lineWidth = fontSize * 0.22;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
+    ctx.strokeText(l.text, x, y);
+    ctx.fillStyle = l.color;
+    ctx.fillText(l.text, x, y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ------------------------------------------------------------------- loop
+
+// Physics runs in fixed steps of 1/120 s, independent of the frame rate,
+// so it behaves the same at 30 and 144 fps.
+const STEP = 1 / 120;
+let last = performance.now();
+let pending = 0;
+function frame(now) {
+  // Capped, so a hidden tab (or OBS source) doesn't catch up minutes at once.
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  pending += dt;
+  while (pending >= STEP) {
+    step(STEP);
+    pending -= STEP;
+  }
+  updateEffects(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// --------------------------------------------------------------- testing
+
+const KEYS = {
+  ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+  w: "up", s: "down", a: "left", d: "right",
+};
+window.addEventListener("keydown", (e) => {
+  if (e.repeat) return;
+  if (e.key === " ") return bless("you");
+  const word = KEYS[e.key];
+  if (!word) return;
+  const [dx, dy] = DIRECTIONS.get(word);
+  push(dx, dy, 1, "you", "#ffffff");
+});
+
+function startDemo() {
+  const names = ["Viewer42", "NightOwl7", "PixelPanda", "LurkerLou", "MochiFan", "GlitchGoblin"];
+  const colors = ["#ff7f50", "#9acd32", "#1e90ff", "#ff69b4", null, "#daa520"];
+  const texts = ["up", "down", "left", "right", "!up", "up left", "⬆️", "right right", "down right", "up down"];
+  let n = 0;
+  (function next() {
+    const i = (Math.random() * names.length) | 0;
+    const donation = Math.random() < 0.08;
+    onChatEvent({
+      type: "message",
+      platform: i % 2 ? "twitch" : "youtube",
+      author: { id: `demo-${i}-${n++}`, name: names[i], color: colors[i] },
+      text: donation && Math.random() < 0.5 ? "" : texts[(Math.random() * texts.length) | 0],
+      kind: donation ? { type: "donation", amount: "€5.00" } : { type: "text" },
+    });
+    setTimeout(next, 500 + Math.random() * 1500);
+  })();
+}
+
+// ------------------------------------------------------------------- start
+
+resize();
+{
+  const a = Math.random() * Math.PI * 2;
+  ball.vx = Math.cos(a) * cruiseSpeed();
+  ball.vy = Math.sin(a) * cruiseSpeed();
+}
+window.addEventListener("resize", resize);
+requestAnimationFrame(frame);
+connect();
+if (CONFIG.demo) startDemo();
+</script>
+</body>
+</html>
