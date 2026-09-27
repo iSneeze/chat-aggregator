@@ -61,5 +61,21 @@ styles. Keep the root element's `msg` class and its `data-id`,
 `data-platform` and `data-author` attributes: the overlay needs them to
 remove deleted messages.
 
+## Safety
+
 Chat text is always escaped, so whatever chatters type can never break the
-page or run code in it.
+page or run code in it. Two rules keep it that way:
+
+- **Never use `| safe`** on chat values (`author.name`, `part.text`,
+  `amount`, `info`, …) in `message.html`. It switches the escaping off, and
+  a chatter could then put script into your overlay. OBS runs overlays
+  without Chromium's sandbox, so script there can reach your computer
+  through an outdated OBS (this happened with another overlay:
+  [CVE-2024-7971](https://cyberinsider.com/malicious-twitch-chat-messages-can-trigger-code-execution-on-obs-studio/)).
+- **Only use themes from people you trust.** A theme's `message.html` is
+  code that runs in OBS. chat-aggregator's overlay only allows its own
+  script (a Content-Security-Policy blocks everything else, including
+  `onerror=` tricks), but treat a stranger's theme like a stranger's
+  program. `overlay.css` on its own is harmless: CSS can't run code.
+
+And keep OBS up to date: its embedded browser gets security fixes with it.

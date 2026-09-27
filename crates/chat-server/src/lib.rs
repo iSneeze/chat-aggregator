@@ -11,7 +11,7 @@
 
 use std::convert::Infallible;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::Router;
@@ -21,6 +21,7 @@ use axum::http::header;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
+use base64::Engine as _;
 use chat_core::{ChatEvent, Hub};
 use chat_render::Theme;
 use futures_util::stream::BoxStream;
@@ -41,6 +42,47 @@ pub use connections::Connections;
 pub use stagger::Stagger;
 
 const OVERLAY_HTML: &str = include_str!("overlay.html");
+
+/// The overlay page's Content-Security-Policy: rules sent along with the
+/// page that tell the browser (OBS's browser source) what it may load and
+/// run. The escaping in `chat-render` already keeps chat from becoming
+/// markup; this is the second line of defence, for the day that breaks, or
+/// for a theme from someone else that contains script. It matters more in
+/// OBS than in a normal browser: OBS runs its browser without Chromium's
+/// sandbox, so script in an overlay can be one browser bug away from the
+/// streamer's computer (CVE-2024-7971 was exploited exactly like that).
+///
+/// - `script-src` allows only our own overlay script, by the SHA-256 hash of
+///   its exact text. Everything else is blocked: `<script>` from anywhere
+///   else, and inline event handlers like `<img onerror=…>`.
+/// - Styles, images and fonts may come from the web (platform emotes and
+///   avatars, web fonts in themes); `'unsafe-inline'` styles are needed for
+///   the author colour's `style` attribute. CSS can't run script.
+/// - `connect-src 'self'`: the live chat stream from this server only.
+/// - `default-src 'none'` blocks everything not listed: frames, plugins,
+///   workers.
+///
+/// A `LazyLock` computes it once, on first use; the hash is taken from the
+/// same text that is served, so editing the script can't make them differ.
+static OVERLAY_CSP: LazyLock<String> = LazyLock::new(|| {
+    let script = OVERLAY_HTML
+        .split_once("<script>")
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(script, _)| script)
+        .expect("overlay.html has its script inline");
+    let hash = base64::engine::general_purpose::STANDARD
+        .encode(<sha2::Sha256 as sha2::Digest>::digest(script.as_bytes()));
+    format!(
+        "default-src 'none'; script-src 'sha256-{hash}'; \
+         style-src 'self' 'unsafe-inline' https:; img-src 'self' https: data:; \
+         font-src 'self' https: data:; media-src 'self' https: data:; \
+         connect-src 'self'; base-uri 'none'; form-action 'none'"
+    )
+});
+
+/// Stops the browser from guessing a file's type: a theme file is only ever
+/// used as what we declare (e.g. never run as script).
+const NO_SNIFF: (header::HeaderName, &str) = (header::X_CONTENT_TYPE_OPTIONS, "nosniff");
 
 /// Shared by all request handlers. Cloned per request, which is cheap:
 /// every field is an `Arc` or a small handle around one.
@@ -107,7 +149,14 @@ pub async fn serve(listener: TcpListener, state: ServerState) -> std::io::Result
 const NO_CACHE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-cache");
 
 async fn overlay_page() -> impl IntoResponse {
-    ([NO_CACHE], Html(OVERLAY_HTML))
+    (
+        [
+            NO_CACHE,
+            NO_SNIFF,
+            (header::CONTENT_SECURITY_POLICY, OVERLAY_CSP.as_str()),
+        ],
+        Html(OVERLAY_HTML),
+    )
 }
 
 /// The theme's files. The CSS lives under `/theme/` too, so a relative URL
@@ -125,7 +174,15 @@ async fn theme_file(State(state): State<ServerState>, UrlPath(path): UrlPath<Str
     };
     match tokio::fs::read(&file).await {
         Ok(bytes) => (
-            [(header::CONTENT_TYPE, content_type(&file)), NO_CACHE],
+            [
+                (header::CONTENT_TYPE, content_type(&file)),
+                NO_CACHE,
+                NO_SNIFF,
+                // Theme files are images, fonts, CSS: nothing that needs
+                // script. This stops script in e.g. an SVG, should one ever
+                // be opened as a page instead of shown as an image.
+                (header::CONTENT_SECURITY_POLICY, "script-src 'none'"),
+            ],
             bytes,
         )
             .into_response(),
@@ -142,7 +199,11 @@ fn overlay_css(state: &ServerState) -> impl IntoResponse + use<> {
         }),
     };
     (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8"), NO_CACHE],
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            NO_CACHE,
+            NO_SNIFF,
+        ],
         css,
     )
 }
@@ -425,6 +486,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overlay_page_only_allows_its_own_script() {
+        let server = start(None).await;
+        let resp = reqwest::get(format!("http://{}/", server.addr))
+            .await
+            .unwrap();
+        let csp = resp.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(resp.headers()["x-content-type-options"], "nosniff");
+        let page = resp.text().await.unwrap();
+
+        // One inline script, allowed by the hash of exactly what's served.
+        assert_eq!(page.matches("<script").count(), 1, "one script only");
+        let script = page
+            .split_once("<script>")
+            .and_then(|(_, rest)| rest.split_once("</script>"))
+            .unwrap()
+            .0;
+        let hash = base64::engine::general_purpose::STANDARD
+            .encode(<sha2::Sha256 as sha2::Digest>::digest(script.as_bytes()));
+        let script_src = csp
+            .split(';')
+            .map(str::trim)
+            .find(|rule| rule.starts_with("script-src"))
+            .expect("a script-src rule");
+        assert_eq!(script_src, format!("script-src 'sha256-{hash}'"));
+        // Nothing falls back to "allow everything".
+        assert!(csp.starts_with("default-src 'none';"), "{csp}");
+        assert!(csp.contains("connect-src 'self'"), "{csp}");
+    }
+
+    #[tokio::test]
     async fn broken_custom_template_falls_back_to_builtin() {
         let dir = std::env::temp_dir().join(format!("chat-server-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -540,6 +634,11 @@ mod tests {
         );
         let font = reqwest::get(format!("{base}/fonts/f.woff2")).await.unwrap();
         assert_eq!(font.headers()["content-type"], "font/woff2");
+        assert_eq!(font.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(
+            font.headers()["content-security-policy"],
+            "script-src 'none'"
+        );
 
         // `%2F` is an encoded "/": the router decodes it into the path, so
         // this asks for ../../config.toml. It must not be served.

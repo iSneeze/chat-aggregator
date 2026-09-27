@@ -20,6 +20,10 @@ or bots, can receive the same chat as a live JSON feed.
 - A small desktop app to set it up: add channels, connect YouTube, pick a
   theme, send test messages.
 - Runs locally: no account with us, no server of ours in between.
+- Built with streamer safety in mind: chat is always shown as text, never
+  as code, and the overlay refuses to run any script but its own.
+  (Keep OBS itself up to date too: its built-in browser gets security fixes
+  with it.)
 
 ## Documentation
 

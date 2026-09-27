@@ -132,7 +132,17 @@ The server only listens on `127.0.0.1`, so other machines can't connect.
 Any program on the same machine can, and so can websites open in the
 streamer's browser (browsers allow pages to connect to `ws://localhost`).
 That's fine for this read-only feed of public chat, and it means browser
-games can use it too.
+games can use it too. It's off by default for that reason.
+
+**Chat is untrusted input.** Every text field (`text`, `author.name`,
+amounts, descriptions, emote codes) is exactly what someone typed or sent,
+unescaped. If you show it in a web page or an OBS browser source, insert it
+as **text** (`element.textContent = …`), never as HTML (`innerHTML`,
+`insertAdjacentHTML`, template strings put into the page). An overlay that
+did exactly that let chatters run code on streamers' PCs through OBS
+([CVE-2024-7971](https://cyberinsider.com/malicious-twitch-chat-messages-can-trigger-code-execution-on-obs-studio/)):
+OBS runs its browser sources without Chromium's sandbox. The same goes for
+URLs (`url`, `avatar_url`): use them as image sources only.
 
 ## Example clients
 

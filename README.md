@@ -104,6 +104,13 @@ Off by default: switch it on in the app's settings (headless: `--api` or
 `cargo run -p chat-engine --example run -- --demo --api`, then
 `websocat ws://127.0.0.1:7878/api/v1/ws`.
 
+**Security:** chat is untrusted input. It reaches the overlay only through
+`chat-render` (auto-escaped template, body pre-split into text/emote
+parts), and the overlay page sends a Content-Security-Policy that allows
+only its own script (by hash), so neither chat nor a hostile theme can run
+code in OBS's unsandboxed browser (cf. CVE-2024-7971). API consumers must
+insert chat as text too: see [docs/api.md](docs/api.md#security).
+
 Standalone listeners for a single platform:
 
 ```sh

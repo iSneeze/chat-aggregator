@@ -1076,6 +1076,7 @@ name = "chat-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "chat-core",
  "chat-render",
  "chrono",
@@ -1084,6 +1085,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",

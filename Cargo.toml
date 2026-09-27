@@ -41,6 +41,10 @@ webbrowser = "1"
 directories = "6"
 chrono-tz = "0.10"
 toml = "1"
+# The overlay's Content-Security-Policy hash. Same versions the OAuth crate
+# already brings in, so nothing is compiled twice.
+sha2 = "0.10"
+base64 = "0.22"
 # Pinned exactly: the app is written against this version's API (GPUI
 # changes a lot between releases).
 gpui-kit = "=0.6.6"

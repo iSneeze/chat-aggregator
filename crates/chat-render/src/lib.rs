@@ -136,6 +136,85 @@ mod tests {
         assert!(html.contains("&lt;script&gt;"), "{html}");
     }
 
+    /// Classic attempts to turn chat into markup or script. They must all
+    /// end up as text: in OBS, script in an overlay runs without Chromium's
+    /// sandbox (see `OVERLAY_CSP` in chat-server for the second line of
+    /// defence).
+    const HOSTILE: &[&str] = &[
+        r#""><img src=x onerror=alert(1)>"#,
+        "'><svg onload=alert(1)>",
+        "<script>alert(1)</script>",
+        "</p></article><script>alert(1)</script>",
+        "javascript:alert(1)",
+        "{{ 7*7 }}{% if true %}",
+    ];
+
+    /// A message with `value` in every field a chatter or platform controls.
+    fn filled_with(value: &str, kind: MessageKind) -> ChatMessage {
+        ChatMessage {
+            id: value.into(),
+            platform: ChatPlatform::Twitch,
+            author: Author {
+                id: value.into(),
+                name: value.into(),
+                color: Some(value.into()),
+                badges: vec![value.into()],
+                avatar_url: Some(value.into()),
+            },
+            text: value.into(),
+            // The whole text is also an emote code, so it lands in the
+            // emote's `alt`/`title` attributes too.
+            emotes: vec![EmoteRef {
+                code: value.into(),
+                url: value.into(),
+            }],
+            timestamp: chrono::Utc::now(),
+            kind,
+        }
+    }
+
+    fn kinds(value: &str) -> Vec<MessageKind> {
+        vec![
+            MessageKind::Text,
+            MessageKind::Donation {
+                amount: value.into(),
+            },
+            MessageKind::Special {
+                image_url: Some(value.into()),
+                amount: Some(value.into()),
+                info: Some(value.into()),
+            },
+            MessageKind::MembershipJoin { info: value.into() },
+            MessageKind::MembershipGift { count: 3 },
+            MessageKind::SystemNotice { info: value.into() },
+        ]
+    }
+
+    /// The characters that make up markup: tags and attribute quotes.
+    /// Escaped text (`&lt;`, `&quot;`, `&#x27;`) contains none of them.
+    fn markup(html: &str) -> String {
+        html.chars().filter(|c| "<>\"'".contains(*c)).collect()
+    }
+
+    #[test]
+    fn hostile_chat_never_becomes_markup() {
+        for hostile in HOSTILE {
+            for (safe_kind, hostile_kind) in kinds("x").into_iter().zip(kinds(hostile)) {
+                let expected = render(&filled_with("x", safe_kind));
+                let html = render(&filled_with(hostile, hostile_kind));
+                assert_eq!(
+                    markup(&html),
+                    markup(&expected),
+                    "{hostile:?} changed the markup:\n{html}"
+                );
+                // Chat is data, never template code: it shows up as typed.
+                if hostile.starts_with("{{") {
+                    assert!(html.contains("{{ 7*7 }}"), "{html}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn root_carries_classes_and_data_attributes() {
         let html = render(&message(ChatPlatform::YouTube, "hi", MessageKind::Text));
