@@ -202,6 +202,15 @@
               "description": "The platform's description, e.g. \"subscribed for 12 months\".",
               "type": "string"
             },
+            "months": {
+              "description": "How many months they've been a member, for a resub or milestone;\n`null` for a new subscriber/member.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "type": {
               "const": "membership",
               "type": "string"
@@ -209,7 +218,8 @@
           },
           "required": [
             "type",
-            "info"
+            "info",
+            "months"
           ],
           "type": "object"
         },

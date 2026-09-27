@@ -147,6 +147,7 @@ impl ManualWindow {
             },
             Kind::Membership => MessageKind::MembershipJoin {
                 info: non_empty(value(&self.info), "a description")?,
+                months: None,
             },
             Kind::Gift => MessageKind::MembershipGift {
                 count: value(&self.count)

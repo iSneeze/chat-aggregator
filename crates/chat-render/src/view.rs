@@ -19,6 +19,7 @@ pub(crate) struct MessageView<'a> {
     body: Vec<Part<'a>>,
     amount: Option<&'a str>,
     count: Option<usize>,
+    months: Option<u32>,
     info: Option<&'a str>,
     sticker_url: Option<&'a str>,
 }
@@ -64,6 +65,7 @@ impl<'a> MessageView<'a> {
             body: split_body(&msg.text, &msg.emotes),
             amount: None,
             count: None,
+            months: None,
             info: None,
             sticker_url: None,
         };
@@ -87,9 +89,10 @@ impl<'a> MessageView<'a> {
                 view.amount = amount.as_deref();
                 view.info = info.as_deref();
             }
-            MessageKind::MembershipJoin { info } => {
+            MessageKind::MembershipJoin { info, months } => {
                 view.kind = "membership";
                 view.info = Some(info);
+                view.months = *months;
             }
             MessageKind::MembershipGift { count } => {
                 view.kind = "gift";
@@ -256,6 +259,25 @@ mod tests {
         let parts = split_body("日本語 😂 Kappa", &emotes);
         assert_eq!(parts[0], text("日本語 😂 "));
         assert!(matches!(parts[1], Part::Emote { .. }));
+    }
+
+    #[test]
+    fn templates_see_the_months_of_a_membership() {
+        let render = |months| {
+            let mut msg = chat_core::demo::sample_messages(0).remove(0);
+            msg.kind = MessageKind::MembershipJoin {
+                info: "subscribed".into(),
+                months,
+            };
+            minijinja::Environment::new()
+                .render_str(
+                    "{{ months if months is not none else 'new' }}",
+                    MessageView::new(&msg),
+                )
+                .unwrap()
+        };
+        assert_eq!(render(Some(12)), "12");
+        assert_eq!(render(None), "new");
     }
 
     #[test]

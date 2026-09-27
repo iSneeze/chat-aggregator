@@ -159,6 +159,9 @@ pub enum MessageKind {
     MembershipJoin {
         /// The platform's description, e.g. "subscribed for 12 months".
         info: String,
+        /// How many months they've been a member, for a resub or milestone;
+        /// `null` for a new subscriber/member.
+        months: Option<u32>,
     },
     /// Gifted subs (Twitch) or memberships (YouTube).
     #[serde(rename = "gift")]
@@ -339,9 +342,17 @@ mod json_contract {
         );
         assert_eq!(
             kind(MessageKind::MembershipJoin {
-                info: "12 months".into()
+                info: "12 months".into(),
+                months: Some(12),
             }),
-            json!({ "type": "membership", "info": "12 months" })
+            json!({ "type": "membership", "info": "12 months", "months": 12 })
+        );
+        assert_eq!(
+            kind(MessageKind::MembershipJoin {
+                info: "Welcome!".into(),
+                months: None,
+            }),
+            json!({ "type": "membership", "info": "Welcome!", "months": null })
         );
         assert_eq!(
             kind(MessageKind::MembershipGift { count: 5 }),

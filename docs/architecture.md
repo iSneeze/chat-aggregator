@@ -103,7 +103,7 @@ ChatEvent
 └── ClearAll { platform }
 
 MessageKind: Text | EmoteOnly | Donation { amount } | Special { image_url, amount, info }
-           | MembershipJoin { info } | MembershipGift { count } | SystemNotice { info }
+           | MembershipJoin { info, months } | MembershipGift { count } | SystemNotice { info }
 ```
 
 Every platform is normalised into these types. Their JSON form (defined by
@@ -219,6 +219,12 @@ binary; a theme folder overrides any file it has. Named themes live in
 - The message body is split into text and emote parts *before* rendering,
   so the template writes the `<img>` tags and chat text never reaches the
   page as HTML (see Security).
+- **Per-chatter looks**: the `seed` filter turns a value (usually
+  `author.id`) into a stable number for the template, e.g. a hue or one of
+  six shapes. It's our own fixed hash (FNV-1a plus MurmurHash3's
+  finalizer), not Rust's standard hasher, which is randomised per process
+  and may change between versions: themes rely on a chatter's look never
+  changing. A test pins the results.
 - Overlay behaviour that streamers may want to tune (how many messages stay,
   how long a deleted one fades) are CSS variables, read by the page's
   script: streamers only ever touch CSS.

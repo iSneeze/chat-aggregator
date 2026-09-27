@@ -127,6 +127,7 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             vec![],
             MessageKind::MembershipJoin {
                 info: "Gus subscribed at Tier 1. They've subscribed for 12 months!".into(),
+                months: Some(12),
             },
         ),
         msg(
@@ -137,6 +138,7 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             vec![],
             MessageKind::MembershipJoin {
                 info: "Welcome to the channel membership!".into(),
+                months: None,
             },
         ),
         msg(

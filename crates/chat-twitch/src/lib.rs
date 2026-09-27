@@ -155,8 +155,20 @@ fn convert_user_notice(un: UserNoticeMessage) -> Option<ChatMessage> {
                 info: un.system_message,
             }
         }
-        UserNoticeEvent::SubOrResub { .. } => MessageKind::MembershipJoin {
+        UserNoticeEvent::SubOrResub {
+            is_resub,
+            cumulative_months,
+            ..
+        } => MessageKind::MembershipJoin {
             info: un.system_message,
+            // A first sub is a welcome, not a milestone: no month count.
+            // (`try_from`: the tag is parsed as a u64; a count that doesn't
+            // fit a u32 would be garbage, so it's dropped rather than cut.)
+            months: if is_resub {
+                u32::try_from(cumulative_months).ok()
+            } else {
+                None
+            },
         },
         // A community gift of N subs arrives as one `submysterygift` (counted
         // below) followed by N per-recipient `subgift`s: skip those, or every
@@ -337,6 +349,38 @@ mod tests {
             1,
         );
         assert!(convert(parse(&raw)).is_none());
+    }
+
+    const RESUB: &str = "@badge-info=subscriber/12;badges=subscriber/12;color=;display-name=Viewer42;emotes=;flags=;id=r1;login=viewer42;mod=0;msg-id=resub;msg-param-cumulative-months=12;msg-param-should-share-streak=0;msg-param-sub-plan-name=Sub;msg-param-sub-plan=1000;room-id=123;subscriber=1;system-msg=Viewer42\\ssubscribed\\sat\\sTier\\s1.\\sThey've\\ssubscribed\\sfor\\s12\\smonths!;tmi-sent-ts=1700000000000;user-id=47;user-type= :viewer42!viewer42@viewer42.tmi.twitch.tv USERNOTICE #somechannel :time flies";
+
+    #[test]
+    fn resub_carries_the_months() {
+        let out = convert_msg(RESUB);
+        match out.kind {
+            MessageKind::MembershipJoin { info, months } => {
+                assert_eq!(
+                    info,
+                    "Viewer42 subscribed at Tier 1. They've subscribed for 12 months!"
+                );
+                assert_eq!(months, Some(12));
+            }
+            other => panic!("expected MembershipJoin, got {other:?}"),
+        }
+        assert_eq!(out.text, "time flies");
+    }
+
+    #[test]
+    fn first_sub_has_no_months() {
+        let raw = RESUB.replacen("msg-id=resub;", "msg-id=sub;", 1).replacen(
+            "msg-param-cumulative-months=12;",
+            "msg-param-cumulative-months=1;",
+            1,
+        );
+        let out = convert_msg(&raw);
+        assert!(matches!(
+            out.kind,
+            MessageKind::MembershipJoin { months: None, .. }
+        ));
     }
 
     #[test]

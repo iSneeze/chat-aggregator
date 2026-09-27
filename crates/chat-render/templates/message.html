@@ -15,9 +15,16 @@
                    { type: "emote", code, url }
     amount       donation, special: "€5.00", "100 bits", "10 jewels"
     count        gift: number of gifted subs/memberships
+    months       membership: months as a member for a resub or milestone,
+                 none for a new subscriber/member
     info         membership, notice: the platform's description
                  special: name/description of the sticker or gift
     sticker_url  special: image, if the platform provides one
+
+  Filter for per-chatter looks:
+    value | seed(n, salt)   a stable number from 0 to n-1 for this value,
+                            e.g. author.id | seed(360, "hue"); a different
+                            salt gives an independent number
 
   The overlay script relies on the root element keeping the class "msg"
   and the data-id / data-platform / data-author attributes.

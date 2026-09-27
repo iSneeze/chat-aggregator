@@ -78,6 +78,31 @@ styles. Keep the root element's `msg` class and its `data-id`,
 `data-platform` and `data-author` attributes: the overlay needs them to
 remove deleted messages.
 
+## A look per chatter
+
+Every chatter can get something of their own (a colour, a shape, a
+little marker next to the name) that stays the same every time they write,
+across streams and name changes. The `seed` filter turns their id into a
+number:
+
+{% raw %}
+```html
+<span class="marker marker--shape-{{ author.id | seed(6, 'shape') }}"
+      style="--marker-hue: {{ author.id | seed(360, 'hue') }}"></span>
+```
+{% endraw %}
+
+`value | seed(n, 'salt')` gives a number from 0 to n−1: `seed(6, …)` picks
+one of six shapes (style `.marker--shape-0` to `.marker--shape-5`),
+`seed(360, …)` a hue for `hsl(var(--marker-hue) 80% 60%)` or
+`filter: hue-rotate(…)`. Each salt (`'shape'`, `'hue'`, any word) gives an
+independent number, so shape and colour don't go hand in hand. The numbers
+never change between versions of chat-aggregator.
+
+Good to know: it's the same person on Twitch and YouTube, but two ids, so
+two looks. And two chatters can land on the same combination; the more
+choices you combine (shapes × colours × sizes …), the rarer that gets.
+
 ## Safety
 
 Chat text is always escaped, so whatever chatters type can never break the

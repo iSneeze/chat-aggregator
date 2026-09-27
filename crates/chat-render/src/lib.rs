@@ -11,6 +11,7 @@ use anyhow::Context;
 use chat_core::ChatMessage;
 use minijinja::Environment;
 
+mod seed;
 pub mod themes;
 mod view;
 
@@ -51,6 +52,8 @@ impl Theme {
         // so `{% if %}` lines don't leave blank lines in the output.
         env.set_trim_blocks(true);
         env.set_lstrip_blocks(true);
+        // `value | seed(n, salt)`: a stable number per chatter (seed.rs).
+        env.add_filter("seed", seed::filter);
         // The `.html` name also switches on HTML auto-escaping.
         env.add_template_owned(MESSAGE_FILE, message)?;
         Ok(Self { env, css })
@@ -184,7 +187,10 @@ mod tests {
                 amount: Some(value.into()),
                 info: Some(value.into()),
             },
-            MessageKind::MembershipJoin { info: value.into() },
+            MessageKind::MembershipJoin {
+                info: value.into(),
+                months: Some(12),
+            },
             MessageKind::MembershipGift { count: 3 },
             MessageKind::SystemNotice { info: value.into() },
         ]
@@ -321,6 +327,28 @@ mod tests {
         let mut msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
         msg.author.color = Some("red; background: url(x)".into());
         assert!(!render(&msg).contains("--author-color"));
+    }
+
+    #[test]
+    fn templates_can_seed_per_chatter_values() {
+        let theme = Theme::from_sources(
+            "{{ author.id | seed(360, 'hue') }} {{ author.id | seed(6) }}".into(),
+            String::new(),
+        )
+        .unwrap();
+        let msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
+        let id = minijinja::Value::from(msg.author.id.as_str());
+        let expected = format!(
+            "{} {}",
+            seed::filter(&id, 360, Some("hue")).unwrap(),
+            seed::filter(&id, 6, None).unwrap()
+        );
+        assert_eq!(theme.render(&msg).unwrap(), expected);
+
+        // A mistake in a theme is a render error, not a crash.
+        let broken =
+            Theme::from_sources("{{ author.id | seed(0) }}".into(), String::new()).unwrap();
+        assert!(broken.render(&msg).is_err());
     }
 
     #[test]

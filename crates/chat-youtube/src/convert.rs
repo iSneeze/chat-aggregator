@@ -120,6 +120,7 @@ pub fn convert(
                 } else {
                     display
                 },
+                months: None,
             },
             String::new(),
         ),
@@ -130,6 +131,9 @@ pub fn convert(
                     d.member_month(),
                     if d.member_month() == 1 { "" } else { "s" },
                 ),
+                // The field itself, not `member_month()`: that would turn a
+                // missing value into 0.
+                months: d.member_month,
             },
             d.user_comment.unwrap_or_default(),
         ),
@@ -271,6 +275,53 @@ mod tests {
         assert!(matches!(msg.kind, MessageKind::Donation { .. }));
         // Only the user's own words; the amount lives in the kind.
         assert_eq!(msg.text, "WOO");
+    }
+
+    fn membership_item(r#type: Type, details: DisplayedContent) -> pb::LiveChatMessage {
+        pb::LiveChatMessage {
+            id: Some("m3".into()),
+            snippet: Some(pb::LiveChatMessageSnippet {
+                r#type: Some(r#type as i32),
+                displayed_content: Some(details),
+                ..Default::default()
+            }),
+            author_details: Some(LiveChatMessageAuthorDetails {
+                display_name: Some("@Viewer42".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn milestone_carries_the_months() {
+        let item = membership_item(
+            Type::MemberMilestoneChatEvent,
+            DisplayedContent::MemberMilestoneChatDetails(pb::LiveChatMemberMilestoneChatDetails {
+                member_month: Some(43),
+                user_comment: Some("still here".into()),
+                ..Default::default()
+            }),
+        );
+        let msg = convert_msg(item, &EmojiMap::default());
+        match msg.kind {
+            MessageKind::MembershipJoin { months, .. } => assert_eq!(months, Some(43)),
+            other => panic!("expected MembershipJoin, got {other:?}"),
+        }
+        assert_eq!(msg.text, "still here");
+    }
+
+    #[test]
+    fn new_member_has_no_months() {
+        let item = membership_item(
+            Type::NewSponsorEvent,
+            DisplayedContent::NewSponsorDetails(pb::LiveChatNewSponsorDetails::default()),
+        );
+        let msg = convert_msg(item, &EmojiMap::default());
+        assert!(matches!(
+            msg.kind,
+            MessageKind::MembershipJoin { months: None, .. }
+        ));
     }
 
     #[test]

@@ -86,7 +86,7 @@ A chat message or a platform event (donation, sub, raid, ...).
 | `emote_only` | | only emotes (and spaces) |
 | `donation`   | `amount` | Twitch bits, YouTube Super Chat: `"100 bits"`, `"€5.00"` |
 | `special`    | `image_url`, `amount`, `info` (each may be `null`) | YouTube Super Sticker (`info` = sticker description), YouTube gift |
-| `membership` | `info` | new sub/member, resub, milestone |
+| `membership` | `info`, `months` | new sub/member, resub, milestone; `months` = how long they've been a member (resub, milestone), `null` for a new one |
 | `gift`       | `count` | gifted subs (Twitch) or memberships (YouTube) |
 | `notice`     | `info` | raid, announcement |
 
