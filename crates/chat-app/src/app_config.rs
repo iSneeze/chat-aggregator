@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use chat_engine::{
-    AppSettings, ConfigFile, EngineHandle, ServerSettings, SourceConfig, SourceEntry, SourceId,
-    YouTubeSettings,
+    AppSettings, ConfigFile, EngineHandle, Newest, ServerSettings, SourceConfig, SourceEntry,
+    SourceId, YouTubeSettings,
 };
 
 pub struct AppConfig {
@@ -74,12 +74,19 @@ impl AppConfig {
         &self.file.server
     }
 
-    /// Port, history and staggering from the settings window. The theme is
-    /// part of `ServerSettings` too, but has its own setter: it's changed in
-    /// the main window, so this one keeps whatever is set.
+    /// Port, history, staggering and the API from the settings window. The
+    /// theme and the chat direction are part of `ServerSettings` too, but
+    /// have their own setters: they're changed in the main window, so this
+    /// one keeps whatever is set (the settings window's copy may be older).
     pub fn set_server(&mut self, mut settings: ServerSettings) -> anyhow::Result<()> {
         settings.theme = self.file.server.theme.take();
+        settings.newest = self.file.server.newest;
         self.file.server = settings;
+        self.save()
+    }
+
+    pub fn set_newest(&mut self, newest: Newest) -> anyhow::Result<()> {
+        self.file.server.newest = newest;
         self.save()
     }
 
@@ -230,20 +237,24 @@ mod tests {
     }
 
     #[test]
-    fn server_settings_keep_the_theme() {
+    fn server_settings_keep_theme_and_direction() {
         let path = temp_path("server");
         let mut config = AppConfig::new(ConfigFile::default(), path.clone());
         config.set_theme(Some("cozy".into())).unwrap();
+        config.set_newest(Newest::Top).unwrap();
         config
             .set_server(ServerSettings {
                 history: 5,
-                theme: None, // the settings window doesn't manage the theme
+                // The settings window doesn't manage these two.
+                theme: None,
+                newest: Newest::Bottom,
                 ..ServerSettings::default()
             })
             .unwrap();
         let saved = ConfigFile::load(&path).unwrap();
         assert_eq!(saved.server.history, 5);
         assert_eq!(saved.server.theme.as_deref(), Some("cozy"));
+        assert_eq!(saved.server.newest, Newest::Top);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

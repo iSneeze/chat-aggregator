@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::Context;
 
 use crate::config::{SourceConfig, YouTubeSettings};
-use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Stagger};
+use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Newest, Stagger};
 
 /// A commented starting point, written by `run --init-config`.
 pub const TEMPLATE: &str = include_str!("../config.example.toml");
@@ -94,6 +94,9 @@ pub struct ServerSettings {
     /// The JSON API for other programs. Off by default: any web page open
     /// in the browser could connect to it too.
     pub api: bool,
+    /// Which end of the overlay new messages appear at, unless the overlay
+    /// URL says otherwise (`?newest=top`).
+    pub newest: Newest,
 }
 
 impl Default for ServerSettings {
@@ -105,6 +108,7 @@ impl Default for ServerSettings {
             stagger_ms: 250,
             stagger_max_ms: 2000,
             api: false,
+            newest: Newest::Bottom,
         }
     }
 }
@@ -182,6 +186,7 @@ impl ConfigFile {
                 Duration::from_millis(server.stagger_max_ms),
             ),
             api: server.api,
+            newest: server.newest,
         }
     }
 }
@@ -229,6 +234,7 @@ mod tests {
             stagger_ms = 100
             stagger_max_ms = 1000
             api = true
+            newest = "top"
 
             [youtube]
             client_id = "id"
@@ -281,6 +287,7 @@ mod tests {
         );
         assert_eq!(engine.bind.port(), 8080);
         assert!(engine.api);
+        assert_eq!(engine.newest, Newest::Top);
         assert_eq!(engine.history, 5);
         assert_eq!(
             engine.theme_dir.as_deref(),

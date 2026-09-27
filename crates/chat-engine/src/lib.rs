@@ -32,7 +32,7 @@ mod config_file;
 mod factory;
 mod status;
 
-pub use chat_server::Stagger;
+pub use chat_server::{Newest, Stagger};
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
@@ -59,6 +59,8 @@ pub struct EngineConfig {
     pub stagger: Stagger,
     /// Whether the JSON API (`/api/v1/ws`) accepts clients.
     pub api: bool,
+    /// Default end of the overlay for the newest message.
+    pub newest: Newest,
 }
 
 impl Default for EngineConfig {
@@ -71,6 +73,7 @@ impl Default for EngineConfig {
             theme_dir: None,
             stagger: Stagger::default(),
             api: false,
+            newest: Newest::default(),
         }
     }
 }
@@ -87,6 +90,7 @@ pub struct EngineHandle {
     theme_dir: Arc<watch::Sender<Option<PathBuf>>>,
     stagger: Arc<watch::Sender<Stagger>>,
     api: Arc<watch::Sender<bool>>,
+    newest: Arc<watch::Sender<Newest>>,
     hub: Arc<Hub>,
 }
 
@@ -179,6 +183,18 @@ impl EngineHandle {
         *self.api.borrow()
     }
 
+    /// Changes the default chat direction and reloads the overlays to show
+    /// it (it's written into the page when it loads). Overlays whose URL has
+    /// `?newest=` keep theirs.
+    pub fn set_newest(&self, newest: Newest) {
+        self.newest.send_replace(newest);
+        self.reload_overlays();
+    }
+
+    pub fn newest(&self) -> Newest {
+        *self.newest.borrow()
+    }
+
     /// The live status. A `watch` receiver always holds the latest value;
     /// `changed().await` waits for the next update.
     pub fn status(&self) -> watch::Receiver<Status> {
@@ -244,12 +260,14 @@ impl Engine {
         let (theme_tx, theme_rx) = watch::channel(config.theme_dir);
         let (stagger_tx, stagger_rx) = watch::channel(config.stagger);
         let (api_tx, api_rx) = watch::channel(config.api);
+        let (newest_tx, newest_rx) = watch::channel(config.newest);
         let state = ServerState {
             hub: hub.clone(),
             theme_dir: theme_rx,
             shutdown: shutdown.clone(),
             stagger: stagger_rx,
             api: api_rx,
+            newest: newest_rx,
             connections,
         };
         tasks.spawn(async move {
@@ -264,6 +282,7 @@ impl Engine {
             theme_dir: Arc::new(theme_tx),
             stagger: Arc::new(stagger_tx),
             api: Arc::new(api_tx),
+            newest: Arc::new(newest_tx),
             hub: hub.clone(),
         };
         for source in config.sources {
@@ -679,6 +698,17 @@ mod tests {
         assert!(!handle.api_enabled(), "off by default");
         handle.set_api_enabled(true);
         assert!(handle.api_enabled());
+
+        // The default direction lands in the overlay page.
+        assert_eq!(handle.newest(), Newest::Bottom);
+        handle.set_newest(Newest::Top);
+        let page = reqwest::get(format!("http://{}/", engine.addr()))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains(r#"data-newest="top""#));
         engine.shutdown().await;
     }
 

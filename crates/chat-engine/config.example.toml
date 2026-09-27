@@ -19,6 +19,10 @@ stagger_max_ms = 2000
 # ws://127.0.0.1:<port>/api/v1/ws. Off unless you need it: any web page open
 # in your browser could connect to it too.
 api = false
+# Where new messages appear in the overlay: "bottom" (the chat grows upward)
+# or "top" (it grows downward). An overlay URL ending in ?newest=top or
+# ?newest=bottom overrides this for that browser source.
+newest = "bottom"
 
 [youtube]
 # Your own Google project's OAuth client, see

@@ -39,6 +39,23 @@ behaviour instead of its look:
 - `--delete-delay`: how long a message deleted by a moderator stays
   before it's removed, for a fade-out effect (default `0s`).
 
+## Chat direction
+
+Where new messages appear is a scene choice rather than a theme choice, so
+it isn't set in the theme:
+
+- **In the app:** the dropdown at the right end of the theme row, **Newest
+  at bottom** (the chat grows upward, the classic look) or **Newest at
+  top** (it grows downward). Overlays reload to show the change.
+- **Per browser source:** add `?newest=top` or `?newest=bottom` to the
+  overlay URL, e.g. `http://127.0.0.1:7878/?newest=top`. That wins over the
+  app's setting, so each OBS scene keeps its layout whatever the default is.
+
+With the newest at the top, the chat element gets the class
+`chat--newest-top`; the built-in theme uses it to let messages slide in
+from above instead of below (`--msg-enter-offset`). Themes made before this
+option existed work too: the overlay flips the direction itself.
+
 ## Images and fonts
 
 Put them into the theme folder and use relative paths in `overlay.css`:

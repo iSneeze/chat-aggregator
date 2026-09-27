@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="theme/overlay.css">
 </head>
 <body>
-<main class="chat" role="log" aria-live="polite"></main>
+<main class="chat" role="log" aria-live="polite" data-newest="bottom"></main>
 <script>
 "use strict";
 // The server sends ready-rendered, escaped HTML for each message; this
@@ -15,6 +15,29 @@
 // subpath.)
 (() => {
   const chat = document.querySelector(".chat");
+
+  // Where the newest message goes: `?newest=top|bottom` in this page's URL
+  // (one per OBS scene), otherwise the app's setting (`data-newest`, filled
+  // in by the server).
+  const param = new URLSearchParams(location.search).get("newest");
+  const newestTop = (param === "top" || param === "bottom" ? param : chat.dataset.newest) === "top";
+  if (newestTop) {
+    // Flip the display, not the page order: messages are still added at
+    // the end and the oldest removed first. Set here rather than only in
+    // the theme, so themes made before this option work too.
+    chat.classList.add("chat--newest-top");
+    chat.style.flexDirection = "column-reverse";
+  }
+  // The box clips its overflow but still has a scroll position, which the
+  // browser may move by itself ("scroll anchoring" keeps the old view in
+  // place when content is added, which would push a new message at the top
+  // out of view). Switch that off, and pin the view to the newest message
+  // after every insert: asking for more than possible puts it at the edge,
+  // whichever way the browser counts a reversed box's scroll position.
+  chat.style.overflowAnchor = "none";
+  function pinNewest() {
+    chat.scrollTop = newestTop ? -chat.scrollHeight : chat.scrollHeight;
+  }
 
   // Overlay settings are CSS variables, so streamers only ever edit CSS.
   // The stylesheet <link> above is loaded before this script runs.
@@ -55,6 +78,7 @@
     // Keep at most --max-messages; deleted ones are on their way out anyway.
     const shown = chat.querySelectorAll(".msg:not(.msg--deleted)");
     for (let i = 0; i < shown.length - maxMessages; i++) shown[i].remove();
+    pinNewest();
   });
 
   events.addEventListener("delete", (e) => {

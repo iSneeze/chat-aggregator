@@ -28,6 +28,8 @@
 //!   --stagger <ms>        spacing of message bursts in the overlay, default 250 (0 = off)
 //!   --stagger-max <ms>    most a message may be delayed by it, default 2000 (max 5000)
 //!   --api                 switch the JSON API on (ws://127.0.0.1:<port>/api/v1/ws)
+//!   --newest <bottom|top> where new messages appear in the overlay, default bottom
+//!                         (an overlay URL with ?newest=… overrides it)
 //!
 //! YouTube login (once; the token is kept in the system keyring):
 //!   cargo run -p chat-engine --example run -- --youtube-login
@@ -45,7 +47,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use chat_engine::{
-    ConfigFile, Engine, EngineConfig, Health, SourceConfig, Status, YouTubeSettings,
+    ConfigFile, Engine, EngineConfig, Health, Newest, SourceConfig, Status, YouTubeSettings,
 };
 use chat_youtube::Auth;
 use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
@@ -197,6 +199,13 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
             "--stagger" => server.stagger_ms = parse(&mut args, "--stagger")?,
             "--stagger-max" => server.stagger_max_ms = parse(&mut args, "--stagger-max")?,
             "--api" => server.api = true,
+            "--newest" => {
+                server.newest = match next_value(&mut args, "--newest")?.as_str() {
+                    "bottom" => Newest::Bottom,
+                    "top" => Newest::Top,
+                    other => bail!("--newest takes bottom or top, not {other:?}"),
+                }
+            }
             other => bail!("unknown flag {other:?} (see the top of examples/run.rs)"),
         }
     }

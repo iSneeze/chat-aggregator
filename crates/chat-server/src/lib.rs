@@ -41,6 +41,28 @@ mod stagger;
 pub use connections::Connections;
 pub use stagger::Stagger;
 
+/// Which end of the overlay the newest message appears at. The app's
+/// setting is the default; an overlay URL with `?newest=top` (or `bottom`)
+/// overrides it, so each OBS scene can have its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Newest {
+    /// Chat grows upward, old messages leave at the top (the classic look).
+    #[default]
+    Bottom,
+    /// Chat grows downward, old messages leave at the bottom.
+    Top,
+}
+
+impl Newest {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Newest::Bottom => "bottom",
+            Newest::Top => "top",
+        }
+    }
+}
+
 const OVERLAY_HTML: &str = include_str!("overlay.html");
 
 /// The overlay page's Content-Security-Policy: rules sent along with the
@@ -102,6 +124,9 @@ pub struct ServerState {
     /// Whether the JSON API accepts clients. Switching it off also closes
     /// the connected ones.
     pub api: watch::Receiver<bool>,
+    /// The default chat direction, written into the overlay page when it
+    /// loads (so a change needs an overlay reload).
+    pub newest: watch::Receiver<Newest>,
     pub connections: Arc<Connections>,
 }
 
@@ -148,14 +173,22 @@ pub async fn serve(listener: TcpListener, state: ServerState) -> std::io::Result
 // edited CSS actually shows up.
 const NO_CACHE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-cache");
 
-async fn overlay_page() -> impl IntoResponse {
+async fn overlay_page(State(state): State<ServerState>) -> impl IntoResponse {
+    // The default direction goes into an attribute of the chat element,
+    // outside the script: the script's hash in the CSP stays the same.
+    let newest = state.newest.borrow().as_str();
+    let page = OVERLAY_HTML.replacen(
+        r#"data-newest="bottom""#,
+        &format!(r#"data-newest="{newest}""#),
+        1,
+    );
     (
         [
             NO_CACHE,
             NO_SNIFF,
             (header::CONTENT_SECURITY_POLICY, OVERLAY_CSP.as_str()),
         ],
-        Html(OVERLAY_HTML),
+        Html(page),
     )
 }
 
@@ -350,6 +383,7 @@ mod tests {
         pub(crate) theme_dir: watch::Sender<Option<PathBuf>>,
         pub(crate) stagger: watch::Sender<Stagger>,
         pub(crate) api: watch::Sender<bool>,
+        pub(crate) newest: watch::Sender<Newest>,
         pub(crate) connections: Arc<Connections>,
     }
 
@@ -364,12 +398,14 @@ mod tests {
         let (stagger_tx, stagger_rx) = watch::channel(Stagger::default());
         // On in tests: most of them are about the API.
         let (api_tx, api_rx) = watch::channel(true);
+        let (newest_tx, newest_rx) = watch::channel(Newest::default());
         let state = ServerState {
             hub: hub.clone(),
             theme_dir: theme_rx,
             shutdown: shutdown.clone(),
             stagger: stagger_rx,
             api: api_rx,
+            newest: newest_rx,
             connections: connections.clone(),
         };
         let task = tokio::spawn(serve(listener, state));
@@ -381,6 +417,7 @@ mod tests {
             theme_dir: theme_tx,
             stagger: stagger_tx,
             api: api_tx,
+            newest: newest_tx,
             connections,
         }
     }
@@ -516,6 +553,20 @@ mod tests {
         // Nothing falls back to "allow everything".
         assert!(csp.starts_with("default-src 'none';"), "{csp}");
         assert!(csp.contains("connect-src 'self'"), "{csp}");
+    }
+
+    #[tokio::test]
+    async fn overlay_page_carries_the_default_direction() {
+        let server = start(None).await;
+        let page = |server: &TestServer| {
+            let url = format!("http://{}/", server.addr);
+            async move { reqwest::get(url).await.unwrap().text().await.unwrap() }
+        };
+        assert!(page(&server).await.contains(r#"data-newest="bottom""#));
+        server.newest.send_replace(Newest::Top);
+        let top = page(&server).await;
+        assert!(top.contains(r#"data-newest="top""#), "{top}");
+        assert!(!top.contains(r#"data-newest="bottom""#));
     }
 
     #[tokio::test]

@@ -56,7 +56,10 @@ body {
   padding: var(--chat-gap);
   display: flex;
   flex-direction: column;
-  justify-content: flex-end; /* newest at the bottom, old ones scroll off the top */
+  /* Newest at the bottom, old ones leave at the top. With the newest at the
+     top, the overlay flips this to column-reverse: the same rule then
+     packs the chat against the top edge, and old ones leave at the bottom. */
+  justify-content: flex-end;
   gap: var(--chat-gap);
   overflow: hidden;
   font-family: var(--chat-font);
@@ -81,8 +84,11 @@ body {
 .msg--twitch  { --platform-color: var(--twitch); }
 .msg--youtube { --platform-color: var(--youtube); }
 
+/* New messages slide in from below; with the newest at the top
+   (?newest=top), from above. */
+.chat--newest-top { --msg-enter-offset: -0.5em; }
 @keyframes msg-in {
-  from { opacity: 0; transform: translateY(0.5em); }
+  from { opacity: 0; transform: translateY(var(--msg-enter-offset, 0.5em)); }
 }
 
 /* Uncomment to fade messages out 30 seconds after they arrive:

@@ -14,7 +14,8 @@ sources → mpsc → hub (broadcast + replay history) ─┬→ SSE → your ove
 
 Each platform is its own crate behind a `ChatSource` trait; the server never
 knows what Twitch or YouTube look like, only `ChatEvent`s (messages plus
-moderation: deletes, bans, clears).
+moderation: deletes, bans, clears). How the pieces fit together, and why:
+[docs/architecture.md](docs/architecture.md).
 
 | crate          | role                                        |
 |----------------|---------------------------------------------|
@@ -25,6 +26,7 @@ moderation: deletes, bans, clears).
 | `chat-render`  | templates + CSS, emote replacement          |
 | `chat-server`  | HTTP: overlay page, SSE stream, JSON API    |
 | `chat-engine`  | runs sources, hub and server together       |
+| `chat-app`     | the desktop app (GPUI)                      |
 
 ## Building
 
@@ -93,7 +95,9 @@ OBS (e.g. 450×800).
 
 **Styling:** themes are folders in `themes/` next to the config file, picked
 in the app (or `theme = "name"` in `config.toml`, `--theme <name|dir>`
-headless); see [docs/themes.md](docs/themes.md). To iterate without a
+headless); see [docs/themes.md](docs/themes.md). Chat direction (newest at
+the bottom or top): the app's dropdown, `newest = "top"` / `--newest top`,
+or per browser source `?newest=top` in the overlay URL. To iterate without a
 server: `cargo run -p chat-render --example preview -- <dir> > preview.html`.
 
 **JSON API** for your own programs (games, bots, ...):

@@ -24,7 +24,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::appearance;
-use chat_engine::Appearance;
+use chat_engine::{Appearance, Newest};
 
 use crate::app_config::AppConfig;
 use crate::manual_window::ManualWindow;
@@ -90,6 +90,8 @@ pub struct AppView {
     /// Overlay theme folders found in the themes folder.
     themes: Vec<String>,
     theme_select: Entity<SelectState<Vec<SharedString>>>,
+    /// The overlay's default chat direction.
+    newest_select: Entity<SelectState<Vec<SharedString>>>,
     /// The "New theme" name field, while that form is open.
     new_theme: Option<Entity<InputState>>,
     theme_error: Option<String>,
@@ -105,6 +107,20 @@ pub struct AppView {
 /// The built-in theme's entry in the theme picker. No theme folder can have
 /// this name (`themes::validate_name` refuses it).
 const DEFAULT_THEME: &str = "Default";
+
+/// The chat direction dropdown's entries.
+const NEWEST_CHOICES: [(Newest, &str); 2] = [
+    (Newest::Bottom, "Newest at bottom"),
+    (Newest::Top, "Newest at top"),
+];
+
+fn newest_label(newest: Newest) -> SharedString {
+    NEWEST_CHOICES
+        .iter()
+        .find(|(n, _)| *n == newest)
+        .map(|(_, label)| SharedString::from(*label))
+        .unwrap_or_default()
+}
 
 impl AppView {
     pub fn new(
@@ -125,8 +141,28 @@ impl AppView {
             select.set_selected_value(&current, window, cx);
             select
         });
+        let current_newest = newest_label(config.read(cx).server().newest);
+        let newest_select = cx.new(|cx| {
+            let items = NEWEST_CHOICES.iter().map(|(_, l)| (*l).into()).collect();
+            let mut select = SelectState::new(items, None, window, cx);
+            select.set_selected_value(&current_newest, window, cx);
+            select
+        });
 
         let subscriptions = vec![
+            // A chat direction picked.
+            cx.subscribe_in(
+                &newest_select,
+                window,
+                |this, _, event: &SelectEvent<Vec<SharedString>>, window, cx| {
+                    if let SelectEvent::Confirm(Some(label)) = event
+                        && let Some((newest, _)) =
+                            NEWEST_CHOICES.iter().find(|(_, l)| *l == label.as_ref())
+                    {
+                        this.set_newest(*newest, window, cx);
+                    }
+                },
+            ),
             // A theme picked in the dropdown.
             cx.subscribe_in(
                 &theme_select,
@@ -174,6 +210,7 @@ impl AppView {
             form_error: None,
             themes,
             theme_select,
+            newest_select,
             new_theme: None,
             theme_error: None,
             manual_window: None,
@@ -208,6 +245,19 @@ impl AppView {
         self.engine
             .set_theme_dir(theme.as_ref().map(|name| themes_dir.join(name)));
         let saved = self.config.update(cx, |config, _| config.set_theme(theme));
+        if let Err(e) = saved {
+            self.report_save_error(e, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The overlays' default chat direction: they reload to show it (those
+    /// with `?newest=` in their URL keep their own), and it's saved.
+    fn set_newest(&mut self, newest: Newest, window: &mut Window, cx: &mut Context<Self>) {
+        self.engine.set_newest(newest);
+        let saved = self
+            .config
+            .update(cx, |config, _| config.set_newest(newest));
         if let Err(e) = saved {
             self.report_save_error(e, window, cx);
         }
@@ -532,6 +582,14 @@ impl AppView {
                     .on_click(
                         cx.listener(|this, _, window, cx| this.open_themes_folder(window, cx)),
                     ),
+            )
+            // Pushes the direction to the row's other end (or onto the next
+            // line, in a narrow window).
+            .child(div().flex_1())
+            .child(
+                div()
+                    .w(px(170.))
+                    .child(Select::new(&self.newest_select).small()),
             );
 
         v_flex()
@@ -1013,6 +1071,20 @@ mod tests {
         })
         .unwrap();
         run_until(cx, || !saved_sources()[0].enabled);
+    }
+
+    #[gpui_kit::test]
+    fn chat_direction_reaches_the_engine_and_is_saved(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            ui.view.update(cx, |view, cx| {
+                view.set_newest(chat_engine::Newest::Top, window, cx);
+            });
+        })
+        .unwrap();
+        assert_eq!(ui.engine.handle().newest(), chat_engine::Newest::Top);
+        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml")).unwrap();
+        assert_eq!(saved.server.newest, chat_engine::Newest::Top);
     }
 
     #[gpui_kit::test]

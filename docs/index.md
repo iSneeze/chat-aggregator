@@ -33,6 +33,8 @@ or bots, can receive the same chat as a live JSON feed.
 - [YouTube channel emoji](youtube-emoji.md): showing custom emoji as images.
 - [Chat events API](api.md): the JSON WebSocket feed for your own programs
   ([AsyncAPI spec](asyncapi.yaml)).
+- [Architecture](architecture.md): for developers, how the program is
+  built and why.
 - [Privacy policy](privacy.md)
 - Source code: [github.com/iSneeze/chat-aggregator](https://github.com/iSneeze/chat-aggregator) (open source, [MIT license](https://github.com/iSneeze/chat-aggregator/blob/master/LICENSE))
 
