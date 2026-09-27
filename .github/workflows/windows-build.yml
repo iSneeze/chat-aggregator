@@ -1,0 +1,48 @@
+# A Windows test build of the desktop app, started by hand: GitHub → Actions
+# → "Windows build" → "Run workflow". The .exe is attached to the run as an
+# artifact (downloading it needs a GitHub login).
+#
+# Why build on Windows instead of cross-compiling from Linux: GPUI compiles
+# its DirectX shaders with the Windows SDK's fxc.exe in its build script,
+# which only runs when the *build machine* is Windows.
+name: Windows build
+
+on:
+  workflow_dispatch:
+
+# The job only reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      # Windows runners convert line endings to CRLF on checkout by default;
+      # build from the same bytes as everywhere else.
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      # The code needs no nightly features: the latest stable is enough.
+      - uses: dtolnay/rust-toolchain@stable
+
+      # chat-youtube compiles its gRPC schema with protoc at build time.
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Keeps compiled dependencies between runs: later builds only
+      # recompile what changed.
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release --locked -p chat-app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chat-aggregator-windows-${{ github.sha }}
+          path: target/release/chat-aggregator.exe
+          if-no-files-found: error

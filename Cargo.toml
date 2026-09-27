@@ -48,3 +48,12 @@ base64 = "0.22"
 # Pinned exactly: the app is written against this version's API (GPUI
 # changes a lot between releases).
 gpui-kit = "=0.6.6"
+
+[profile.release]
+# Optimise across crate boundaries ("thin" is most of fat LTO's gain at a
+# fraction of the build time) and within each crate as a whole: a smaller,
+# slightly faster binary for a slower build. The same settings Zed ships
+# GPUI with. Keep `debug-assertions` off here: GPUI's Windows backend only
+# embeds its precompiled shaders in builds without them.
+lto = "thin"
+codegen-units = 1

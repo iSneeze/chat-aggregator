@@ -10,6 +10,7 @@
 //! need the tokio runtime, only their wakers.
 
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::Context as _;
@@ -21,6 +22,7 @@ mod app_config;
 mod app_view;
 mod appearance;
 mod emoji_import;
+mod logging;
 mod manual_window;
 mod settings_window;
 mod youtube_panel;
@@ -29,13 +31,14 @@ use app_config::AppConfig;
 use app_view::AppView;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
     let config_path = ConfigFile::default_path()?;
+    logging::init(config_path.parent());
+    // An error returned from `main` is only printed to the console; log it
+    // too, so a failed start (e.g. the port is taken) is in the log file.
+    run(config_path).inspect_err(|e| tracing::error!("{e:#}"))
+}
+
+fn run(config_path: PathBuf) -> anyhow::Result<()> {
     let file = ConfigFile::load_or_default(&config_path)?;
 
     // Two workers are plenty for chat; tokio's default is one per CPU core.

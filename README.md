@@ -84,6 +84,9 @@ cargo run -p chat-engine --example run -- --twitch <channel> --youtube-own   # s
 The config file lives in the per-OS settings folder
 (`~/.config/chat-aggregator/config.toml` on Linux). The terminal shows a
 status light per source (🟢 🟡 🔴 ⚪) and how many overlays are connected.
+The desktop app also writes a log of its last start next to it
+(`chat-aggregator.log`, the start before as `chat-aggregator.old.log`):
+attach it to bug reports.
 
 YouTube needs your own (free) Google Cloud project, because YouTube's API
 quota is counted per project: [docs/youtube-setup.md](docs/youtube-setup.md)
@@ -122,6 +125,29 @@ cargo run -p chat-twitch --example listen_twitch -- <channel>
 YOUTUBE_API_KEY=... cargo run -p chat-youtube --example listen_youtube -- <video_id>
 # optional: YOUTUBE_EMOJIS=export.json (from scripts/yt-emoji-export.user.js)
 ```
+
+## Windows test build
+
+Until there are installers, a Windows build of the desktop app comes from
+GitHub Actions: on the GitHub repository, **Actions → Windows build → Run
+workflow**. The finished run has `chat-aggregator.exe` attached (as a zip;
+downloading needs a GitHub login). It's built on Windows because GPUI
+compiles its DirectX shaders with the Windows SDK, so cross-compiling from
+Linux doesn't work. One file, no installer, no Visual C++ runtime needed;
+Windows 10 or newer.
+
+For testers:
+
+- Windows SmartScreen warns about the unsigned file ("Windows protected
+  your PC"): **More info → Run anyway**.
+- A console window opens next to the app and shows its log; closing it
+  closes the app (test builds only).
+- Settings, themes and the log file are in
+  `%APPDATA%\chat-aggregator\config\` (⚙ → General → Settings folder →
+  Open folder). Please send `chat-aggregator.log` with any bug report (and
+  `chat-aggregator.old.log` if the app was restarted after the problem).
+- The YouTube login is stored in the Windows Credential Manager.
+- In OBS, add `http://127.0.0.1:7878/` as a Browser Source.
 
 ## Status
 

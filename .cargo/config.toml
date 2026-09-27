@@ -1,0 +1,8 @@
+# Link the C runtime into Windows builds instead of relying on Microsoft's
+# "Visual C++ Redistributable" being installed: most PCs have it, but where
+# it's missing the app won't start, with a cryptic error about a missing
+# DLL. Only affects the Windows MSVC target; Linux/macOS builds are unchanged.
+# (A RUSTFLAGS environment variable replaces this setting, so CI must not
+# set one.)
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

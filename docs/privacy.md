@@ -51,6 +51,13 @@ without any login.
   secret, an optional API key, channel names, overlay theme, a copy of your
   custom emoji list) are stored in chat-aggregator's settings folder on your
   computer.
+- **A log file** (`chat-aggregator.log`, and the one from the previous
+  start as `chat-aggregator.old.log`) in the settings folder records what
+  the program did: which sources started, connection problems, errors. It
+  can include the channel names and video ids you entered, but no chat
+  messages, passwords or login tokens. It's replaced each time the program
+  starts and never sent anywhere; you can attach it to a bug report if you
+  choose.
 - **Chat messages are not saved.** They're kept in memory while the program
   runs (the most recent ones, 20 by default, so a reloaded overlay isn't
   empty) and are gone when you close it.
@@ -80,7 +87,8 @@ without any login.
   third-party connections:
   [myaccount.google.com/connections](https://myaccount.google.com/connections).
 - To remove everything, delete chat-aggregator's settings folder (for
-  example `~/.config/chat-aggregator` on Linux).
+  example `~/.config/chat-aggregator` on Linux, `%APPDATA%\chat-aggregator`
+  on Windows).
 
 ## This website
 
