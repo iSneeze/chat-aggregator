@@ -369,7 +369,8 @@ awaited from GPUI.
   briefly shrink the replay history to 2. Each keystroke replaces a pending
   timer task; dropping a GPUI `Task` cancels it. Closing the window applies
   what's pending. Switches (appearance, JSON API) apply at once.
-- **Logging** goes to the console and to `chat-aggregator.log` in the
+- **Logging** goes to the console (none on Windows release builds:
+  `windows_subsystem = "windows"`) and to `chat-aggregator.log` in the
   settings folder (the previous start's kept as `chat-aggregator.old.log`,
   so restarting after a crash doesn't erase it). A panic hook and the
   error `main` returns are logged too: the file is what a tester sends.

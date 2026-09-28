@@ -1,3 +1,8 @@
+// Release builds on Windows open without a console window: the log file
+// in the settings folder records what the console used to show. Dev
+// builds (`cargo run`) keep the console to watch the log live.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! chat-aggregator's desktop app: a window to control the engine.
 //!
 //! Two runtimes side by side:

@@ -140,8 +140,8 @@ For testers:
 
 - Windows SmartScreen warns about the unsigned file ("Windows protected
   your PC"): **More info → Run anyway**.
-- A console window opens next to the app and shows its log; closing it
-  closes the app (test builds only).
+- There's no console window: the app's log goes to a file (below). If
+  the app doesn't open at all, that file says why.
 - Settings, themes and the log file are in
   `%APPDATA%\chat-aggregator\config\` (⚙ → General → Settings folder →
   Open folder). Please send `chat-aggregator.log` with any bug report (and

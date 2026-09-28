@@ -1,10 +1,10 @@
 //! Logging: to the console and to a file in the settings folder.
 //!
 //! The file is what testers and users can send along with a bug report,
-//! without having to copy text out of a console (and, once the Windows
-//! build opens without a console, it's the only record there is). It holds
-//! what the program did (sources started, retries, errors), never chat
-//! messages or secrets; docs/privacy.md says so.
+//! without having to copy text out of a console (and, since the Windows
+//! release build opens without a console, it's the only record there is).
+//! It holds what the program did (sources started, retries, errors), never
+//! chat messages or secrets; docs/privacy.md says so.
 
 use std::fs::File;
 use std::path::Path;
