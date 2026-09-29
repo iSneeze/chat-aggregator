@@ -210,9 +210,12 @@ reloading the overlay, doesn't start from an empty chat.
 ## Rendering and themes (`chat-render`)
 
 A **theme** is a message template (`message.html`, [MiniJinja](https://docs.rs/minijinja))
-plus a stylesheet (`overlay.css`). The built-in theme is compiled into the
-binary; a theme folder overrides any file it has. Named themes live in
-`themes/<name>/` next to the config file.
+plus a stylesheet (`overlay.css`). The built-in themes (`Builtin`:
+Default and Minimal) are compiled into the binary; a theme folder overrides
+any file of Default it has. Named themes live in `themes/<name>/` next to
+the config file. Which one the overlay uses is a `ThemeSource`: a built-in
+theme or a folder (their names can't clash: folder names that are
+built-in names are refused).
 
 - The server renders messages to HTML, so the overlay page stays a tiny
   script and all the look is in the theme. Streamers only edit HTML and CSS.
@@ -258,7 +261,7 @@ every field is an `Arc` or a small handle around one).
   delays a message by more than the configured maximum (≤ 5 s). Moderation
   is never delayed, and it removes matching messages still waiting. The API
   and the history replay are never paced.
-- **Runtime settings** (theme folder, pacing, JSON API on/off, default chat
+- **Runtime settings** (theme, pacing, JSON API on/off, default chat
   direction) are `tokio::sync::watch` channels: one value, readable any
   time, plus a notification when it changes. A theme change makes every
   overlay stream send a `reload` event; switching the API off closes the
@@ -271,7 +274,7 @@ every field is an `Arc` or a small handle around one).
   trimming don't change) and pins the view to the newest message after every
   insert, with the browser's scroll anchoring switched off.
 - **A theme per browser source**: `?theme=<name>` in the overlay URL pins
-  that overlay to a theme from the themes folder (`default` = built-in),
+  that overlay to a theme from the themes folder or a built-in one,
   whatever the app's theme. The page links `/themes/<name>/overlay.css`
   (so `url(bg.png)` in it finds the theme's own files) and passes its query
   on to `/events`, which renders with that theme's template. Only valid

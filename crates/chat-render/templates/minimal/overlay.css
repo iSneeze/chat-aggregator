@@ -1,0 +1,182 @@
+/*
+ * "Minimal" built-in theme: one line per message, the name and the text,
+ * outlined so it reads over any game. The markup is documented at the top
+ * of message.html; every message is a <div class="msg"> with modifier
+ * classes:
+ *   .msg--twitch / .msg--youtube                    platform
+ *   .msg--role-viewer / -member / -moderator / -owner
+ *   .msg--text / --emote-only / --donation / --special
+ *   .msg--membership / --gift / --notice            kind
+ *   .msg--paid, .msg--tier-1, -2, …                 donations and their tier
+ *   .msg--deleted                                   removed by a moderator
+ */
+
+:root {
+  /* text */
+  --chat-font: "Inter", "Segoe UI", system-ui, sans-serif;
+  --chat-font-size: 20px;
+  --chat-text: #ffffff;
+  /* a thin dark outline, so the text reads over bright scenes */
+  --chat-outline:
+    -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000,
+    0 0 3px #000;
+  --chat-gap: 4px;
+
+  /* the mark at the start of a line */
+  --twitch: #9146ff;
+  --youtube: #ff0033;
+
+  /* names by role (YouTube's chat colours) */
+  --name-viewer: #ffffff;
+  --name-member: #2ba640;
+  --name-moderator: #5e84f1;
+  --name-owner: #ffd600;
+
+  /* event text: memberships and gifts; donations use the tier colours */
+  --membership: #2ba640;
+  --paid: #ffca28; /* donations without a tier */
+
+  /* donation tiers, per platform: YouTube's Super Chat colours, Twitch's
+     cheer colours (1+, 100+, 1,000+, 5,000+, 10,000+ bits) */
+  --paid-youtube-1: #1e88e5;
+  --paid-youtube-2: #00e5ff;
+  --paid-youtube-3: #1de9b6;
+  --paid-youtube-4: #ffca28;
+  --paid-youtube-5: #f57c00;
+  --paid-youtube-6: #e91e63;
+  --paid-youtube-7: #e62117;
+  --paid-twitch-1: #979797;
+  --paid-twitch-2: #9c3ee8;
+  --paid-twitch-3: #1db2a5;
+  --paid-twitch-4: #0099fe;
+  --paid-twitch-5: #f43021;
+
+  /* sizes */
+  --emote-size: 1.4em;
+  --emote-only-size: 2em;
+
+  /* overlay behavior (read by the overlay script) */
+  --max-messages: 20;  /* older messages are removed from the page */
+  --delete-delay: 0s;  /* time for a .msg--deleted transition before removal */
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent; /* OBS composites the page over the scene */
+}
+
+/* ---- message list ---- */
+
+.chat {
+  box-sizing: border-box;
+  height: 100vh;
+  padding: var(--chat-gap);
+  display: flex;
+  flex-direction: column;
+  /* Newest at the bottom, old ones leave at the top. With the newest at the
+     top, the overlay flips this to column-reverse. */
+  justify-content: flex-end;
+  gap: var(--chat-gap);
+  overflow: hidden;
+  font-family: var(--chat-font);
+  font-size: var(--chat-font-size);
+  line-height: 1.4;
+  color: var(--chat-text);
+  text-shadow: var(--chat-outline);
+}
+
+/* ---- one message ---- */
+
+.msg {
+  --name-color: var(--name-viewer);
+  --paid-color: var(--paid);
+  flex-shrink: 0;
+  overflow-wrap: anywhere; /* long spam without spaces must not overflow */
+}
+
+.msg--role-member    { --name-color: var(--name-member); }
+.msg--role-moderator { --name-color: var(--name-moderator); }
+.msg--role-owner     { --name-color: var(--name-owner); }
+
+/* the platform mark: a short bar at the start of the line */
+.msg__platform {
+  display: inline-block;
+  width: 0.2em;
+  height: 0.9em;
+  margin-right: 0.4em;
+  border-radius: 0.1em;
+  vertical-align: -0.1em;
+  background: var(--chat-text);
+  box-shadow: 0 0 2px #000;
+}
+.msg--twitch .msg__platform  { background: var(--twitch); }
+.msg--youtube .msg__platform { background: var(--youtube); }
+
+.msg__author,
+.msg__colon {
+  font-weight: 700;
+  color: var(--name-color);
+}
+
+/* the moderator's wrench, drawn with a mask in the name's colour */
+.msg__mod {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-left: 0.2em;
+  vertical-align: -0.05em;
+  background: var(--name-moderator);
+  -webkit-mask: var(--wrench) center / contain no-repeat;
+  mask: var(--wrench) center / contain no-repeat;
+  --wrench: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z'/%3E%3C/svg%3E");
+}
+
+/* gaps between the parts (the template leaves no spaces) */
+.msg__event,
+.msg__body {
+  margin-left: 0.35em;
+}
+
+/* amounts, "Member for 12 months", "gifted 5 subs", raids */
+.msg__event {
+  font-weight: 700;
+  color: var(--membership);
+}
+.msg--paid .msg__event    { color: var(--paid-color); }
+.msg--paid .msg__info     { font-weight: 400; color: var(--chat-text); }
+.msg--notice .msg__event  { margin-left: 0; font-style: italic; color: var(--chat-text); }
+
+.emote {
+  height: var(--emote-size);
+  margin: -0.2em 0.05em;
+  vertical-align: middle;
+}
+.msg--emote-only .emote {
+  height: var(--emote-only-size);
+}
+
+/* donation colours by tier, on each platform's own scale */
+.msg--youtube.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
+.msg--youtube.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
+.msg--youtube.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
+.msg--youtube.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
+.msg--youtube.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
+.msg--youtube.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
+/* YouTube's top band may come as more than one number: all of it is red */
+.msg--youtube[class*="msg--tier-"]:not(.msg--tier-1, .msg--tier-2, .msg--tier-3,
+  .msg--tier-4, .msg--tier-5, .msg--tier-6) { --paid-color: var(--paid-youtube-7); }
+.msg--twitch.msg--tier-1 { --paid-color: var(--paid-twitch-1); }
+.msg--twitch.msg--tier-2 { --paid-color: var(--paid-twitch-2); }
+.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-3); }
+.msg--twitch.msg--tier-4 { --paid-color: var(--paid-twitch-4); }
+.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-5); }
+
+/* ---- moderation ---- */
+
+/* Deleted messages vanish at once. For a fade instead:
+   .msg--deleted { opacity: 0; transition: opacity 0.3s; }
+   and set --delete-delay: 0.3s above. */
+.msg--deleted {
+  display: none;
+}

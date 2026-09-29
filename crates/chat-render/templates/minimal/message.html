@@ -1,0 +1,64 @@
+{#-
+  "Minimal" built-in theme: one line per message, the name and what they
+  wrote. The variables are the default theme's (listed at the top of its
+  message.html); this theme uses:
+
+    platform     a coloured mark at the start (Twitch or YouTube)
+    author       .name, coloured by role (from .badges): viewer, member,
+                 moderator (with a wrench), owner
+    kind         what goes between the name and the text:
+                   donation, special   the amount (coloured by tier)
+                   membership          "Member for 12 months" / "New member"
+                   gift                "gifted 5 subs"
+                   notice              the platform's line instead of a name
+    body         the text and emotes
+
+  Every tag trims the whitespace around it ("-"), so the output has no
+  stray spaces: the gaps between the parts are margins in overlay.css.
+  Keep the root's "msg" class and its data-id / data-platform / data-author
+  attributes (the overlay needs them), and never use "| safe" on chat
+  values.
+-#}
+{%- set badges = author.badges -%}
+{%- set role = "owner" if ("owner" in badges or "broadcaster" in badges)
+    else "moderator" if "moderator" in badges
+    else "member" if ("member" in badges or "subscriber" in badges or "founder" in badges)
+    else "viewer" -%}
+{%- set youtube = platform == "youtube" -%}
+<div class="msg msg--{{ kind }} msg--{{ platform }} msg--role-{{ role }}{% if paid %} msg--paid{% endif %}{% if tier %} msg--tier-{{ tier }}{% endif %}" data-id="{{ id }}" data-platform="{{ platform }}" data-author="{{ author.id }}">
+  {#- The platform mark; its title is for people hovering in a browser. -#}
+  <span class="msg__platform" title="{{ platform }}"></span>
+  {%- if kind == "notice" and info -%}
+    <span class="msg__event">{{ info }}</span>
+  {%- else -%}
+    <span class="msg__author">{{ author.name }}</span>
+    {%- if "moderator" in badges %}<span class="msg__mod" title="moderator"></span>{% endif -%}
+    {%- if kind == "gift" -%}
+      <span class="msg__event">gifted <data class="msg__count" value="{{ count }}">{{ count }}</data> {{ "membership" if youtube else "sub" }}{{ "s" if count != 1 }}</span>
+    {%- else -%}
+      <span class="msg__colon">:</span>
+      {%- if paid and amount %}<data class="msg__event msg__amount">{{ amount }}</data>{% endif -%}
+      {%- if kind == "special" and info %}<span class="msg__event msg__info">{{ info }}</span>{% endif -%}
+      {%- if kind == "membership" -%}
+        <span class="msg__event">
+          {%- if months is not none -%}
+            {{ "Member" if youtube else "Subscribed" }} for <data class="msg__months" value="{{ months }}">{{ months }}</data> month{{ "s" if months != 1 }}
+          {%- else -%}
+            {{ "New member" if youtube else "New subscriber" }}
+          {%- endif -%}
+        </span>
+      {%- endif -%}
+    {%- endif -%}
+  {%- endif -%}
+  {%- if body -%}
+    <span class="msg__body">
+      {%- for part in body -%}
+        {%- if part.type == "emote" -%}
+          <img class="emote" src="{{ part.url }}" alt="{{ part.code }}" title="{{ part.code }}">
+        {%- else -%}
+          {{ part.text }}
+        {%- endif -%}
+      {%- endfor -%}
+    </span>
+  {%- endif -%}
+</div>

@@ -3,15 +3,20 @@
 //!
 //!   cargo run -p chat-render --example preview > preview.html
 //!   cargo run -p chat-render --example preview -- my-theme/ > preview.html
+//!   cargo run -p chat-render --example preview -- minimal > preview.html
 //!
-//! The optional folder may contain `message.html` and/or `overlay.css`.
+//! The optional argument is a built-in theme's name or a folder with
+//! `message.html` and/or `overlay.css`.
 
-use chat_render::Theme;
+use chat_render::{Builtin, Theme};
 
 fn main() -> anyhow::Result<()> {
     let theme = match std::env::args().nth(1) {
-        Some(dir) => Theme::load(dir)?,
         None => Theme::builtin(),
+        Some(arg) => match Builtin::from_name(&arg) {
+            Some(builtin) => Theme::from_builtin(builtin),
+            None => Theme::load(arg)?,
+        },
     };
 
     let mut messages = String::new();

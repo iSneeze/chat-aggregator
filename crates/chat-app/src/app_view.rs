@@ -10,7 +10,7 @@ use std::time::Duration;
 use chat_engine::{
     EngineHandle, Health, SourceConfig, SourceId, SourceState, SourceStatus, Status,
 };
-use chat_render::themes;
+use chat_render::{Builtin, ThemeSource, themes};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
@@ -104,9 +104,18 @@ pub struct AppView {
     _subscriptions: Vec<Subscription>,
 }
 
-/// The built-in theme's entry in the theme picker. No theme folder can have
-/// this name (`themes::validate_name` refuses it).
-const DEFAULT_THEME: &str = "Default";
+/// The theme picker's entry for the theme saved in `config.toml`
+/// (`None` = the default built-in theme): built-in themes by their label,
+/// folders by their name. No folder can be called like a built-in theme
+/// (`themes::validate_name` refuses it), so the labels are unambiguous.
+fn theme_label(saved: Option<&str>) -> SharedString {
+    match saved {
+        None => Builtin::Default.label().into(),
+        Some(name) => Builtin::from_name(name)
+            .map_or_else(|| name.to_string(), |b| b.label().to_string())
+            .into(),
+    }
+}
 
 /// The chat direction dropdown's entries.
 const NEWEST_CHOICES: [(Newest, &str); 2] = [
@@ -134,8 +143,7 @@ impl AppView {
         let youtube =
             cx.new(|cx| YouTubePanel::new(engine.clone(), tokio, config.clone(), window, cx));
         let themes = themes::list(&config.read(cx).themes_dir());
-        let current =
-            SharedString::from(config.read(cx).theme().unwrap_or(DEFAULT_THEME).to_string());
+        let current = theme_label(config.read(cx).theme());
         let theme_select = cx.new(|cx| {
             let mut select = SelectState::new(theme_items(&themes), None, window, cx);
             select.set_selected_value(&current, window, cx);
@@ -227,7 +235,7 @@ impl AppView {
         if themes == self.themes {
             return;
         }
-        let current = SharedString::from(config.theme().unwrap_or(DEFAULT_THEME).to_string());
+        let current = theme_label(config.theme());
         self.themes = themes;
         let items = theme_items(&self.themes);
         self.theme_select.update(cx, |select, cx| {
@@ -239,11 +247,22 @@ impl AppView {
 
     /// Switches the overlay theme: overlays reload by themselves (the engine
     /// tells them to) and the choice is saved.
-    fn select_theme(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let theme = (name != DEFAULT_THEME).then(|| name.to_string());
+    fn select_theme(&mut self, label: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        // What config.toml gets: nothing for the default, a built-in
+        // theme's name, or the folder's name.
+        let theme = match Builtin::ALL
+            .into_iter()
+            .find(|b| b.label() == label.as_ref())
+        {
+            Some(Builtin::Default) => None,
+            Some(builtin) => Some(builtin.name().to_string()),
+            None => Some(label.to_string()),
+        };
         let themes_dir = self.config.read(cx).themes_dir();
         self.engine
-            .set_theme_dir(theme.as_ref().map(|name| themes_dir.join(name)));
+            .set_theme(theme.as_deref().map_or_else(ThemeSource::default, |name| {
+                ThemeSource::named(&themes_dir, name)
+            }));
         let saved = self.config.update(cx, |config, _| config.set_theme(theme));
         if let Err(e) = saved {
             self.report_save_error(e, window, cx);
@@ -537,6 +556,7 @@ impl AppView {
             .config
             .read(cx)
             .theme()
+            .filter(|name| Builtin::from_name(name).is_none())
             .filter(|name| !self.themes.iter().any(|t| t == name))
             .map(str::to_string);
 
@@ -811,8 +831,11 @@ impl Render for AppView {
 }
 
 /// The theme picker's entries: the built-in theme first, then the folders.
+/// The picker's entries: the built-in themes, then the theme folders.
 fn theme_items(themes: &[String]) -> Vec<SharedString> {
-    std::iter::once(SharedString::from(DEFAULT_THEME))
+    Builtin::ALL
+        .into_iter()
+        .map(|b| SharedString::from(b.label()))
         .chain(themes.iter().cloned().map(SharedString::from))
         .collect()
 }
@@ -879,7 +902,7 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use chat_engine::{ConfigFile, Engine, EngineConfig, YouTubeSettings};
+    use chat_engine::{ConfigFile, Engine, EngineConfig, ThemeSource, YouTubeSettings};
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
@@ -1006,6 +1029,43 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn builtin_themes_are_picked_by_label_and_saved_by_name(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let items = super::theme_items(&["cozy".into()]);
+        assert_eq!(
+            items,
+            ["Default", "Minimal", "cozy"],
+            "built-in themes first"
+        );
+
+        let pick = |cx: &mut TestAppContext, label: &'static str| {
+            cx.update_window(ui.window.into(), |_, window, cx| {
+                ui.view
+                    .update(cx, |view, cx| view.select_theme(label.into(), window, cx));
+            })
+            .unwrap();
+        };
+        let saved = || {
+            ConfigFile::load(&ui.settings_dir.join("config.toml"))
+                .unwrap()
+                .server
+                .theme
+        };
+
+        pick(cx, "Minimal");
+        assert_eq!(
+            ui.engine.handle().theme(),
+            ThemeSource::Builtin(chat_engine::Builtin::Minimal)
+        );
+        assert_eq!(saved().as_deref(), Some("minimal"));
+        assert_eq!(super::theme_label(Some("minimal")), "Minimal");
+
+        pick(cx, "Default");
+        assert_eq!(ui.engine.handle().theme(), ThemeSource::default());
+        assert_eq!(saved(), None, "the default is saved as no theme");
+    }
+
+    #[gpui_kit::test]
     fn new_theme_is_created_selected_and_saved(cx: &mut TestAppContext) {
         let ui = open(cx);
         cx.update_window(ui.window.into(), |_, window, cx| {
@@ -1022,8 +1082,8 @@ mod tests {
             "created from the defaults"
         );
         assert_eq!(
-            ui.engine.handle().theme_dir(),
-            Some(theme),
+            ui.engine.handle().theme(),
+            ThemeSource::Folder(theme),
             "overlays switch to it"
         );
         let saved = ConfigFile::load(&ui.settings_dir.join("config.toml")).unwrap();

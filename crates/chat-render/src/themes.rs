@@ -6,7 +6,7 @@
 //! │   ├── overlay.css     the look
 //! │   ├── message.html    optional: the structure of a message
 //! │   └── …               optional: images, fonts used by the CSS
-//! └── minimal/
+//! └── dark/
 //!     └── overlay.css
 //! ```
 //!
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 
-use crate::{CSS_FILE, DEFAULT_CSS, DEFAULT_MESSAGE_TEMPLATE, MESSAGE_FILE};
+use crate::{Builtin, CSS_FILE, DEFAULT_CSS, DEFAULT_MESSAGE_TEMPLATE, MESSAGE_FILE};
 
 /// The theme folders in `themes_dir`, sorted by name (case-insensitive).
 /// A missing folder simply means no themes yet.
@@ -46,8 +46,9 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     if name.len() > 40 {
         return Err("that name is too long (40 characters at most)".into());
     }
-    if name.eq_ignore_ascii_case("default") {
-        return Err("\"Default\" is the built-in theme".into());
+    // The built-in themes' names: config.toml and overlay URLs use them.
+    if let Some(builtin) = Builtin::from_name(name) {
+        return Err(format!("\"{}\" is a built-in theme", builtin.label()));
     }
     if !name
         .chars()
@@ -94,11 +95,11 @@ mod tests {
     fn lists_theme_folders_sorted() {
         let dir = temp("list");
         assert!(list(&dir).is_empty(), "no folder yet is fine");
-        for name in ["minimal", "Cozy", ".hidden"] {
+        for name in ["dark", "Cozy", ".hidden"] {
             std::fs::create_dir_all(dir.join(name)).unwrap();
         }
         std::fs::write(dir.join("notes.txt"), "not a theme").unwrap();
-        assert_eq!(list(&dir), ["Cozy", "minimal"]);
+        assert_eq!(list(&dir), ["Cozy", "dark"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -133,6 +134,10 @@ mod tests {
         assert!(validate_name("Cozy Night 2").is_ok());
         assert!(validate_name("  ").is_err());
         assert!(validate_name("default").is_err());
+        assert!(
+            validate_name(" Minimal ").is_err(),
+            "built-in names are taken"
+        );
         assert!(validate_name("../escape").is_err());
         assert!(validate_name("a/b").is_err());
         assert!(validate_name(&"x".repeat(41)).is_err());

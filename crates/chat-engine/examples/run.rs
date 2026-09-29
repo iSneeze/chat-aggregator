@@ -21,8 +21,9 @@
 //!                         needs a login, see below
 //!   --youtube <video_id>  a specific public video (testing path); uses
 //!                         YOUTUBE_API_KEY if set, otherwise the login
-//!   --theme <name|dir>    overlay theme: a folder name in "themes" next to the
-//!                         config file, or a path to any theme folder
+//!   --theme <name|dir>    overlay theme: "minimal" (built in), a folder name in
+//!                         "themes" next to the config file, or a path to any
+//!                         theme folder
 //!   --port <n>            default 7878
 //!   --history <n>         messages replayed to a new overlay, default 20
 //!   --stagger <ms>        spacing of message bursts in the overlay, default 250 (0 = off)
@@ -47,7 +48,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use chat_engine::{
-    ConfigFile, Engine, EngineConfig, Health, Newest, SourceConfig, Status, YouTubeSettings,
+    ConfigFile, Engine, EngineConfig, Health, Newest, SourceConfig, Status, ThemeSource,
+    YouTubeSettings,
 };
 use chat_youtube::Auth;
 use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
@@ -216,8 +218,8 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
     }
     apply_env(&mut file.youtube);
     let mut config = file.into_engine_config(&settings_dir);
-    if theme_path.is_some() {
-        config.theme_dir = theme_path;
+    if let Some(path) = theme_path {
+        config.theme = ThemeSource::Folder(path);
     }
     Ok(config)
 }

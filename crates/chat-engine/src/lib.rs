@@ -32,7 +32,7 @@ mod config_file;
 mod factory;
 mod status;
 
-pub use chat_server::{Newest, Stagger};
+pub use chat_server::{Builtin, Newest, Stagger, ThemeSource};
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
@@ -53,8 +53,9 @@ pub struct EngineConfig {
     pub bind: SocketAddr,
     /// Messages replayed to a newly connected overlay (0 = none).
     pub history: usize,
-    /// Folder with a custom `message.html` / `overlay.css`.
-    pub theme_dir: Option<PathBuf>,
+    /// The overlay's theme: built-in, or a folder with a custom
+    /// `message.html` / `overlay.css`.
+    pub theme: ThemeSource,
     /// The folder of named themes, for overlay URLs with `?theme=<name>`.
     pub themes_dir: Option<PathBuf>,
     /// Spacing of message bursts in the overlay.
@@ -72,7 +73,7 @@ impl Default for EngineConfig {
             youtube: YouTubeSettings::default(),
             bind: (Ipv4Addr::LOCALHOST, DEFAULT_PORT).into(),
             history: DEFAULT_HISTORY,
-            theme_dir: None,
+            theme: ThemeSource::default(),
             themes_dir: None,
             stagger: Stagger::default(),
             api: false,
@@ -90,7 +91,7 @@ pub struct EngineHandle {
     status: watch::Receiver<Status>,
     // Server settings, not source state, so they bypass the actor. `Arc`
     // because a `watch::Sender` can't be cloned; all handles share one.
-    theme_dir: Arc<watch::Sender<Option<PathBuf>>>,
+    theme: Arc<watch::Sender<ThemeSource>>,
     stagger: Arc<watch::Sender<Stagger>>,
     api: Arc<watch::Sender<bool>>,
     newest: Arc<watch::Sender<Newest>>,
@@ -145,19 +146,18 @@ impl EngineHandle {
     }
 
     /// Switches the overlay theme; connected overlays reload by themselves.
-    /// `None` = the built-in theme.
-    pub fn set_theme_dir(&self, dir: Option<PathBuf>) {
-        self.theme_dir.send_replace(dir);
+    pub fn set_theme(&self, theme: ThemeSource) {
+        self.theme.send_replace(theme);
     }
 
     /// Makes connected overlays reload, e.g. after editing the theme files.
     pub fn reload_overlays(&self) {
         // `send_modify` notifies watchers even though nothing changed.
-        self.theme_dir.send_modify(|_| {});
+        self.theme.send_modify(|_| {});
     }
 
-    pub fn theme_dir(&self) -> Option<PathBuf> {
-        self.theme_dir.borrow().clone()
+    pub fn theme(&self) -> ThemeSource {
+        self.theme.borrow().clone()
     }
 
     /// How many messages a newly connected overlay gets replayed. Applies
@@ -260,13 +260,13 @@ impl Engine {
         let actor = Actor::new(factory, hub.clone(), status_tx, connections.clone());
         tasks.spawn(actor.run(commands_rx, shutdown.clone()));
 
-        let (theme_tx, theme_rx) = watch::channel(config.theme_dir);
+        let (theme_tx, theme_rx) = watch::channel(config.theme);
         let (stagger_tx, stagger_rx) = watch::channel(config.stagger);
         let (api_tx, api_rx) = watch::channel(config.api);
         let (newest_tx, newest_rx) = watch::channel(config.newest);
         let state = ServerState {
             hub: hub.clone(),
-            theme_dir: theme_rx,
+            theme: theme_rx,
             shutdown: shutdown.clone(),
             stagger: stagger_rx,
             api: api_rx,
@@ -283,7 +283,7 @@ impl Engine {
         let handle = EngineHandle {
             commands: commands_tx,
             status: status_rx,
-            theme_dir: Arc::new(theme_tx),
+            theme: Arc::new(theme_tx),
             stagger: Arc::new(stagger_tx),
             api: Arc::new(api_tx),
             newest: Arc::new(newest_tx),

@@ -1,8 +1,24 @@
 # Overlay themes
 
-A theme decides how the chat looks on stream. chat-aggregator comes with a
-built-in theme ("Default"); your own themes are folders you can edit with
-any text editor, share, and switch between in the app.
+A theme decides how the chat looks on stream. chat-aggregator comes with
+two built-in themes; your own themes are folders you can edit with any text
+editor, share, and switch between in the app.
+
+## Built-in themes
+
+- **Default**: a card per message, with badges, the event line (amounts,
+  subs, raids) and the text.
+- **Minimal**: one line per message, `Name: text`, outlined so it reads
+  over any game. A small bar at the start shows the platform (purple
+  Twitch, red YouTube); names are white for viewers, green for members and
+  subscribers, blue with a wrench for moderators, yellow for the channel
+  owner. Donations show their amount in the platform's tier colour, subs
+  and gifts in green, all in the same line.
+
+Pick them in the app's theme list, or `theme = "minimal"` in
+`config.toml`. They're built into the app and improve with its updates,
+so they can't be edited in place; **New theme…** starts a folder of your
+own from a copy of Default.
 
 ## Where themes live
 
@@ -64,7 +80,7 @@ scene its own theme, add `?theme=` and the theme's name to its overlay URL:
 ```text
 http://127.0.0.1:7878/?theme=cozy
 http://127.0.0.1:7878/?theme=cozy&newest=top
-http://127.0.0.1:7878/?theme=default     the built-in theme
+http://127.0.0.1:7878/?theme=minimal     a built-in theme (or default)
 ```
 
 That overlay keeps its theme whatever the app is set to. **Reload

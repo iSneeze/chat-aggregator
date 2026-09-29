@@ -96,7 +96,8 @@ Sources can be combined; see the top of `crates/chat-engine/examples/run.rs`
 for all flags. Then add `http://127.0.0.1:7878/` as a **Browser Source** in
 OBS (e.g. 450×800).
 
-**Styling:** themes are folders in `themes/` next to the config file, picked
+**Styling:** two built-in themes (Default, and Minimal: one line per
+message), plus your own: folders in `themes/` next to the config file, picked
 in the app (or `theme = "name"` in `config.toml`, `--theme <name|dir>`
 headless), or per browser source with `?theme=name` in the overlay URL; see
 [docs/themes.md](docs/themes.md). Chat direction (newest at

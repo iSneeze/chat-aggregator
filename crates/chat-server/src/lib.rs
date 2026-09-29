@@ -39,6 +39,9 @@ mod api;
 mod connections;
 mod stagger;
 
+// Part of this crate's API (`ServerState::theme`), so users of the server
+// don't need chat-render as a dependency of their own just to name them.
+pub use chat_render::{Builtin, ThemeSource};
 pub use connections::Connections;
 pub use stagger::Stagger;
 
@@ -112,10 +115,10 @@ const NO_SNIFF: (header::HeaderName, &str) = (header::X_CONTENT_TYPE_OPTIONS, "n
 #[derive(Clone)]
 pub struct ServerState {
     pub hub: Arc<Hub>,
-    /// Folder with a custom `message.html` / `overlay.css`; `None` = built-in.
-    /// A `watch` channel: the current value, plus a notification when it
-    /// changes, which makes connected overlays reload.
-    pub theme_dir: watch::Receiver<Option<PathBuf>>,
+    /// The app's theme: built-in, or a folder with a custom `message.html`
+    /// / `overlay.css`. A `watch` channel: the current value, plus a
+    /// notification when it changes, which makes connected overlays reload.
+    pub theme: watch::Receiver<ThemeSource>,
     /// Cancelled when the app shuts down.
     pub shutdown: CancellationToken,
     /// Spacing of message bursts in the overlay (not in the API). Read when
@@ -147,15 +150,15 @@ struct OverlayQuery {
 enum ThemeChoice {
     /// The app's current theme: no `?theme=`, or one that isn't there.
     App,
-    /// Pinned by the overlay URL, whatever the app's theme: `default` is
-    /// the built-in theme (`dir: None`), any other name a folder in the
-    /// themes folder.
-    Pinned { name: String, dir: Option<PathBuf> },
+    /// Pinned by the overlay URL, whatever the app's theme: a built-in
+    /// theme by its name (`default`, `minimal`), or a folder in the themes
+    /// folder.
+    Pinned { name: String, source: ThemeSource },
 }
 
 impl ServerState {
-    fn current_theme_dir(&self) -> Option<PathBuf> {
-        self.theme_dir.borrow().clone()
+    fn current_theme(&self) -> ThemeSource {
+        self.theme.borrow().clone()
     }
 
     /// The theme for `?theme=<requested>`. Only themes in the themes folder
@@ -166,12 +169,12 @@ impl ServerState {
         let Some(name) = requested else {
             return ThemeChoice::App;
         };
-        // "Default" can't be a folder name (`validate_name` refuses it), so
-        // it's free to mean the built-in theme.
-        if name.eq_ignore_ascii_case("default") {
+        // The built-in themes' names can't be folder names
+        // (`validate_name` refuses them), so they're free to mean those.
+        if let Some(builtin) = Builtin::from_name(name) {
             return ThemeChoice::Pinned {
-                name: "default".into(),
-                dir: None,
+                name: builtin.name().into(),
+                source: ThemeSource::Builtin(builtin),
             };
         }
         let valid = chat_render::themes::validate_name(name).is_ok() && name == name.trim();
@@ -185,7 +188,7 @@ impl ServerState {
         match dir {
             Some(dir) => ThemeChoice::Pinned {
                 name: name.to_string(),
-                dir: Some(dir),
+                source: ThemeSource::Folder(dir),
             },
             None => {
                 warn!(
@@ -197,11 +200,10 @@ impl ServerState {
         }
     }
 
-    /// The folder of the chosen theme; `None` = built-in.
-    fn theme_dir_for(&self, choice: &ThemeChoice) -> Option<PathBuf> {
+    fn source_for(&self, choice: ThemeChoice) -> ThemeSource {
         match choice {
-            ThemeChoice::App => self.current_theme_dir(),
-            ThemeChoice::Pinned { dir, .. } => dir.clone(),
+            ThemeChoice::App => self.current_theme(),
+            ThemeChoice::Pinned { source, .. } => source,
         }
     }
 
@@ -209,13 +211,10 @@ impl ServerState {
     /// browser source" picks up changes without a restart. A broken custom
     /// template must not take the overlay down mid-stream: log it and fall
     /// back to the built-in one.
-    fn load_theme(&self, choice: &ThemeChoice) -> Theme {
-        let Some(dir) = self.theme_dir_for(choice) else {
-            return Theme::builtin();
-        };
+    fn load_theme(&self, choice: ThemeChoice) -> Theme {
         // Blocking file I/O in an async handler is normally a no-go, but
         // this is two small local files, once per connection.
-        Theme::load(&dir).unwrap_or_else(|e| {
+        self.source_for(choice).load().unwrap_or_else(|e| {
             error!("invalid custom theme, using the built-in template: {e:#}");
             Theme::builtin()
         })
@@ -295,7 +294,7 @@ fn url_segment(name: &str) -> String {
 /// relative URL in it (`url(bg.png)`) resolves to `/theme/bg.png`: a file
 /// in the same theme folder.
 async fn theme_file(State(state): State<ServerState>, UrlPath(path): UrlPath<String>) -> Response {
-    serve_theme_file(state.current_theme_dir(), &path).await
+    serve_theme_file(state.current_theme(), &path).await
 }
 
 /// A pinned theme's files (`/?theme=<name>`), the same way: its CSS's
@@ -307,21 +306,21 @@ async fn named_theme_file(
     UrlPath((name, path)): UrlPath<(String, String)>,
 ) -> Response {
     match state.choose_theme(Some(&name)) {
-        ThemeChoice::Pinned { dir, .. } => serve_theme_file(dir, &path).await,
+        ThemeChoice::Pinned { source, .. } => serve_theme_file(source, &path).await,
         ThemeChoice::App => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-/// `path` from the theme in `dir` (`None` = built-in): its CSS, falling
-/// back to the built-in one, or one of its files.
-async fn serve_theme_file(dir: Option<PathBuf>, path: &str) -> Response {
+/// `path` from the theme `source`: its CSS, falling back to the built-in
+/// one, or one of its folder's files.
+async fn serve_theme_file(source: ThemeSource, path: &str) -> Response {
     if path == chat_render::CSS_FILE {
-        return overlay_css(dir).into_response();
+        return overlay_css(&source).into_response();
     }
-    let Some(dir) = dir else {
-        return StatusCode::NOT_FOUND.into_response(); // the built-in theme has no files
+    let Some(dir) = source.folder() else {
+        return StatusCode::NOT_FOUND.into_response(); // built-in themes have no files
     };
-    let Some(file) = inside(&dir, path) else {
+    let Some(file) = inside(dir, path) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     match tokio::fs::read(&file).await {
@@ -342,14 +341,11 @@ async fn serve_theme_file(dir: Option<PathBuf>, path: &str) -> Response {
     }
 }
 
-fn overlay_css(dir: Option<PathBuf>) -> impl IntoResponse {
-    let css = match dir {
-        None => chat_render::DEFAULT_CSS.to_string(),
-        Some(dir) => chat_render::read_css(dir).unwrap_or_else(|e| {
-            error!("can't read custom CSS, using the built-in one: {e:#}");
-            chat_render::DEFAULT_CSS.to_string()
-        }),
-    };
+fn overlay_css(source: &ThemeSource) -> impl IntoResponse + use<> {
+    let css = source.css().unwrap_or_else(|e| {
+        error!("can't read custom CSS, using the built-in one: {e:#}");
+        chat_render::DEFAULT_CSS.to_string()
+    });
     (
         [
             (header::CONTENT_TYPE, "text/css; charset=utf-8"),
@@ -397,7 +393,7 @@ async fn events(
     State(state): State<ServerState>,
     Query(query): Query<OverlayQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let theme = state.load_theme(&state.choose_theme(query.theme.as_deref()));
+    let theme = state.load_theme(state.choose_theme(query.theme.as_deref()));
     let (history, rx) = state.hub.subscribe();
 
     let replay = stream::iter(history.into_iter().map(ChatEvent::Message));
@@ -441,7 +437,7 @@ async fn events(
     // has the new theme, which then reconnects and reloads again, forever.
     // So: mark the current value as seen first, and only real changes from
     // now on count.
-    let mut theme_changes = state.theme_dir.clone();
+    let mut theme_changes = state.theme.clone();
     theme_changes.borrow_and_update();
     let reload = WatchStream::from_changes(theme_changes)
         .map(|_| Event::default().event("reload").data("theme changed"));
@@ -502,7 +498,7 @@ mod tests {
         pub(crate) hub: Arc<Hub>,
         pub(crate) shutdown: CancellationToken,
         pub(crate) task: JoinHandle<std::io::Result<()>>,
-        pub(crate) theme_dir: watch::Sender<Option<PathBuf>>,
+        pub(crate) theme: watch::Sender<ThemeSource>,
         pub(crate) stagger: watch::Sender<Stagger>,
         pub(crate) api: watch::Sender<bool>,
         pub(crate) newest: watch::Sender<Newest>,
@@ -522,7 +518,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let hub = Arc::new(Hub::new(20));
         let shutdown = CancellationToken::new();
-        let (theme_tx, theme_rx) = watch::channel(theme_dir);
+        let source = theme_dir.map_or_else(ThemeSource::default, ThemeSource::Folder);
+        let (theme_tx, theme_rx) = watch::channel(source);
         let connections = Arc::new(Connections::default());
         let (stagger_tx, stagger_rx) = watch::channel(Stagger::default());
         // On in tests: most of them are about the API.
@@ -530,7 +527,7 @@ mod tests {
         let (newest_tx, newest_rx) = watch::channel(Newest::default());
         let state = ServerState {
             hub: hub.clone(),
-            theme_dir: theme_rx,
+            theme: theme_rx,
             shutdown: shutdown.clone(),
             stagger: stagger_rx,
             api: api_rx,
@@ -544,7 +541,7 @@ mod tests {
             hub,
             shutdown,
             task,
-            theme_dir: theme_tx,
+            theme: theme_tx,
             stagger: stagger_tx,
             api: api_tx,
             newest: newest_tx,
@@ -763,7 +760,7 @@ mod tests {
             "no reload without a change"
         );
 
-        server.theme_dir.send_replace(Some(dir.clone()));
+        server.theme.send_replace(ThemeSource::Folder(dir.clone()));
         read_until(&mut resp, &mut seen, "event: reload").await;
         let css = reqwest::get(format!("{base}/theme/overlay.css"))
             .await
@@ -782,7 +779,9 @@ mod tests {
     #[tokio::test]
     async fn overlay_connecting_after_a_theme_change_does_not_reload() {
         let server = start(None).await;
-        server.theme_dir.send_replace(Some(std::env::temp_dir()));
+        server
+            .theme
+            .send_replace(ThemeSource::Folder(std::env::temp_dir()));
 
         server.hub.publish(message("m1"));
         let mut resp = reqwest::get(format!("http://{}/events", server.addr))
@@ -928,7 +927,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn theme_default_pins_the_builtin_theme() {
+    async fn builtin_theme_names_pin_the_builtin_themes() {
         let root = themes_folder("default");
         let themes = root.join("themes");
         // The app uses "cozy"; `?theme=default` still gets the built-in one.
@@ -950,6 +949,20 @@ mod tests {
         let mut seen = String::new();
         read_until(&mut resp, &mut seen, r#"<article class="msg msg--text"#).await;
         assert!(!seen.contains("cozy</article>"), "{seen}");
+
+        // The other built-in theme works the same way, in any capitalisation.
+        let (_, page) = get_text(format!("{base}/?theme=Minimal")).await;
+        assert!(
+            page.contains(r#"href="themes/minimal/overlay.css""#),
+            "{page}"
+        );
+        let (_, css) = get_text(format!("{base}/themes/minimal/overlay.css")).await;
+        assert_eq!(css, Builtin::Minimal.css());
+        let mut resp = reqwest::get(format!("{base}/events?theme=minimal"))
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"<div class="msg msg--text"#).await;
 
         std::fs::remove_dir_all(root).unwrap();
     }

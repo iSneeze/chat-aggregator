@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::Context;
 
 use crate::config::{SourceConfig, YouTubeSettings};
-use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Newest, Stagger};
+use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Newest, Stagger, ThemeSource};
 
 /// A commented starting point, written by `run --init-config`.
 pub const TEMPLATE: &str = include_str!("../config.example.toml");
@@ -85,8 +85,9 @@ pub enum Appearance {
 pub struct ServerSettings {
     pub port: u16,
     pub history: usize,
-    /// Overlay theme: a folder name in `themes/` next to the config file.
-    /// `None`: the built-in theme.
+    /// Overlay theme: a built-in theme's name (`default`, `minimal`) or a
+    /// folder name in `themes/` next to the config file. `None`: the
+    /// default built-in theme.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     pub stagger_ms: u64,
@@ -178,9 +179,9 @@ impl ConfigFile {
             youtube: self.youtube,
             bind: (Ipv4Addr::LOCALHOST, server.port).into(),
             history: server.history,
-            theme_dir: server
-                .theme
-                .map(|name| Self::themes_dir(settings_dir).join(name)),
+            theme: server.theme.map_or_else(ThemeSource::default, |name| {
+                ThemeSource::named(&Self::themes_dir(settings_dir), &name)
+            }),
             themes_dir: Some(Self::themes_dir(settings_dir)),
             stagger: Stagger::new(
                 Duration::from_millis(server.stagger_ms),
@@ -291,9 +292,21 @@ mod tests {
         assert_eq!(engine.newest, Newest::Top);
         assert_eq!(engine.history, 5);
         assert_eq!(
-            engine.theme_dir.as_deref(),
-            Some(Path::new("/settings/themes/cozy")),
+            engine.theme,
+            ThemeSource::Folder("/settings/themes/cozy".into()),
             "a theme name is a folder in themes/ next to the config file"
+        );
+        let minimal = ConfigFile {
+            server: ServerSettings {
+                theme: Some("minimal".into()),
+                ..ServerSettings::default()
+            },
+            ..ConfigFile::default()
+        };
+        assert_eq!(
+            minimal.into_engine_config(Path::new("/settings")).theme,
+            ThemeSource::Builtin(crate::Builtin::Minimal),
+            "built-in themes by name"
         );
     }
 
