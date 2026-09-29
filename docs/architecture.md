@@ -102,7 +102,7 @@ ChatEvent
 ├── ClearUser { platform, user_id }
 └── ClearAll { platform }
 
-MessageKind: Text | EmoteOnly | Donation { amount } | Special { image_url, amount, info }
+MessageKind: Text | EmoteOnly | Donation { amount, tier } | Special { image_url, amount, info, tier }
            | MembershipJoin { info, months } | MembershipGift { count } | SystemNotice { info }
 ```
 
@@ -114,7 +114,11 @@ and only additive changes are allowed within `v1`. Missing values are
 `null` rather than omitted, so typed languages get a stable shape.
 
 Amounts stay display strings (`"€5.00"`, `"100 bits"`): platforms format
-them in the viewer's currency, and the overlay only shows them.
+them in the viewer's currency, and the overlay only shows them. How *big*
+an amount is comes as a `tier` on the platform's own scale instead: YouTube
+reports one with every Super Chat (so no exchange rates on our side), and
+Twitch bits are sorted into Twitch's cheer steps. Themes colour paid
+messages by it.
 
 ## Sources
 

@@ -18,6 +18,7 @@ pub(crate) struct MessageView<'a> {
     time: String,
     body: Vec<Part<'a>>,
     amount: Option<&'a str>,
+    tier: Option<u32>,
     count: Option<usize>,
     months: Option<u32>,
     info: Option<&'a str>,
@@ -64,6 +65,7 @@ impl<'a> MessageView<'a> {
                 .to_string(),
             body: split_body(&msg.text, &msg.emotes),
             amount: None,
+            tier: None,
             count: None,
             months: None,
             info: None,
@@ -73,21 +75,24 @@ impl<'a> MessageView<'a> {
         match &msg.kind {
             MessageKind::Text => {}
             MessageKind::EmoteOnly => view.kind = "emote-only",
-            MessageKind::Donation { amount } => {
+            MessageKind::Donation { amount, tier } => {
                 view.kind = "donation";
                 view.paid = true;
                 view.amount = Some(amount);
+                view.tier = *tier;
             }
             MessageKind::Special {
                 image_url,
                 amount,
                 info,
+                tier,
             } => {
                 view.kind = "special";
                 view.paid = true;
                 view.sticker_url = image_url.as_deref();
                 view.amount = amount.as_deref();
                 view.info = info.as_deref();
+                view.tier = *tier;
             }
             MessageKind::MembershipJoin { info, months } => {
                 view.kind = "membership";

@@ -46,12 +46,62 @@ impl Kind {
     }
 }
 
+/// Who the test author is. Sent as the badges the platform itself would
+/// send, so themes treat test messages like real ones.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Viewer,
+    Member,
+    Moderator,
+    Owner,
+}
+
+impl Role {
+    const ALL: [Role; 4] = [Role::Viewer, Role::Member, Role::Moderator, Role::Owner];
+
+    fn label(self) -> &'static str {
+        match self {
+            Role::Viewer => "Viewer",
+            Role::Member => "Member",
+            Role::Moderator => "Mod",
+            Role::Owner => "Owner",
+        }
+    }
+
+    /// The badge names chat-twitch and chat-youtube produce for this role.
+    fn badges(self, platform: ChatPlatform) -> Vec<String> {
+        let youtube = platform == ChatPlatform::YouTube;
+        let badge = match self {
+            Role::Viewer => return Vec::new(),
+            Role::Member if youtube => "member",
+            Role::Member => "subscriber",
+            Role::Moderator => "moderator",
+            Role::Owner if youtube => "owner",
+            Role::Owner => "broadcaster",
+        };
+        vec![badge.into()]
+    }
+}
+
+/// The donation tiers the window offers, labelled with where each one
+/// starts on the platform's scale (see `MessageKind::Special`'s `tier`):
+/// tier 1 is the first entry.
+fn tier_steps(platform: ChatPlatform) -> &'static [&'static str] {
+    match platform {
+        ChatPlatform::YouTube => &["$1+", "$2+", "$5+", "$10+", "$20+", "$50+", "$100+"],
+        _ => &["1+", "100+", "1,000+", "5,000+", "10,000+"],
+    }
+}
+
 pub struct ManualWindow {
     engine: EngineHandle,
     /// Set once the engine has added the manual source.
     source: Option<(SourceId, ManualInput)>,
     platform: ChatPlatform,
     kind: Kind,
+    role: Role,
+    /// Donations only: `None` tries a theme's look without a tier.
+    tier: Option<u32>,
     author: Entity<InputState>,
     text: Entity<InputState>,
     amount: Entity<InputState>,
@@ -123,6 +173,8 @@ impl ManualWindow {
             source: None,
             platform: ChatPlatform::Twitch,
             kind: Kind::Message,
+            role: Role::Viewer,
+            tier: None,
             author,
             text,
             amount,
@@ -144,6 +196,7 @@ impl ManualWindow {
             Kind::Message => MessageKind::Text,
             Kind::Donation => MessageKind::Donation {
                 amount: non_empty(value(&self.amount), "the amount")?,
+                tier: self.tier,
             },
             Kind::Membership => MessageKind::MembershipJoin {
                 info: non_empty(value(&self.info), "a description")?,
@@ -168,7 +221,7 @@ impl ManualWindow {
                 id: format!("manual-{}", name.to_lowercase()),
                 name,
                 color: None,
-                badges: Vec::new(),
+                badges: self.role.badges(self.platform),
                 avatar_url: None,
             },
             // Donations and memberships can come with a message too.
@@ -233,17 +286,40 @@ impl ManualWindow {
         id: &'static str,
         cx: &App,
     ) -> impl IntoElement + use<> {
-        h_flex()
-            .gap_2()
-            .items_center()
-            .child(
-                div()
-                    .w(px(90.))
-                    .flex_none()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(label),
-            )
-            .child(div().flex_1().child(Input::new(input).id(id)))
+        labelled(label, Input::new(input).id(id), cx)
+    }
+
+    fn role_field(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let roles = Role::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(i, role)| Radio::new(i).label(role.label()));
+        let group = RadioGroup::horizontal("manual-role")
+            .children(roles)
+            .selected_index(Role::ALL.iter().position(|r| *r == self.role))
+            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                this.role = Role::ALL[*index];
+                cx.notify();
+            }));
+        labelled("Role", group, cx)
+    }
+
+    /// Donation tier: none, or one per step of the platform's scale.
+    fn tier_field(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let steps = tier_steps(self.platform);
+        let radios = std::iter::once("none")
+            .chain(steps.iter().copied())
+            .enumerate()
+            .map(|(i, label)| Radio::new(i).label(label));
+        let tiers = RadioGroup::horizontal("manual-tier")
+            .children(radios)
+            // Index 0 is "none", index n is tier n.
+            .selected_index(Some(self.tier.map_or(0, |t| t as usize)))
+            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                this.tier = (*index > 0).then_some(*index as u32);
+                cx.notify();
+            }));
+        labelled("Tier", tiers, cx)
     }
 }
 
@@ -260,6 +336,9 @@ impl Render for ManualWindow {
                 } else {
                     ChatPlatform::Twitch
                 };
+                // Twitch has fewer tiers: keep the choice on the new scale.
+                let top = tier_steps(this.platform).len() as u32;
+                this.tier = this.tier.map(|t| t.min(top));
                 cx.notify();
             }))
             .child(Radio::new(0).label("Twitch"))
@@ -281,14 +360,15 @@ impl Render for ManualWindow {
             }));
 
         // The fields this kind needs.
-        let mut fields =
-            v_flex()
-                .gap_2()
-                .child(self.field("Author", &self.author, "manual-author", cx));
+        let mut fields = v_flex()
+            .gap_2()
+            .child(self.field("Author", &self.author, "manual-author", cx))
+            .child(self.role_field(cx));
         fields = match self.kind {
             Kind::Message => fields.child(self.field("Message", &self.text, "manual-text", cx)),
             Kind::Donation => fields
                 .child(self.field("Amount", &self.amount, "manual-amount", cx))
+                .child(self.tier_field(cx))
                 .child(self.field("Message", &self.text, "manual-text", cx)),
             Kind::Membership => fields
                 .child(self.field("Description", &self.info, "manual-info", cx))
@@ -352,6 +432,27 @@ impl Render for ManualWindow {
     }
 }
 
+/// A form row: the label in a fixed-width column, then the control.
+/// (`E` is named rather than `impl IntoElement` so the result can say it
+/// holds an `E` but borrows nothing: `use<E>`.)
+fn labelled<E: IntoElement>(
+    label: &'static str,
+    control: E,
+    cx: &App,
+) -> impl IntoElement + use<E> {
+    h_flex()
+        .gap_2()
+        .items_center()
+        .child(
+            div()
+                .w(px(90.))
+                .flex_none()
+                .text_color(cx.theme().muted_foreground)
+                .child(label),
+        )
+        .child(div().flex_1().child(control))
+}
+
 fn non_empty(value: String, what: &str) -> Result<String, String> {
     if value.is_empty() {
         Err(format!("enter {what}"))
@@ -372,7 +473,7 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
 
-    use super::{Kind, ManualWindow};
+    use super::{Kind, ManualWindow, Role};
 
     struct Ui {
         window: WindowHandle<Root>,
@@ -433,12 +534,15 @@ mod tests {
     fn each_kind_shows_its_fields(cx: &mut TestAppContext) {
         let ui = open(cx);
         cx.update_window(ui.window.into(), |_, window, cx| {
-            // Message (selected at start): just the text.
+            // Every kind: author and role. Message (selected at start): text.
+            assert!(window.within("manual-role").try_find(0).is_some());
             assert!(window.try_find("manual-text").is_some());
             assert!(window.try_find("manual-amount").is_none());
-            // Donation: amount and text.
+            // Donation: amount, tier and text.
             pick_kind(window, Kind::Donation, cx);
             assert!(window.try_find("manual-amount").is_some());
+            // (A radio group's id is a scope for its radios, not an element.)
+            assert!(window.within("manual-tier").try_find(0).is_some());
             assert!(window.try_find("manual-text").is_some());
             // Gift: only the count.
             pick_kind(window, Kind::Gift, cx);
@@ -447,6 +551,84 @@ mod tests {
             assert!(window.try_find("manual-amount").is_none());
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn role_becomes_the_platforms_badges(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let badges = |cx: &mut TestAppContext| {
+            ui.view.read_with(cx, |view, cx| {
+                view.compose(cx)
+                    .map(|m| m.author.badges)
+                    .unwrap_or_default()
+            })
+        };
+        let pick = |cx: &mut TestAppContext, role: Role, platform: usize| {
+            let index = Role::ALL.iter().position(|r| *r == role).unwrap();
+            cx.update_window(ui.window.into(), |_, window, cx| {
+                window.within("manual-platform").click(platform, cx);
+                window.within("manual-role").click(index, cx);
+            })
+            .unwrap();
+        };
+        // A message needs text before it composes.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("manual-text", cx);
+            window.input("hi", cx);
+        })
+        .unwrap();
+
+        let none: Vec<String> = Vec::new();
+        assert_eq!(badges(cx), none, "a viewer has no badges");
+        pick(cx, Role::Member, 0);
+        assert_eq!(badges(cx), ["subscriber"]);
+        pick(cx, Role::Member, 1);
+        assert_eq!(badges(cx), ["member"]);
+        pick(cx, Role::Moderator, 1);
+        assert_eq!(badges(cx), ["moderator"]);
+        pick(cx, Role::Owner, 0);
+        assert_eq!(badges(cx), ["broadcaster"]);
+        pick(cx, Role::Owner, 1);
+        assert_eq!(badges(cx), ["owner"]);
+    }
+
+    #[gpui_kit::test]
+    fn tier_follows_the_platforms_scale(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let tier = |cx: &mut TestAppContext| {
+            ui.view.read_with(cx, |view, cx| match view.compose(cx) {
+                Ok(m) => match m.kind {
+                    MessageKind::Donation { tier, .. } => tier,
+                    other => panic!("expected a donation, got {other:?}"),
+                },
+                Err(e) => panic!("{e}"),
+            })
+        };
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            pick_kind(window, Kind::Donation, cx);
+            window.within("manual-platform").click(1, cx); // YouTube
+        })
+        .unwrap();
+        assert_eq!(tier(cx), None, "no tier until one is picked");
+
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.within("manual-tier").click(7, cx); // $100+
+        })
+        .unwrap();
+        assert_eq!(tier(cx), Some(7));
+
+        // Twitch's scale ends at 5: the choice moves to its top tier.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.within("manual-platform").click(0, cx);
+        })
+        .unwrap();
+        assert_eq!(tier(cx), Some(5));
+
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.within("manual-tier").click(0, cx); // none
+        })
+        .unwrap();
+        assert_eq!(tier(cx), None);
     }
 
     #[gpui_kit::test]
@@ -479,6 +661,7 @@ mod tests {
 
         cx.update_window(ui.window.into(), |_, window, cx| {
             pick_kind(window, Kind::Donation, cx);
+            window.within("manual-tier").click(2, cx); // Twitch: 100+ bits
             window.click("manual-text", cx);
             window.input("keep it up", cx);
             window.click("manual-send", cx);
@@ -495,7 +678,9 @@ mod tests {
             ChatEvent::Message(m) => {
                 assert_eq!(m.text, "keep it up");
                 assert_eq!(m.author.name, "Tester");
-                assert!(matches!(m.kind, MessageKind::Donation { amount } if amount == "€5.00"));
+                assert!(
+                    matches!(m.kind, MessageKind::Donation { amount, tier: Some(2) } if amount == "€5.00")
+                );
             }
             other => panic!("expected the donation, got {other:?}"),
         }

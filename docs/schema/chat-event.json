@@ -147,6 +147,15 @@
               "description": "As displayed by the platform: \"€5.00\", \"100 bits\".",
               "type": "string"
             },
+            "tier": {
+              "description": "See [`MessageKind::Special`]'s `tier`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "type": {
               "const": "donation",
               "type": "string"
@@ -154,7 +163,8 @@
           },
           "required": [
             "type",
-            "amount"
+            "amount",
+            "tier"
           ],
           "type": "object"
         },
@@ -182,6 +192,15 @@
                 "null"
               ]
             },
+            "tier": {
+              "description": "How big the amount is on the platform's own scale, from 1 (the\nsmallest) up; `null` if the platform has none. Scales differ per\nplatform, so compare tiers only within one platform:\n- YouTube Super Chats and Stickers: YouTube's tier (its colour in\n  YouTube's chat: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange,\n  6 magenta, 7 red), whatever the currency.\n- Twitch bits: the cheer tiers, 1 (1+ bits), 2 (100+),\n  3 (1,000+), 4 (5,000+), 5 (10,000+).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "type": {
               "const": "special",
               "type": "string"
@@ -191,7 +210,8 @@
             "type",
             "image_url",
             "amount",
-            "info"
+            "info",
+            "tier"
           ],
           "type": "object"
         },

@@ -84,14 +84,23 @@ A chat message or a platform event (donation, sub, raid, ...).
 |--------------|--------|----------|
 | `text`       | | normal chat |
 | `emote_only` | | only emotes (and spaces) |
-| `donation`   | `amount` | Twitch bits, YouTube Super Chat: `"100 bits"`, `"€5.00"` |
-| `special`    | `image_url`, `amount`, `info` (each may be `null`) | YouTube Super Sticker (`info` = sticker description), YouTube gift |
+| `donation`   | `amount`, `tier` | Twitch bits, YouTube Super Chat: `"100 bits"`, `"€5.00"` |
+| `special`    | `image_url`, `amount`, `info`, `tier` (each may be `null`) | YouTube Super Sticker (`info` = sticker description), YouTube gift |
 | `membership` | `info`, `months` | new sub/member, resub, milestone; `months` = how long they've been a member (resub, milestone), `null` for a new one |
 | `gift`       | `count` | gifted subs (Twitch) or memberships (YouTube) |
 | `notice`     | `info` | raid, announcement |
 
 `amount` is a display string as the platform formats it (currency and all);
 it's meant for showing, not for arithmetic.
+
+`tier` says how big the amount is on the **platform's own scale**, from 1
+(the smallest) up, or `null` where the platform has none (YouTube jewel
+gifts). Compare tiers only within one platform:
+
+| platform | tiers |
+|----------|-------|
+| `youtube` | YouTube's Super Chat/Sticker tier, as YouTube reports it, whatever the currency: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange, 6 magenta, 7 red (its colour in YouTube's chat) |
+| `twitch`  | the cheer tier of the bits: 1 (1–99), 2 (100–999), 3 (1,000–4,999), 4 (5,000–9,999), 5 (10,000 and more) |
 
 ### `delete`, `clear_user`, `clear_all`
 

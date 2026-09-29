@@ -8,6 +8,8 @@
  *   .msg--text / --emote-only / --donation / --special
  *   .msg--membership / --gift / --notice            kind
  *   .msg--paid                                      donation or special
+ *   .msg--tier-1, -2, …                             the amount's tier on its
+ *                                                   platform (see message.html)
  *   .msg--deleted                                   removed by a moderator
  */
 

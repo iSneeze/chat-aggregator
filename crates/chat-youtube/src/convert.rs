@@ -93,6 +93,9 @@ pub fn convert(
         Some(DisplayedContent::SuperChatDetails(sc)) => (
             MessageKind::Donation {
                 amount: sc.amount_display_string.unwrap_or_default(),
+                // YouTube's own tier (the colour in its chat), already
+                // worked out across currencies: no exchange rates needed.
+                tier: sc.tier,
             },
             sc.user_comment.unwrap_or_default(),
         ),
@@ -101,6 +104,7 @@ pub fn convert(
                 image_url: None, // the API gives no sticker image URL
                 amount: d.amount_display_string,
                 info: d.super_sticker_metadata.and_then(|m| m.alt_text),
+                tier: d.tier,
             },
             String::new(),
         ),
@@ -109,6 +113,7 @@ pub fn convert(
                 image_url: gift.gift_url,
                 amount: gift.jewels_amount.map(|j| format!("{j} jewels")),
                 info: gift.gift_name.or(gift.alt_text),
+                tier: None, // jewel gifts have no tiers
             },
             String::new(),
         ),
@@ -259,6 +264,7 @@ mod tests {
                     pb::LiveChatSuperChatDetails {
                         amount_display_string: Some("€2.00".into()),
                         user_comment: Some("WOO".into()),
+                        tier: Some(2),
                         ..Default::default()
                     },
                 )),
@@ -272,7 +278,10 @@ mod tests {
         };
 
         let msg = convert_msg(item, &EmojiMap::default());
-        assert!(matches!(msg.kind, MessageKind::Donation { .. }));
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Donation { tier: Some(2), .. }
+        ));
         // Only the user's own words; the amount lives in the kind.
         assert_eq!(msg.text, "WOO");
     }

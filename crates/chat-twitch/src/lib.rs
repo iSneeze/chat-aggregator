@@ -114,11 +114,24 @@ fn unique_emotes(emotes: &[Emote]) -> Vec<EmoteRef> {
         .collect()
 }
 
+/// Twitch's cheer tiers, the steps at which a cheer changes its colour in
+/// Twitch's chat: 1+, 100+, 1,000+, 5,000+ and 10,000+ bits.
+fn bits_tier(bits: u64) -> u32 {
+    match bits {
+        ..100 => 1,
+        100..1_000 => 2,
+        1_000..5_000 => 3,
+        5_000..10_000 => 4,
+        10_000.. => 5,
+    }
+}
+
 fn convert_privmsg(p: PrivmsgMessage) -> ChatMessage {
     // Bits arrive as a normal chat message carrying a "bits" tag.
     let kind = match p.bits {
         Some(bits) => MessageKind::Donation {
             amount: format!("{bits} bits"),
+            tier: Some(bits_tier(bits)),
         },
         None if is_emote_only(&p.message_text, &p.emotes) => MessageKind::EmoteOnly,
         None => MessageKind::Text,
@@ -274,7 +287,19 @@ mod tests {
         let out = convert_msg(
             "@badge-info=;badges=;bits=100;color=;display-name=Bob;emotes=;id=def;mod=0;room-id=123;subscriber=0;tmi-sent-ts=1700000000000;turbo=0;user-id=43;user-type= :bob!bob@bob.tmi.twitch.tv PRIVMSG #somechannel :Cheer100 hey!",
         );
-        assert!(matches!(out.kind, MessageKind::Donation { .. }));
+        assert!(matches!(
+            out.kind,
+            MessageKind::Donation { tier: Some(2), .. }
+        ));
+    }
+
+    #[test]
+    fn bits_tiers_follow_twitchs_cheer_steps() {
+        let tiers: Vec<u32> = [1, 99, 100, 999, 1_000, 4_999, 5_000, 9_999, 10_000, 250_000]
+            .into_iter()
+            .map(bits_tier)
+            .collect();
+        assert_eq!(tiers, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]);
     }
 
     #[test]

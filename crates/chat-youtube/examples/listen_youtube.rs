@@ -97,7 +97,7 @@ fn print_message(msg: &ChatMessage) {
     let kind = match &msg.kind {
         MessageKind::Text => "text".into(),
         MessageKind::EmoteOnly => "emote-only".into(),
-        MessageKind::Donation { amount } => format!("DONATION {amount}"),
+        MessageKind::Donation { amount, .. } => format!("DONATION {amount}"),
         MessageKind::Special { .. } => "special".into(),
         MessageKind::MembershipJoin { .. } => "MEMBER".into(),
         MessageKind::MembershipGift { count } => format!("GIFT x{count}"),

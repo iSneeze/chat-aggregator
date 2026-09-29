@@ -181,11 +181,13 @@ mod tests {
             MessageKind::Text,
             MessageKind::Donation {
                 amount: value.into(),
+                tier: Some(4),
             },
             MessageKind::Special {
                 image_url: Some(value.into()),
                 amount: Some(value.into()),
                 info: Some(value.into()),
+                tier: Some(4),
             },
             MessageKind::MembershipJoin {
                 info: value.into(),
@@ -263,10 +265,12 @@ mod tests {
             "gg",
             MessageKind::Donation {
                 amount: "€5.00".into(),
+                tier: Some(3),
             },
         ));
         assert!(html.contains("msg--donation"), "{html}");
         assert!(html.contains("msg--paid"), "{html}");
+        assert!(html.contains("msg--tier-3"), "{html}");
         assert!(
             html.contains(r#"<data class="msg__amount">€5.00</data>"#),
             "{html}"
@@ -282,9 +286,11 @@ mod tests {
                 image_url: None,
                 amount: Some("€2.00".into()),
                 info: Some("dancing cat".into()),
+                tier: None,
             },
         ));
         assert!(html.contains("msg--special"), "{html}");
+        assert!(!html.contains("msg--tier"), "no tier, no class: {html}");
         assert!(html.contains("msg--paid"), "{html}");
         assert!(
             html.contains(r#"<p class="msg__event"><data class="msg__amount">€2.00</data> <span class="msg__info">dancing cat</span></p>"#),

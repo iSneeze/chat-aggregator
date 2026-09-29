@@ -427,7 +427,7 @@ impl AppView {
         open_or_focus(
             &mut self.manual_window,
             "Test messages",
-            size(px(520.), px(420.)),
+            size(px(520.), px(510.)),
             move |window, cx| {
                 let view = cx.new(|cx| ManualWindow::new(engine, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))

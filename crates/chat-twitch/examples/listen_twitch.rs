@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         let kind = match &msg.kind {
             MessageKind::Text => "text".to_string(),
             MessageKind::EmoteOnly => "emote-only".to_string(),
-            MessageKind::Donation { amount } => format!("DONATION {amount}"),
+            MessageKind::Donation { amount, .. } => format!("DONATION {amount}"),
             MessageKind::Special { .. } => "special".to_string(),
             MessageKind::MembershipJoin { .. } => "SUB".to_string(),
             MessageKind::MembershipGift { count } => format!("GIFT x{count}"),

@@ -115,6 +115,7 @@ components:
             kind:
               type: donation
               amount: 100 bits
+              tier: 2
         - name: delete
           summary: A moderator deleted a message.
           payload:

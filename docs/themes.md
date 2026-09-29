@@ -78,6 +78,26 @@ styles. Keep the root element's `msg` class and its `data-id`,
 `data-platform` and `data-author` attributes: the overlay needs them to
 remove deleted messages.
 
+## Colours by amount
+
+Paid messages (Super Chats, Super Stickers, bits) get a class for how big
+the amount is: `msg--tier-1`, `msg--tier-2`, … Each platform has its own
+scale, so style the tier together with the platform:
+
+| platform | tiers |
+|----------|-------|
+| YouTube | 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange, 6 magenta, 7 red: YouTube's own Super Chat tiers, whatever the currency |
+| Twitch  | bits: 1 (1+), 2 (100+), 3 (1,000+), 4 (5,000+), 5 (10,000+): Twitch's cheer steps |
+
+```css
+.msg--youtube.msg--tier-1 { --paid-color: #1e88e5; }
+.msg--youtube.msg--tier-4 { --paid-color: #ffca28; }
+.msg--twitch.msg--tier-2  { --paid-color: #9c3ee8; }
+```
+
+Messages without a tier (YouTube jewel gifts, the app's test messages)
+have no tier class, so give `--paid-color` a default too.
+
 ## A look per chatter
 
 Every chatter can get something of their own (a colour, a shape, a

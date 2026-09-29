@@ -95,6 +95,7 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             vec![],
             MessageKind::Donation {
                 amount: "€5.00".into(),
+                tier: Some(3),
             },
         ),
         msg(
@@ -105,6 +106,7 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             vec![],
             MessageKind::Donation {
                 amount: "100 bits".into(),
+                tier: Some(2),
             },
         ),
         msg(
@@ -117,6 +119,7 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
                 image_url: None,
                 amount: Some("€2.00".into()),
                 info: Some("Super Sticker: cat doing a little dance".into()),
+                tier: Some(2),
             },
         ),
         msg(

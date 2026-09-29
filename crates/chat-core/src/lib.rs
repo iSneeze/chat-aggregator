@@ -143,6 +143,8 @@ pub enum MessageKind {
     Donation {
         /// As displayed by the platform: "€5.00", "100 bits".
         amount: String,
+        /// See [`MessageKind::Special`]'s `tier`.
+        tier: Option<u32>,
     },
     /// Paid visual items: YouTube Super Stickers and gifts, later maybe
     /// Twitch giant emotes.
@@ -153,6 +155,15 @@ pub enum MessageKind {
         amount: Option<String>,
         /// Name or description of the item, e.g. the sticker's alt text.
         info: Option<String>,
+        /// How big the amount is on the platform's own scale, from 1 (the
+        /// smallest) up; `null` if the platform has none. Scales differ per
+        /// platform, so compare tiers only within one platform:
+        /// - YouTube Super Chats and Stickers: YouTube's tier (its colour in
+        ///   YouTube's chat: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange,
+        ///   6 magenta, 7 red), whatever the currency.
+        /// - Twitch bits: the cheer tiers, 1 (1+ bits), 2 (100+),
+        ///   3 (1,000+), 4 (5,000+), 5 (10,000+).
+        tier: Option<u32>,
     },
     /// New subscriber/member, resub, membership milestone.
     #[serde(rename = "membership")]
@@ -328,17 +339,19 @@ mod json_contract {
         );
         assert_eq!(
             kind(MessageKind::Donation {
-                amount: "€5.00".into()
+                amount: "€5.00".into(),
+                tier: Some(3),
             }),
-            json!({ "type": "donation", "amount": "€5.00" })
+            json!({ "type": "donation", "amount": "€5.00", "tier": 3 })
         );
         assert_eq!(
             kind(MessageKind::Special {
                 image_url: None,
                 amount: Some("€2.00".into()),
                 info: Some("cat".into()),
+                tier: None,
             }),
-            json!({ "type": "special", "image_url": null, "amount": "€2.00", "info": "cat" })
+            json!({ "type": "special", "image_url": null, "amount": "€2.00", "info": "cat", "tier": null })
         );
         assert_eq!(
             kind(MessageKind::MembershipJoin {
