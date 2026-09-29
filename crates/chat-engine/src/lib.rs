@@ -55,6 +55,8 @@ pub struct EngineConfig {
     pub history: usize,
     /// Folder with a custom `message.html` / `overlay.css`.
     pub theme_dir: Option<PathBuf>,
+    /// The folder of named themes, for overlay URLs with `?theme=<name>`.
+    pub themes_dir: Option<PathBuf>,
     /// Spacing of message bursts in the overlay.
     pub stagger: Stagger,
     /// Whether the JSON API (`/api/v1/ws`) accepts clients.
@@ -71,6 +73,7 @@ impl Default for EngineConfig {
             bind: (Ipv4Addr::LOCALHOST, DEFAULT_PORT).into(),
             history: DEFAULT_HISTORY,
             theme_dir: None,
+            themes_dir: None,
             stagger: Stagger::default(),
             api: false,
             newest: Newest::default(),
@@ -268,6 +271,7 @@ impl Engine {
             stagger: stagger_rx,
             api: api_rx,
             newest: newest_rx,
+            themes_dir: config.themes_dir,
             connections,
         };
         tasks.spawn(async move {

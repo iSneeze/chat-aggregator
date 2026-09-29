@@ -98,7 +98,8 @@ OBS (e.g. 450×800).
 
 **Styling:** themes are folders in `themes/` next to the config file, picked
 in the app (or `theme = "name"` in `config.toml`, `--theme <name|dir>`
-headless); see [docs/themes.md](docs/themes.md). Chat direction (newest at
+headless), or per browser source with `?theme=name` in the overlay URL; see
+[docs/themes.md](docs/themes.md). Chat direction (newest at
 the bottom or top): the app's dropdown, `newest = "top"` / `--newest top`,
 or per browser source `?newest=top` in the overlay URL. To iterate without a
 server: `cargo run -p chat-render --example preview -- <dir> > preview.html`.

@@ -181,6 +181,7 @@ impl ConfigFile {
             theme_dir: server
                 .theme
                 .map(|name| Self::themes_dir(settings_dir).join(name)),
+            themes_dir: Some(Self::themes_dir(settings_dir)),
             stagger: Stagger::new(
                 Duration::from_millis(server.stagger_ms),
                 Duration::from_millis(server.stagger_max_ms),

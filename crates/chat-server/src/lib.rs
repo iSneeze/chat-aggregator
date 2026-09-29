@@ -6,6 +6,7 @@
 //! | `/`            | the overlay page (add it to OBS as a Browser Source)     |
 //! | `/theme/overlay.css` | the theme's CSS, re-read on every request          |
 //! | `/theme/…`     | other files of the theme folder (images, fonts)          |
+//! | `/themes/<name>/…` | the same for a named theme (`/?theme=<name>`)        |
 //! | `/events`      | SSE: replay history, then live chat as rendered HTML     |
 //! | `/api/v1/ws`   | WebSocket: live events as JSON (see `api`, docs/api.md)  |
 
@@ -15,7 +16,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -127,7 +128,29 @@ pub struct ServerState {
     /// The default chat direction, written into the overlay page when it
     /// loads (so a change needs an overlay reload).
     pub newest: watch::Receiver<Newest>,
+    /// The folder of named themes (`themes/` next to `config.toml`), for
+    /// overlays that pick their own with `?theme=<name>`. Fixed for the
+    /// server's lifetime; `None`: every overlay uses the app's theme.
+    pub themes_dir: Option<PathBuf>,
     pub connections: Arc<Connections>,
+}
+
+/// The query of an overlay URL (`/?theme=cozy`), passed on to `/events` by
+/// the page. Other parameters (`newest`) are the page script's business.
+#[derive(Default, serde::Deserialize)]
+struct OverlayQuery {
+    theme: Option<String>,
+}
+
+/// Which theme an overlay uses.
+#[derive(Debug, PartialEq)]
+enum ThemeChoice {
+    /// The app's current theme: no `?theme=`, or one that isn't there.
+    App,
+    /// Pinned by the overlay URL, whatever the app's theme: `default` is
+    /// the built-in theme (`dir: None`), any other name a folder in the
+    /// themes folder.
+    Pinned { name: String, dir: Option<PathBuf> },
 }
 
 impl ServerState {
@@ -135,12 +158,59 @@ impl ServerState {
         self.theme_dir.borrow().clone()
     }
 
+    /// The theme for `?theme=<requested>`. Only themes in the themes folder
+    /// can be picked, by a valid theme name (which rules out `..` and
+    /// slashes); anything else is logged and gets the app's theme, so a
+    /// typo in a scene's URL still shows chat.
+    fn choose_theme(&self, requested: Option<&str>) -> ThemeChoice {
+        let Some(name) = requested else {
+            return ThemeChoice::App;
+        };
+        // "Default" can't be a folder name (`validate_name` refuses it), so
+        // it's free to mean the built-in theme.
+        if name.eq_ignore_ascii_case("default") {
+            return ThemeChoice::Pinned {
+                name: "default".into(),
+                dir: None,
+            };
+        }
+        let valid = chat_render::themes::validate_name(name).is_ok() && name == name.trim();
+        let dir = self
+            .themes_dir
+            .as_ref()
+            .filter(|_| valid)
+            .map(|root| root.join(name))
+            // A tiny blocking check, once per page load or connection.
+            .filter(|dir| dir.is_dir());
+        match dir {
+            Some(dir) => ThemeChoice::Pinned {
+                name: name.to_string(),
+                dir: Some(dir),
+            },
+            None => {
+                warn!(
+                    theme = name,
+                    "an overlay asked for a theme that isn't in the themes folder, using the app's theme"
+                );
+                ThemeChoice::App
+            }
+        }
+    }
+
+    /// The folder of the chosen theme; `None` = built-in.
+    fn theme_dir_for(&self, choice: &ThemeChoice) -> Option<PathBuf> {
+        match choice {
+            ThemeChoice::App => self.current_theme_dir(),
+            ThemeChoice::Pinned { dir, .. } => dir.clone(),
+        }
+    }
+
     /// Loaded per overlay connection, so "edit the template, refresh the
     /// browser source" picks up changes without a restart. A broken custom
     /// template must not take the overlay down mid-stream: log it and fall
     /// back to the built-in one.
-    fn load_theme(&self) -> Theme {
-        let Some(dir) = self.current_theme_dir() else {
+    fn load_theme(&self, choice: &ThemeChoice) -> Theme {
+        let Some(dir) = self.theme_dir_for(choice) else {
             return Theme::builtin();
         };
         // Blocking file I/O in an async handler is normally a no-go, but
@@ -156,6 +226,7 @@ pub fn router(state: ServerState) -> Router {
     Router::new()
         .route("/", get(overlay_page))
         .route("/theme/{*path}", get(theme_file))
+        .route("/themes/{name}/{*path}", get(named_theme_file))
         .route("/events", get(events))
         .route("/api/v1/ws", get(api::ws))
         .with_state(state)
@@ -173,15 +244,28 @@ pub async fn serve(listener: TcpListener, state: ServerState) -> std::io::Result
 // edited CSS actually shows up.
 const NO_CACHE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-cache");
 
-async fn overlay_page(State(state): State<ServerState>) -> impl IntoResponse {
+async fn overlay_page(
+    State(state): State<ServerState>,
+    Query(query): Query<OverlayQuery>,
+) -> impl IntoResponse {
     // The default direction goes into an attribute of the chat element,
     // outside the script: the script's hash in the CSP stays the same.
     let newest = state.newest.borrow().as_str();
-    let page = OVERLAY_HTML.replacen(
+    let mut page = OVERLAY_HTML.replacen(
         r#"data-newest="bottom""#,
         &format!(r#"data-newest="{newest}""#),
         1,
     );
+    // A pinned theme's stylesheet, written into the page rather than
+    // swapped by the script: the script reads `--max-messages` from the
+    // stylesheet, which must be loaded by then.
+    if let ThemeChoice::Pinned { name, .. } = state.choose_theme(query.theme.as_deref()) {
+        page = page.replacen(
+            r#"href="theme/overlay.css""#,
+            &format!(r#"href="themes/{}/overlay.css""#, url_segment(&name)),
+            1,
+        );
+    }
     (
         [
             NO_CACHE,
@@ -192,17 +276,52 @@ async fn overlay_page(State(state): State<ServerState>) -> impl IntoResponse {
     )
 }
 
-/// The theme's files. The CSS lives under `/theme/` too, so a relative URL
-/// in it (`url(bg.png)`) resolves to `/theme/bg.png`: a file in the same
-/// theme folder.
+/// A theme name as one URL path segment: letters and digits stay, anything
+/// else (spaces, `ä`) is percent-encoded. The result only has characters
+/// that are safe in an HTML attribute too.
+fn url_segment(name: &str) -> String {
+    name.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_') {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// The app's theme's files. The CSS lives under `/theme/` too, so a
+/// relative URL in it (`url(bg.png)`) resolves to `/theme/bg.png`: a file
+/// in the same theme folder.
 async fn theme_file(State(state): State<ServerState>, UrlPath(path): UrlPath<String>) -> Response {
-    if path == chat_render::CSS_FILE {
-        return overlay_css(&state).into_response();
+    serve_theme_file(state.current_theme_dir(), &path).await
+}
+
+/// A pinned theme's files (`/?theme=<name>`), the same way: its CSS's
+/// `url(bg.png)` resolves to `/themes/<name>/bg.png`. Unknown names are
+/// not found, instead of falling back like the page: a stylesheet from
+/// another theme would only mix two looks.
+async fn named_theme_file(
+    State(state): State<ServerState>,
+    UrlPath((name, path)): UrlPath<(String, String)>,
+) -> Response {
+    match state.choose_theme(Some(&name)) {
+        ThemeChoice::Pinned { dir, .. } => serve_theme_file(dir, &path).await,
+        ThemeChoice::App => StatusCode::NOT_FOUND.into_response(),
     }
-    let Some(dir) = state.current_theme_dir() else {
+}
+
+/// `path` from the theme in `dir` (`None` = built-in): its CSS, falling
+/// back to the built-in one, or one of its files.
+async fn serve_theme_file(dir: Option<PathBuf>, path: &str) -> Response {
+    if path == chat_render::CSS_FILE {
+        return overlay_css(dir).into_response();
+    }
+    let Some(dir) = dir else {
         return StatusCode::NOT_FOUND.into_response(); // the built-in theme has no files
     };
-    let Some(file) = inside(&dir, &path) else {
+    let Some(file) = inside(&dir, path) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     match tokio::fs::read(&file).await {
@@ -223,8 +342,8 @@ async fn theme_file(State(state): State<ServerState>, UrlPath(path): UrlPath<Str
     }
 }
 
-fn overlay_css(state: &ServerState) -> impl IntoResponse + use<> {
-    let css = match state.current_theme_dir() {
+fn overlay_css(dir: Option<PathBuf>) -> impl IntoResponse {
+    let css = match dir {
         None => chat_render::DEFAULT_CSS.to_string(),
         Some(dir) => chat_render::read_css(dir).unwrap_or_else(|e| {
             error!("can't read custom CSS, using the built-in one: {e:#}");
@@ -276,8 +395,9 @@ fn content_type(file: &Path) -> &'static str {
 
 async fn events(
     State(state): State<ServerState>,
+    Query(query): Query<OverlayQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let theme = state.load_theme();
+    let theme = state.load_theme(&state.choose_theme(query.theme.as_deref()));
     let (history, rx) = state.hub.subscribe();
 
     let replay = stream::iter(history.into_iter().map(ChatEvent::Message));
@@ -310,7 +430,9 @@ async fn events(
     // Counted as connected for as long as this response stream exists.
     let connected = state.connections.overlay();
     // Tells the overlay to reload when the theme folder changes; it then
-    // reconnects and gets the new template and CSS.
+    // reconnects and gets the new template and CSS. Overlays with a pinned
+    // theme reload too and come back with their own theme (it's in their
+    // URL): that keeps "Reload overlays" working after editing one.
     //
     // A `watch` receiver remembers which version it last saw, and a clone
     // copies that memory. The receiver kept in `state` is never read, so it
@@ -388,6 +510,13 @@ mod tests {
     }
 
     pub(crate) async fn start(theme_dir: Option<PathBuf>) -> TestServer {
+        start_with_themes(theme_dir, None).await
+    }
+
+    pub(crate) async fn start_with_themes(
+        theme_dir: Option<PathBuf>,
+        themes_dir: Option<PathBuf>,
+    ) -> TestServer {
         // Port 0: the OS picks a free port, so tests can run in parallel.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -406,6 +535,7 @@ mod tests {
             stagger: stagger_rx,
             api: api_rx,
             newest: newest_rx,
+            themes_dir,
             connections: connections.clone(),
         };
         let task = tokio::spawn(serve(listener, state));
@@ -459,7 +589,8 @@ mod tests {
 
         let page = reqwest::get(&base).await.unwrap().text().await.unwrap();
         assert!(page.contains(r#"<main class="chat""#));
-        assert!(page.contains(r#"new EventSource("events")"#));
+        assert!(page.contains(r#"new EventSource("events" + location.search)"#));
+        assert!(page.contains(r#"href="theme/overlay.css""#));
 
         let resp = reqwest::get(format!("{base}/theme/overlay.css"))
             .await
@@ -699,6 +830,126 @@ mod tests {
         }
         let missing = reqwest::get(format!("{base}/nope.png")).await.unwrap();
         assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A themes folder with two themes, "cozy" and "my theme" (a space, as
+    /// theme names may have), each with its own template and CSS.
+    fn themes_folder(test: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("chat-server-{test}-{}", std::process::id()));
+        for name in ["cozy", "my theme"] {
+            let dir = root.join("themes").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("message.html"),
+                format!(r#"<article class="msg" data-id="{{{{ id }}}}">{name}</article>"#),
+            )
+            .unwrap();
+            std::fs::write(dir.join("overlay.css"), format!("/* {name} */")).unwrap();
+            std::fs::write(dir.join("bg.png"), name).unwrap();
+        }
+        std::fs::write(root.join("config.toml"), "client_secret = \"x\"").unwrap();
+        root
+    }
+
+    async fn get_text(url: String) -> (reqwest::StatusCode, String) {
+        let resp = reqwest::get(url).await.unwrap();
+        (resp.status(), resp.text().await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn overlay_url_pins_a_theme() {
+        let root = themes_folder("pinned");
+        // The app's theme is the built-in one; the URL picks "cozy".
+        let server = start_with_themes(None, Some(root.join("themes"))).await;
+        let base = format!("http://{}", server.addr);
+
+        let (_, page) = get_text(format!("{base}/?theme=cozy&newest=top")).await;
+        assert!(page.contains(r#"href="themes/cozy/overlay.css""#), "{page}");
+        assert!(!page.contains(r#"href="theme/overlay.css""#), "{page}");
+        let (_, css) = get_text(format!("{base}/themes/cozy/overlay.css")).await;
+        assert_eq!(css, "/* cozy */");
+        // Relative URLs in its CSS resolve to its own folder.
+        let (_, png) = get_text(format!("{base}/themes/cozy/bg.png")).await;
+        assert_eq!(png, "cozy");
+
+        // The event stream gets the page's query and renders with the
+        // pinned template.
+        server.hub.publish(message("m1"));
+        let mut resp = reqwest::get(format!("{base}/events?theme=cozy&newest=top"))
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"data-id="m1">cozy</article>"#).await;
+
+        // A name that needs encoding in a URL.
+        let (_, page) = get_text(format!("{base}/?theme=my%20theme")).await;
+        assert!(
+            page.contains(r#"href="themes/my%20theme/overlay.css""#),
+            "{page}"
+        );
+        let (_, css) = get_text(format!("{base}/themes/my%20theme/overlay.css")).await;
+        assert_eq!(css, "/* my theme */");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_or_hostile_theme_names_get_the_apps_theme() {
+        let root = themes_folder("unknown");
+        let server = start_with_themes(None, Some(root.join("themes"))).await;
+        let base = format!("http://{}", server.addr);
+
+        // `%2E%2E` is "..", `%2F` a "/": decoded before the name is checked.
+        for name in ["nope", "%2E%2E", "cozy%2F..%2F..", "%22%3E%3Cscript%3E"] {
+            let (_, page) = get_text(format!("{base}/?theme={name}")).await;
+            assert!(
+                page.contains(r#"href="theme/overlay.css""#),
+                "{name}: {page}"
+            );
+            assert!(!page.contains("themes/"), "{name}: {page}");
+            let (status, _) = get_text(format!("{base}/themes/{name}/overlay.css")).await;
+            assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "{name}");
+        }
+        // Nothing outside a pinned theme's folder either.
+        let (status, _) = get_text(format!("{base}/themes/cozy/..%2F..%2Fconfig.toml")).await;
+        assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+
+        // The stream falls back to the app's (here: built-in) template.
+        server.hub.publish(message("m1"));
+        let mut resp = reqwest::get(format!("{base}/events?theme=nope"))
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"<article class="msg msg--text"#).await;
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn theme_default_pins_the_builtin_theme() {
+        let root = themes_folder("default");
+        let themes = root.join("themes");
+        // The app uses "cozy"; `?theme=default` still gets the built-in one.
+        let server = start_with_themes(Some(themes.join("cozy")), Some(themes)).await;
+        let base = format!("http://{}", server.addr);
+
+        let (_, page) = get_text(format!("{base}/?theme=default")).await;
+        assert!(
+            page.contains(r#"href="themes/default/overlay.css""#),
+            "{page}"
+        );
+        let (_, css) = get_text(format!("{base}/themes/default/overlay.css")).await;
+        assert_eq!(css, chat_render::DEFAULT_CSS);
+
+        server.hub.publish(message("m1"));
+        let mut resp = reqwest::get(format!("{base}/events?theme=default"))
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"<article class="msg msg--text"#).await;
+        assert!(!seen.contains("cozy</article>"), "{seen}");
 
         std::fs::remove_dir_all(root).unwrap();
     }

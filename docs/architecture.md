@@ -242,6 +242,7 @@ every field is an `Arc` or a small handle around one).
 |-------|------|
 | `/` | the overlay page (an OBS Browser Source) |
 | `/theme/overlay.css`, `/theme/…` | the theme's CSS and files (images, fonts) |
+| `/themes/<name>/…` | the same for a theme picked in the overlay URL (`/?theme=<name>`) |
 | `/events` | Server-Sent Events: history, then live chat as rendered HTML |
 | `/api/v1/ws` | WebSocket: live events as JSON (off by default) |
 
@@ -269,6 +270,14 @@ every field is an `Arc` or a small handle around one).
   with `column-reverse` (the page order stays oldest-first, so inserting and
   trimming don't change) and pins the view to the newest message after every
   insert, with the browser's scroll anchoring switched off.
+- **A theme per browser source**: `?theme=<name>` in the overlay URL pins
+  that overlay to a theme from the themes folder (`default` = built-in),
+  whatever the app's theme. The page links `/themes/<name>/overlay.css`
+  (so `url(bg.png)` in it finds the theme's own files) and passes its query
+  on to `/events`, which renders with that theme's template. Only valid
+  theme names of existing folders count (so no `..`); anything else gets
+  the app's theme, logged. The server knows the themes folder from
+  startup; it's the only piece of the config it needs for this.
 - **Counting connections** uses guards: each connection holds a value whose
   `Drop` counts down again, so the count is right however the connection
   ends (see Rust idioms).

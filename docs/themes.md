@@ -56,6 +56,23 @@ With the newest at the top, the chat element gets the class
 from above instead of below (`--msg-enter-offset`). Themes made before this
 option existed work too: the overlay flips the direction itself.
 
+## A theme per browser source
+
+Normally every overlay shows the theme picked in the app. To give one OBS
+scene its own theme, add `?theme=` and the theme's name to its overlay URL:
+
+```text
+http://127.0.0.1:7878/?theme=cozy
+http://127.0.0.1:7878/?theme=cozy&newest=top
+http://127.0.0.1:7878/?theme=default     the built-in theme
+```
+
+That overlay keeps its theme whatever the app is set to. **Reload
+overlays** in the app still reloads it (with its own theme), so editing
+its files works as usual. A name with a space goes into the URL as `%20`
+(`?theme=my%20theme`). If the name doesn't match a theme folder, the
+overlay shows the app's theme instead, and the log says why.
+
 ## Images and fonts
 
 Put them into the theme folder and use relative paths in `overlay.css`:
