@@ -5,16 +5,16 @@
 //! docs/asyncapi.yaml). The connection is one-way for now: messages from the
 //! client are read (to notice disconnects and answer pings) but ignored.
 //!
-//! Off unless switched on (`ServerState::api`): any web page open in the
-//! browser can connect to `localhost`, so the API only listens when the
-//! streamer wants it to.
+//! Off unless switched on (`ServerState::api`). Even then, web sites only
+//! get in once the streamer allowed them (`crate::approvals`); programs on
+//! this computer, pages served from it and OBS browser sources always do.
 
 use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use chat_core::ChatEvent;
 use tokio::sync::broadcast::error::RecvError;
@@ -38,12 +38,14 @@ pub(crate) struct WsParams {
 
 /// The HTTP handler: agrees to switch the connection to the WebSocket
 /// protocol, then hands the socket to `client`. Refuses while the API is
-/// switched off, saying why, so a developer testing a bot isn't left
-/// guessing.
+/// switched off, or when a site isn't allowed, saying why, so a developer
+/// testing a bot isn't left guessing. A site nobody has decided about yet
+/// waits here while the app asks the streamer.
 pub(crate) async fn ws(
     upgrade: WebSocketUpgrade,
     Query(params): Query<WsParams>,
     State(state): State<ServerState>,
+    headers: HeaderMap,
 ) -> Response {
     if !*state.api.borrow() {
         return (
@@ -52,11 +54,32 @@ pub(crate) async fn ws(
         )
             .into_response();
     }
-    upgrade.on_upgrade(move |socket| client(socket, state, params.history))
+    // An `Origin` that isn't valid text counts as some unknown page ("").
+    let origin = headers
+        .get(header::ORIGIN)
+        .map(|origin| origin.to_str().unwrap_or_default().to_string());
+    // Switching the API off, or shutting down, while a question is open
+    // ends the wait: dropping `check`'s future withdraws its question.
+    let mut api = state.api.clone();
+    let verdict = tokio::select! {
+        verdict = state.origins.check(origin.as_deref()) => verdict,
+        () = switched_off(&mut api) => {
+            return (StatusCode::FORBIDDEN, "The JSON API was switched off.").into_response();
+        }
+        () = state.shutdown.cancelled() => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    };
+    if let Err(refusal) = verdict {
+        debug!(?origin, ?refusal, "refused an API client");
+        return (StatusCode::FORBIDDEN, refusal.message()).into_response();
+    }
+    upgrade.on_upgrade(move |socket| client(socket, state, params.history, origin))
 }
 
 /// Serves one connected client until it leaves or the server shuts down.
-async fn client(mut socket: WebSocket, state: ServerState, history: bool) {
+/// `origin`: the page it came from, if any (see `ws`).
+async fn client(mut socket: WebSocket, state: ServerState, history: bool, origin: Option<String>) {
     // Counted as connected until this function returns, however it returns.
     let _connected = state.connections.api_client();
     let (snapshot, mut rx) = state.hub.subscribe();
@@ -116,6 +139,11 @@ async fn client(mut socket: WebSocket, state: ServerState, history: bool) {
                 close(&mut socket, "API switched off").await;
                 break;
             }
+            // Its site was removed from the allowed ones in the settings.
+            () = state.origins.revoked(origin.as_deref()) => {
+                close(&mut socket, "site no longer allowed").await;
+                break;
+            }
         }
     }
     debug!("API client disconnected");
@@ -163,7 +191,7 @@ fn lagged_json(missed: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{WAIT, message, start};
+    use crate::tests::{WAIT, message, start, start_with};
     use futures_util::StreamExt;
     use tokio::time::timeout;
     use tokio_tungstenite::connect_async;
@@ -273,17 +301,7 @@ mod tests {
 
         // Switching off closes connected clients...
         server.api.send_replace(false);
-        let closed = timeout(WAIT, async {
-            while let Some(Ok(frame)) = client.next().await {
-                if let WsMessage::Close(Some(close)) = frame {
-                    return close.reason.to_string();
-                }
-            }
-            panic!("connection ended without a Close frame");
-        })
-        .await
-        .unwrap();
-        assert_eq!(closed, "API switched off");
+        assert_eq!(close_reason(&mut client).await, "API switched off");
 
         // ...and refuses new ones, saying why.
         let refused = connect_async(format!("ws://{}/api/v1/ws", server.addr)).await;
@@ -298,6 +316,104 @@ mod tests {
         server.api.send_replace(true);
         let mut client = connect(server.addr, "").await;
         sync(&server, &mut client).await;
+    }
+
+    /// Connects the way a browser page does: with its `Origin`.
+    async fn connect_from(
+        addr: std::net::SocketAddr,
+        origin: &'static str,
+    ) -> Result<Client, tokio_tungstenite::tungstenite::Error> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+        let mut request = format!("ws://{addr}/api/v1/ws")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("origin", HeaderValue::from_static(origin));
+        connect_async(request).await.map(|(client, _)| client)
+    }
+
+    fn assert_refused(result: Result<Client, tokio_tungstenite::tungstenite::Error>, what: &str) {
+        match result {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 403, "{what}");
+            }
+            other => panic!("{what}: expected 403, got {other:?}"),
+        }
+    }
+
+    /// Reads frames until a Close frame, and returns its reason.
+    async fn close_reason(client: &mut Client) -> String {
+        timeout(WAIT, async {
+            while let Some(Ok(frame)) = client.next().await {
+                if let WsMessage::Close(Some(close)) = frame {
+                    return close.reason.to_string();
+                }
+            }
+            panic!("connection ended without a Close frame");
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn web_pages_are_refused_but_local_pages_and_obs_are_not() {
+        let server = start(None).await;
+        for origin in ["https://evil.example", "null"] {
+            assert_refused(connect_from(server.addr, origin).await, origin);
+        }
+        for origin in ["http://absolute", "http://localhost:8080"] {
+            let mut client = connect_from(server.addr, origin)
+                .await
+                .unwrap_or_else(|e| panic!("{origin}: {e}"));
+            sync(&server, &mut client).await;
+        }
+    }
+
+    const GAME: &str = "https://game.example";
+
+    /// A server with someone to ask (like the app), and a connection from
+    /// `GAME` that is waiting for the answer.
+    async fn game_waiting_for_an_answer() -> (
+        crate::tests::TestServer,
+        tokio::task::JoinHandle<Result<Client, tokio_tungstenite::tungstenite::Error>>,
+    ) {
+        let server = start_with(None, None, crate::ApiOrigins::new([], true)).await;
+        let addr = server.addr;
+        let connecting = tokio::spawn(async move { connect_from(addr, GAME).await });
+        let mut requests = server.origins.requests();
+        timeout(WAIT, requests.wait_for(|r| r.iter().any(|o| o == GAME)))
+            .await
+            .expect("the site was never asked about")
+            .unwrap();
+        (server, connecting)
+    }
+
+    #[tokio::test]
+    async fn a_site_waits_for_the_answer_and_leaves_when_removed() {
+        let (server, connecting) = game_waiting_for_an_answer().await;
+        server.origins.answer(GAME, true);
+        // The same connection goes through: no reconnect needed.
+        let mut client = timeout(WAIT, connecting).await.unwrap().unwrap().unwrap();
+        sync(&server, &mut client).await;
+
+        // Removed from the allowed sites in the settings: disconnected.
+        server.origins.set_allowed([]);
+        assert_eq!(close_reason(&mut client).await, "site no longer allowed");
+    }
+
+    #[tokio::test]
+    async fn switching_the_api_off_withdraws_the_question() {
+        let (server, connecting) = game_waiting_for_an_answer().await;
+        server.api.send_replace(false);
+        assert_refused(timeout(WAIT, connecting).await.unwrap().unwrap(), GAME);
+        let mut requests = server.origins.requests();
+        timeout(WAIT, requests.wait_for(Vec::is_empty))
+            .await
+            .expect("the question is still open")
+            .unwrap();
     }
 
     #[tokio::test]

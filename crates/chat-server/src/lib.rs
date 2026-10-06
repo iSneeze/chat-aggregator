@@ -36,11 +36,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
 mod api;
+mod approvals;
 mod connections;
+mod local;
 mod stagger;
 
 // Part of this crate's API (`ServerState::theme`), so users of the server
 // don't need chat-render as a dependency of their own just to name them.
+pub use approvals::{ANSWER_TIMEOUT, ApiOrigins};
 pub use chat_render::{Builtin, ThemeSource};
 pub use connections::Connections;
 pub use stagger::Stagger;
@@ -136,6 +139,9 @@ pub struct ServerState {
     /// server's lifetime; `None`: every overlay uses the app's theme.
     pub themes_dir: Option<PathBuf>,
     pub connections: Arc<Connections>,
+    /// Which web sites may use the JSON API, and the questions about new
+    /// ones waiting for the streamer's answer.
+    pub origins: Arc<ApiOrigins>,
 }
 
 /// The query of an overlay URL (`/?theme=cozy`), passed on to `/events` by
@@ -229,6 +235,9 @@ pub fn router(state: ServerState) -> Router {
         .route("/events", get(events))
         .route("/api/v1/ws", get(api::ws))
         .with_state(state)
+        // Runs before every route: requests for another host never reach
+        // them (see `local`).
+        .layer(axum::middleware::from_fn(local::only_local_hosts))
 }
 
 /// Serves until `state.shutdown` is cancelled.
@@ -503,6 +512,7 @@ mod tests {
         pub(crate) api: watch::Sender<bool>,
         pub(crate) newest: watch::Sender<Newest>,
         pub(crate) connections: Arc<Connections>,
+        pub(crate) origins: Arc<ApiOrigins>,
     }
 
     pub(crate) async fn start(theme_dir: Option<PathBuf>) -> TestServer {
@@ -513,6 +523,16 @@ mod tests {
         theme_dir: Option<PathBuf>,
         themes_dir: Option<PathBuf>,
     ) -> TestServer {
+        // Nobody to ask, like headless mode: a test about asking says so.
+        start_with(theme_dir, themes_dir, ApiOrigins::new([], false)).await
+    }
+
+    pub(crate) async fn start_with(
+        theme_dir: Option<PathBuf>,
+        themes_dir: Option<PathBuf>,
+        origins: ApiOrigins,
+    ) -> TestServer {
+        let origins = Arc::new(origins);
         // Port 0: the OS picks a free port, so tests can run in parallel.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -534,6 +554,7 @@ mod tests {
             newest: newest_rx,
             themes_dir,
             connections: connections.clone(),
+            origins: origins.clone(),
         };
         let task = tokio::spawn(serve(listener, state));
         TestServer {
@@ -546,6 +567,7 @@ mod tests {
             api: api_tx,
             newest: newest_tx,
             connections,
+            origins,
         }
     }
 
@@ -965,6 +987,29 @@ mod tests {
         read_until(&mut resp, &mut seen, r#"<div class="msg msg--text"#).await;
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// DNS rebinding: a request that reaches us but was meant for another
+    /// site (its `Host` says so) gets nothing, on any route.
+    #[tokio::test]
+    async fn requests_for_other_hosts_are_refused() {
+        let server = start(None).await;
+        let client = reqwest::Client::new();
+        let port = server.addr.port();
+        let get = |path: &str, host: String| {
+            client
+                .get(format!("http://{}{path}", server.addr))
+                .header("host", host)
+                .send()
+        };
+        for path in ["/", "/theme/overlay.css", "/events", "/api/v1/ws"] {
+            let resp = get(path, format!("evil.example:{port}")).await.unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN, "{path}");
+        }
+        for host in ["localhost", "127.0.0.1", "[::1]"] {
+            let resp = get("/", format!("{host}:{port}")).await.unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK, "{host}");
+        }
     }
 
     #[tokio::test]

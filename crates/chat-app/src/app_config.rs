@@ -75,13 +75,37 @@ impl AppConfig {
     }
 
     /// Port, history, staggering and the API from the settings window. The
-    /// theme and the chat direction are part of `ServerSettings` too, but
-    /// have their own setters: they're changed in the main window, so this
-    /// one keeps whatever is set (the settings window's copy may be older).
+    /// theme, the chat direction and the allowed sites are part of
+    /// `ServerSettings` too, but have their own setters: they change
+    /// elsewhere (main window, the "Allow" question), so this one keeps
+    /// whatever is set (the settings window's copy may be older).
     pub fn set_server(&mut self, mut settings: ServerSettings) -> anyhow::Result<()> {
         settings.theme = self.file.server.theme.take();
         settings.newest = self.file.server.newest;
+        settings.api_origins = std::mem::take(&mut self.file.server.api_origins);
         self.file.server = settings;
+        self.save()
+    }
+
+    /// The web sites allowed to use the JSON API.
+    pub fn api_origins(&self) -> &[String] {
+        &self.file.server.api_origins
+    }
+
+    /// Remembers a site the streamer allowed (once, however often it's
+    /// added).
+    pub fn allow_api_origin(&mut self, origin: &str) -> anyhow::Result<()> {
+        if self.api_origins().iter().any(|o| o == origin) {
+            return Ok(());
+        }
+        self.file.server.api_origins.push(origin.to_string());
+        self.save()
+    }
+
+    /// Forgets an allowed site; the next time it connects, it's asked about
+    /// again.
+    pub fn remove_api_origin(&mut self, origin: &str) -> anyhow::Result<()> {
+        self.file.server.api_origins.retain(|o| o != origin);
         self.save()
     }
 
@@ -242,12 +266,14 @@ mod tests {
         let mut config = AppConfig::new(ConfigFile::default(), path.clone());
         config.set_theme(Some("cozy".into())).unwrap();
         config.set_newest(Newest::Top).unwrap();
+        config.allow_api_origin("https://game.example").unwrap();
         config
             .set_server(ServerSettings {
                 history: 5,
-                // The settings window doesn't manage these two.
+                // The settings window doesn't manage these three.
                 theme: None,
                 newest: Newest::Bottom,
+                api_origins: vec![],
                 ..ServerSettings::default()
             })
             .unwrap();
@@ -255,6 +281,21 @@ mod tests {
         assert_eq!(saved.server.history, 5);
         assert_eq!(saved.server.theme.as_deref(), Some("cozy"));
         assert_eq!(saved.server.newest, Newest::Top);
+        assert_eq!(saved.server.api_origins, ["https://game.example"]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn allowed_sites_are_saved_once_and_can_be_removed() {
+        let path = temp_path("origins");
+        let mut config = AppConfig::new(ConfigFile::default(), path.clone());
+        config.allow_api_origin("https://game.example").unwrap();
+        config.allow_api_origin("https://game.example").unwrap();
+        config.allow_api_origin("https://other.example").unwrap();
+        let saved = || ConfigFile::load(&path).unwrap().server.api_origins;
+        assert_eq!(saved(), ["https://game.example", "https://other.example"]);
+        config.remove_api_origin("https://game.example").unwrap();
+        assert_eq!(saved(), ["https://other.example"]);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

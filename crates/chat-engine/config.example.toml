@@ -17,9 +17,13 @@ stagger_ms = 250
 # ... but never delay a message by more than this (at most 5000).
 stagger_max_ms = 2000
 # The JSON API for your own programs (games, bots) at
-# ws://127.0.0.1:<port>/api/v1/ws. Off unless you need it: any web page open
-# in your browser could connect to it too.
+# ws://127.0.0.1:<port>/api/v1/ws. Off unless you need it. Programs on this
+# computer, pages served from localhost and OBS browser sources (also "Local
+# file" ones) can connect; web sites only if they're listed below.
 api = false
+# Web sites allowed to use the JSON API, e.g. a browser game. The app asks
+# when a new one connects, and adds it here when you click "Allow".
+# api_origins = ["https://game.example"]
 # Where new messages appear in the overlay: "bottom" (the chat grows upward)
 # or "top" (it grows downward). An overlay URL ending in ?newest=top or
 # ?newest=bottom overrides this for that browser source.

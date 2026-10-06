@@ -63,6 +63,19 @@ const SETTLE_AFTER_END: Duration = Duration::from_secs(15);
 /// Minimum wait after a short-term rate limit ("too many requests").
 const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(60);
 
+/// How long a stream may stay completely silent (no response at all, not
+/// even an empty one) before we assume the connection died without telling
+/// us: Wi-Fi switch, router dropping the connection, laptop sleep. TCP can't
+/// tell "quiet" from "gone" on its own, so without this the read would wait
+/// forever while the status light stays green. Healthy streams end after
+/// ~10 s (the EOF bug), far below this; should Google fix that bug, a quiet
+/// chat just means a reconnect per minute of silence.
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Opening the connection; without a limit a dead network can hold the
+/// attempt for minutes.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub enum YouTubeTarget {
     /// Watch a specific video (public path, API key auth).
     Video(String),
@@ -78,6 +91,9 @@ enum StreamEnd {
     /// Connection ended without an offline marker (known ~10s EOF bug,
     /// network blips): resume with page_token.
     Eof,
+    /// Nothing at all arrived for `STALL_TIMEOUT`: the connection is
+    /// probably dead. Resume with page_token over a fresh connection.
+    Stalled,
     /// Downstream receiver is gone: the server is shutting down.
     ReceiverGone,
 }
@@ -95,14 +111,9 @@ impl ChatSource for YouTubeSource {
         // Before the resolution loop, so we don't move self.target twice.
         let is_own_broadcast = matches!(self.target, YouTubeTarget::OwnBroadcast);
 
-        // One HTTP/2 channel for the source's whole lifetime; each
-        // broadcast is streamed over it and reconnects reuse it.
-        let channel = Endpoint::from_shared(ENDPOINT.to_string())?
-            .tls_config(ClientTlsConfig::new().with_webpki_roots())?
-            .connect()
-            .await
-            .context("gRPC connect to YouTube failed")?;
-        let mut client = V3DataLiveChatMessageServiceClient::new(channel);
+        // One HTTP/2 channel, reused by every broadcast and reconnect; only
+        // replaced when it stalls (see `StreamEnd::Stalled`).
+        let mut client = connect().await?;
         // Same idea for REST: one client = one connection pool, reused by
         // every resolve instead of a fresh TLS handshake per call.
         let http = reqwest::Client::new();
@@ -194,6 +205,7 @@ impl ChatSource for YouTubeSource {
                     &self.emojis,
                     &tx,
                     &activity,
+                    STALL_TIMEOUT,
                 )
                 .await
                 {
@@ -221,6 +233,21 @@ impl ChatSource for YouTubeSource {
                         // One-shot Video target: normal completion.
                         info!("stream offline, done");
                         return Ok(());
+                    }
+                    Ok((_, StreamEnd::Stalled)) => {
+                        activity.set(Activity::Degraded(
+                            "no answer from YouTube, reconnecting".into(),
+                        ));
+                        warn!(after = ?STALL_TIMEOUT, "YouTube stream went silent, reconnecting");
+                        // Retrying on the same channel could hang again:
+                        // tonic doesn't know its connection is dead either.
+                        // Dropping the old client closes it. If the new
+                        // connection fails too, the next round tries again
+                        // (the backoff below grows with each attempt).
+                        match connect().await {
+                            Ok(fresh) => client = fresh,
+                            Err(e) => warn!("reconnecting to YouTube failed: {e:#}"),
+                        }
                     }
                     Ok((_, StreamEnd::ReceiverGone)) => {
                         return Ok(()); // server shutting down
@@ -301,12 +328,29 @@ fn scan_interval(start: Option<chrono::DateTime<chrono::Utc>>) -> Duration {
     }
 }
 
+/// Opens the HTTP/2 connection to YouTube's gRPC endpoint.
+async fn connect() -> anyhow::Result<V3DataLiveChatMessageServiceClient<Channel>> {
+    let channel = Endpoint::from_shared(ENDPOINT.to_string())?
+        .tls_config(ClientTlsConfig::new().with_webpki_roots())?
+        .connect_timeout(CONNECT_TIMEOUT)
+        // Lets the operating system notice a dead connection by itself
+        // too, as a backup to `STALL_TIMEOUT`. (No HTTP/2 pings: gRPC
+        // servers may hang up on clients that ping more often than they
+        // allow, and Google doesn't say how often that is.)
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .connect()
+        .await
+        .context("gRPC connect to YouTube failed")?;
+    Ok(V3DataLiveChatMessageServiceClient::new(channel))
+}
+
 /// Runs one streamList stream until it ends or errors. Returns the number
 /// of events forwarded so the caller can tell healthy streams from
 /// immediately-dead ones. `page_token` is updated as responses arrive.
+/// `stall_after`: see `STALL_TIMEOUT` (a parameter so tests can be quick).
 // `Status` is large (176 bytes), which clippy flags; boxing it isn't
 // worth it on this cold path.
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 async fn consume_stream(
     client: &mut V3DataLiveChatMessageServiceClient<Channel>,
     request: Request<LiveChatMessageListRequest>,
@@ -315,14 +359,29 @@ async fn consume_stream(
     emojis: &EmojiMap,
     tx: &mpsc::Sender<ChatEvent>,
     activity: &Reporter,
+    stall_after: Duration,
 ) -> Result<(usize, StreamEnd), Status> {
-    let mut stream = client.stream_list(request).await?.into_inner();
+    use tokio::time::timeout;
+
+    // Both waits can hang on a dead connection: for the stream to open,
+    // and for each response. `timeout` gives `Err(Elapsed)` when time is
+    // up, and `Ok(...)` with the inner result otherwise.
+    let Ok(opened) = timeout(stall_after, client.stream_list(request)).await else {
+        return Ok((0, StreamEnd::Stalled));
+    };
+    let mut stream = opened?.into_inner();
     // Attached to the chat. (The routine ~10 s disconnects don't change
     // this: the reconnect follows right away.)
     activity.set(Activity::Receiving);
     let mut count = 0;
 
-    while let Some(response) = stream.message().await? {
+    loop {
+        let Ok(next) = timeout(stall_after, stream.message()).await else {
+            return Ok((count, StreamEnd::Stalled));
+        };
+        let Some(response) = next? else {
+            break;
+        };
         // The broadcast may be over, but this response can still carry
         // the last messages: record the flag, forward items, then stop.
         let offline = response.offline_at.is_some();
@@ -360,4 +419,76 @@ fn is_fatal(status: &Status) -> bool {
             | Code::Unimplemented
             | Code::FailedPrecondition // live chat closed or invalid id!
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    /// Runs `consume_stream` against `addr` with a short stall limit, and
+    /// fails the test if it doesn't come back on its own.
+    async fn consume_from(addr: std::net::SocketAddr) -> (usize, StreamEnd) {
+        // `connect_lazy`: the connection is made on the first request, i.e.
+        // inside `consume_stream`, like a reconnect on an existing channel.
+        let channel = Endpoint::from_shared(format!("http://{addr}"))
+            .unwrap()
+            .connect_lazy();
+        let mut client = V3DataLiveChatMessageServiceClient::new(channel);
+        let (tx, _rx) = mpsc::channel(1);
+        // Named, not written inline as `&mut None`: the future borrows
+        // them until it's awaited below, so they must outlive this
+        // statement (inline temporaries would be dropped at its `;`).
+        let (mut page_token, mut dedupe) = (None, BoundedIdSet::new(16));
+        let (emojis, activity) = (EmojiMap::default(), Reporter::detached());
+        let consume = consume_stream(
+            &mut client,
+            Request::new(LiveChatMessageListRequest::default()),
+            &mut page_token,
+            &mut dedupe,
+            &emojis,
+            &tx,
+            &activity,
+            Duration::from_millis(300),
+        );
+        tokio::time::timeout(Duration::from_secs(5), consume)
+            .await
+            .expect("consume_stream hung on a silent connection")
+            .expect("a stall is not an error")
+    }
+
+    #[tokio::test]
+    async fn a_server_that_never_answers_is_a_stall() {
+        // Accepts connections and keeps them open without ever sending a
+        // byte: what a connection that died silently looks like from here.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                open.push(socket);
+            }
+        });
+        assert!(matches!(consume_from(addr).await, (0, StreamEnd::Stalled)));
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_goes_silent_is_a_stall() {
+        // A gRPC server that opens the stream (status 200, gRPC headers),
+        // then never sends a response: the stall happens mid-stream.
+        use axum::body::{Body, Bytes};
+        let silent = || async {
+            let body = futures_util::stream::pending::<Result<Bytes, std::io::Error>>();
+            axum::response::Response::builder()
+                .header("content-type", "application/grpc")
+                .body(Body::from_stream(body))
+                .unwrap()
+        };
+        let router = axum::Router::new().fallback(silent);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        assert!(matches!(consume_from(addr).await, (0, StreamEnd::Stalled)));
+    }
 }

@@ -8,8 +8,8 @@ overlays.
   configurable)
 - **Off by default:** switch it on in the app under **⚙ Settings →
   Connection → JSON API** (headless: `api = true` in `[server]`, or
-  `--api`). Any web page open in the browser could connect to it, so it
-  only listens when you want it to.
+  `--api`). Even when it's on, a web site only gets in once the streamer
+  allows it (see [Security](#security)).
 - **Direction:** the server pushes one event per text frame; anything the
   client sends is ignored.
 - **Formal spec:** [asyncapi.yaml](asyncapi.yaml) (AsyncAPI 3.0) with the
@@ -138,10 +138,44 @@ after it. Only happens if your program blocks while handling events.
 ## Security
 
 The server only listens on `127.0.0.1`, so other machines can't connect.
-Any program on the same machine can, and so can websites open in the
-streamer's browser (browsers allow pages to connect to `ws://localhost`).
-That's fine for this read-only feed of public chat, and it means browser
-games can use it too. It's off by default for that reason.
+On the same machine, the API accepts:
+
+- **programs**: bots, game engines, scripts (anything that isn't a
+  browser sends no `Origin` header);
+- **pages served from this computer**, e.g. a browser game you run with
+  `python -m http.server` (`http://localhost:<any port>`);
+- **OBS browser sources**, including ones set to "Local file";
+- **web sites the streamer allowed**, e.g. a browser game hosted on
+  `https://game.example`.
+
+Browsers let any page open a WebSocket to `localhost`, but they always send
+the page's `Origin`, and pages can't fake it. Without a check, any website
+open in the streamer's browser could read their chat, including
+members-only chat, and learn from it which channel is theirs. So when a web
+site connects for the first time, the app asks the streamer:
+
+> **Let https://game.example read your chat?** [Allow] [Deny]
+
+- **While the question is open, the connection waits.** On "Allow" it goes
+  through as it is: the game doesn't have to reconnect. It just takes a
+  little longer the first time.
+- **"Allow" is remembered** (`api_origins` in `config.toml`); the site can
+  be removed again under ⚙ Settings → Connection, which also disconnects
+  it.
+- **"Deny" is remembered until the app restarts.** A denied site, or one
+  nobody answered within 2 minutes, gets `403` with a message saying why.
+- **Headless mode** has nobody to ask: only the sites in `api_origins`
+  get in.
+- Nobody is asked while the API is switched off.
+
+A page opened straight from disk in a desktop browser is refused without
+asking: browsers send `Origin: null` for it, and so can any website (from a
+sandboxed frame), so the question couldn't say who is asking. Open it
+through OBS, or serve it from localhost.
+
+The overlay and the API also refuse any request whose `Host` isn't
+`127.0.0.1`, `localhost` or `[::1]`. That stops "DNS rebinding", where a
+site points its own domain at `127.0.0.1` to read the server's answers.
 
 **Chat is untrusted input.** Every text field (`text`, `author.name`,
 amounts, descriptions, emote codes) is exactly what someone typed or sent,

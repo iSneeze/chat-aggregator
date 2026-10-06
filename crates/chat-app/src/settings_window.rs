@@ -1,5 +1,6 @@
 //! The settings window (⚙): the app's look, the overlay's replay history
-//! and burst pacing, the port, the YouTube API key, the settings folder.
+//! and burst pacing, the port, the JSON API and the web sites allowed to use
+//! it, the YouTube API key, the settings folder.
 //!
 //! gpui-kit's settings fields report every keystroke. Applying each one
 //! would go wrong: typing "25" over "20" passes through "2", which would
@@ -18,7 +19,8 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::component::{ActiveTheme, IconName, Sizable};
+use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_config::AppConfig;
@@ -85,6 +87,9 @@ impl SettingsWindow {
                     this.change(|draft| draft.api_key = key, cx);
                 }
             }),
+            // The allowed sites change from the main window too ("Allow"
+            // in its question): redraw the list when they do.
+            cx.observe(&config, |_, _, cx| cx.notify()),
             // Closing the window within the pause mustn't lose the last
             // edit: apply it now. (No window to report in any more, so
             // problems only go to the log.)
@@ -195,6 +200,25 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Forgets an allowed web site: its API connections end now, and it's
+    /// asked about again the next time it connects.
+    fn remove_api_origin(&mut self, origin: &str, cx: &mut Context<Self>) {
+        let saved = self
+            .config
+            .update(cx, |config, _| config.remove_api_origin(origin));
+        let remaining = self.config.read(cx).api_origins().to_vec();
+        self.engine.set_api_origins(remaining);
+        if let Err(e) = saved {
+            // See `set_appearance` for why this waits for `defer`.
+            let window = self.window;
+            let message = format!("Couldn't save the settings: {e:#}");
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, cx| report(window, cx, message));
+            });
+        }
+        cx.notify();
+    }
+
     /// Changes the look right away, and saves it.
     fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
         let saved = self
@@ -292,6 +316,50 @@ impl SettingsWindow {
             .overlay_url
             .replacen("http://", "ws://", 1)
             + "api/v1/ws";
+        // The allowed sites, each with a button to remove it. Read from the
+        // config (not the draft) on every draw: "Allow" in the main window
+        // adds to it while this window is open.
+        let allowed_sites = {
+            let view = view.clone();
+            SettingField::render(move |_, _, cx| {
+                let origins = view
+                    .upgrade()
+                    .map(|v| v.read(cx).config.read(cx).api_origins().to_vec())
+                    .unwrap_or_default();
+                let none = origins.is_empty();
+                let rows = origins.into_iter().enumerate().map(|(ix, origin)| {
+                    let view = view.clone();
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().text_sm().child(origin.clone()))
+                        .child(
+                            Button::new(("settings-remove-origin", ix))
+                                .label("Remove")
+                                .small()
+                                .on_click(move |_, _, cx| {
+                                    if let Some(view) = view.upgrade() {
+                                        view.update(cx, |this, cx| {
+                                            this.remove_api_origin(&origin, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                });
+                v_flex()
+                    .gap_1()
+                    .items_end()
+                    .when(none, |list| {
+                        list.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("None yet"),
+                        )
+                    })
+                    .children(rows)
+            })
+        };
         let api_key = {
             let input = self.api_key.clone();
             SettingField::render(move |_, _, _| {
@@ -352,9 +420,15 @@ impl SettingsWindow {
                     SettingItem::new("JSON API", json_api.default_value(false)).description(
                         format!(
                             "Chat for your own programs (games, bots) at {api_url}. Off \
-                             unless you need it: any web page open in your browser could \
-                             connect to it too."
+                             unless you need it. Programs, pages on this computer and OBS \
+                             browser sources can always connect; a web site is asked about \
+                             first."
                         ),
+                    ),
+                    SettingItem::new("Allowed web sites", allowed_sites).description(
+                        "Sites (e.g. browser games) you allowed to read your chat through \
+                         the JSON API. Removing one disconnects it; it's asked about again \
+                         next time.",
                     ),
                     SettingItem::new(
                         "Port",
@@ -601,5 +675,21 @@ mod tests {
             assert_eq!(Theme::global(cx).theme_name().as_ref(), "High Contrast");
         });
         assert_eq!(ui.saved().unwrap().app.appearance, Appearance::HighContrast);
+    }
+
+    #[gpui_kit::test]
+    fn removing_an_allowed_site_is_saved(cx: &mut TestAppContext) {
+        const GAME: &str = "https://game.example";
+        let ui = open(cx, "origins");
+        ui.view().update(cx, |this, cx| {
+            // As "Allow" in the main window's question does it.
+            this.config
+                .update(cx, |config, _| config.allow_api_origin(GAME))
+                .unwrap();
+        });
+        assert_eq!(ui.saved().unwrap().server.api_origins, [GAME]);
+        ui.view()
+            .update(cx, |this, cx| this.remove_api_origin(GAME, cx));
+        assert!(ui.saved().unwrap().server.api_origins.is_empty());
     }
 }

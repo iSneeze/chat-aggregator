@@ -12,6 +12,7 @@ use chat_engine::{
 };
 use chat_render::{Builtin, ThemeSource, themes};
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
@@ -99,6 +100,12 @@ pub struct AppView {
     /// closed since).
     manual_window: Option<WindowHandle<Root>>,
     settings_window: Option<WindowHandle<Root>>,
+    /// The web site the open "may it read your chat?" question is about.
+    asking: Option<String>,
+    /// Sites answered here whose question may still be in the status for a
+    /// moment (the engine publishes the change a little later): not asked
+    /// about again in the meantime.
+    answered: Vec<String>,
     // Subscriptions end when dropped; keeping them here ties them to the
     // view's lifetime.
     _subscriptions: Vec<Subscription>,
@@ -205,7 +212,7 @@ impl AppView {
         ];
 
         let status = engine.status().borrow().clone();
-        Self::watch_status(&engine, cx);
+        Self::watch_status(&engine, window, cx);
         Self::tick_while_retrying(cx);
 
         Self {
@@ -223,6 +230,8 @@ impl AppView {
             theme_error: None,
             manual_window: None,
             settings_window: None,
+            asking: None,
+            answered: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -326,18 +335,22 @@ impl AppView {
         cx.open_with_system(&dir);
     }
 
-    /// Redraws whenever the engine publishes a new status.
-    fn watch_status(engine: &EngineHandle, cx: &mut Context<Self>) {
+    /// Redraws whenever the engine publishes a new status, and asks about
+    /// web sites waiting to use the JSON API.
+    fn watch_status(engine: &EngineHandle, window: &mut Window, cx: &mut Context<Self>) {
         let mut status = engine.status();
         // `this` is a *weak* handle: the task doesn't keep the view alive,
-        // and `update` fails once the window is closed, which ends the loop.
-        cx.spawn(async move |this, cx| {
+        // and `update_in` fails once the window is closed, which ends the
+        // loop. (`spawn_in`/`update_in`, not `spawn`/`update`: opening the
+        // question needs the window.)
+        cx.spawn_in(window, async move |this, cx| {
             loop {
                 // Clone the value out right away: the borrow holds a lock
                 // and must not live across the `.await` below.
                 let current = status.borrow_and_update().clone();
-                let still_open = this.update(cx, |view, cx| {
+                let still_open = this.update_in(cx, |view, window, cx| {
                     view.status = current;
+                    view.ask_about_api_requests(window, cx);
                     cx.notify();
                 });
                 if still_open.is_err() || status.changed().await.is_err() {
@@ -346,6 +359,97 @@ impl AppView {
             }
         })
         .detach();
+    }
+
+    // ---- web sites asking for the JSON API ----
+
+    /// Asks about the first web site waiting to use the JSON API (one
+    /// question at a time), and takes the question back once that site
+    /// stopped waiting: answered, gave up, or the API was switched off.
+    fn ask_about_api_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let requests = &self.status.api_requests;
+        // A site answered here has left the status by now, or soon will.
+        self.answered.retain(|origin| requests.contains(origin));
+        if let Some(origin) = &self.asking
+            && !requests.contains(origin)
+        {
+            self.asking = None;
+            window.close_dialog(cx);
+        }
+        if self.asking.is_some() {
+            return;
+        }
+        let Some(origin) = requests
+            .iter()
+            .find(|origin| !self.answered.contains(origin))
+            .cloned()
+        else {
+            return;
+        };
+        self.asking = Some(origin.clone());
+        // Streamers often keep the app in the background: bring it up, or
+        // the game waits for an answer nobody sees.
+        window.activate_window();
+        let view = cx.entity().downgrade();
+        // The builder may run again (e.g. on every redraw), so it can only
+        // hand out clones of what it captured: it's an `Fn`, not `FnOnce`.
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let answer = |allow: bool| {
+                let (view, origin) = (view.clone(), origin.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.answer_api_request(&origin, allow, window, cx);
+                        });
+                    }
+                    true // close the question
+                }
+            };
+            alert
+                .title(format!("Let {origin} read your chat?"))
+                .description(
+                    "It wants to use chat-aggregator's JSON API, like a browser game does. \
+                     It would see every chat message, including members-only chat, and could \
+                     tell which channel is yours. Allow only sites you trust; you can remove \
+                     it later in ⚙ Settings → Connection.",
+                )
+                // First: `show_cancel`, `on_ok` and `on_cancel` are stored in
+                // the button props, which this call replaces.
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Allow")
+                        .cancel_text("Deny"),
+                )
+                .show_cancel(true)
+                // Only the two buttons answer: no Escape, no close button.
+                .keyboard(false)
+                .close_button(false)
+                .on_ok(answer(true))
+                .on_cancel(answer(false))
+        });
+    }
+
+    /// The streamer's answer about `origin`: the engine lets it in (or not)
+    /// right away; "Allow" is also saved, "Deny" lasts until restart.
+    fn answer_api_request(
+        &mut self,
+        origin: &str,
+        allow: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.asking = None;
+        self.answered.push(origin.to_string());
+        self.engine.answer_api_request(origin, allow);
+        if allow {
+            let saved = self
+                .config
+                .update(cx, |config, _| config.allow_api_origin(origin));
+            if let Err(e) = saved {
+                self.report_save_error(e, window, cx);
+            }
+        }
+        cx.notify();
     }
 
     /// "Retrying in 3 s" counts down in the text, but the engine's status
@@ -815,7 +919,13 @@ impl AppView {
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // `Root` keeps open dialogs and notifications, but doesn't draw them:
+        // the window's view has to (without this, `open_alert_dialog` and
+        // `push_notification` change nothing on screen). Each layer places
+        // itself over the whole window, wherever it sits in the tree.
+        let dialogs = Root::render_dialog_layer(window, cx);
+        let notifications = Root::render_notification_layer(window, cx);
         v_flex()
             .size_full()
             .p_4()
@@ -827,6 +937,8 @@ impl Render for AppView {
             .child(self.render_sources(cx))
             .child(self.youtube.clone())
             .child(self.render_add_form(cx))
+            .children(dialogs)
+            .children(notifications)
     }
 }
 
@@ -928,6 +1040,12 @@ mod tests {
     }
 
     fn open(cx: &mut TestAppContext) -> Ui {
+        open_with(cx, EngineConfig::default())
+    }
+
+    /// `open` with engine settings of the test's choosing (always on a free
+    /// local port).
+    fn open_with(cx: &mut TestAppContext, engine: EngineConfig) -> Ui {
         cx.update(gpui_kit::init);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -937,7 +1055,7 @@ mod tests {
         let engine = runtime
             .block_on(Engine::start(EngineConfig {
                 bind: (Ipv4Addr::LOCALHOST, 0).into(),
-                ..EngineConfig::default()
+                ..engine
             }))
             .unwrap();
         let file = ConfigFile {
@@ -1193,5 +1311,127 @@ mod tests {
         let error = ui.view.read_with(cx, |view, _| view.theme_error.clone());
         assert!(error.is_some_and(|e| e.contains("letters")));
         assert!(!ui.settings_dir.join("escape").exists());
+    }
+
+    // ---- web sites asking for the JSON API ----
+
+    const GAME: &str = "https://game.example";
+
+    /// An engine like the app's: the API on, asking about web sites.
+    fn open_asking(cx: &mut TestAppContext) -> Ui {
+        open_with(
+            cx,
+            EngineConfig {
+                api: true,
+                ask_api_origins: true,
+                ..EngineConfig::default()
+            },
+        )
+    }
+
+    /// A page on `GAME` opening the JSON API, as raw HTTP (the app's tests
+    /// have no HTTP client). Resolves to the first line of the answer, e.g.
+    /// `HTTP/1.1 101 Switching Protocols`.
+    fn connect_as_game(ui: &Ui) -> tokio::task::JoinHandle<String> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let addr = ui.engine.addr();
+        ui._runtime.spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "GET /api/v1/ws HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\n\
+                 Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: {GAME}\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut answer = vec![0; 1024];
+            let n = stream.read(&mut answer).await.unwrap();
+            let answer = String::from_utf8_lossy(&answer[..n]);
+            answer.lines().next().unwrap_or_default().to_string()
+        })
+    }
+
+    /// Lets GPUI and the engine run until `done` holds for the window (like
+    /// `run_until`, but `done` may look at the window).
+    fn run_until_window(
+        cx: &mut TestAppContext,
+        ui: &Ui,
+        mut done: impl FnMut(&mut gpui_kit::Window) -> bool,
+    ) {
+        cx.executor().allow_parking();
+        for _ in 0..500 {
+            cx.run_until_parked();
+            let reached = cx
+                .update_window(ui.window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    done(window)
+                })
+                .unwrap();
+            if reached {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("timed out");
+    }
+
+    /// Clicks a button of the open question. The dialog ignores clicks
+    /// while it's still fading in (on the wall clock), so wait that out:
+    /// in real use, that also stops an "Allow" clicked by accident the
+    /// moment the question pops up.
+    fn click_in_dialog(cx: &mut TestAppContext, ui: &Ui, button: &'static str) {
+        let fade_in = *gpui_kit::component::dialog::ANIMATION_DURATION;
+        std::thread::sleep(fade_in + std::time::Duration::from_millis(50));
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("dialog").click(button, cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_web_site_is_asked_about_and_allow_lets_it_in(cx: &mut TestAppContext) {
+        let ui = open_asking(cx);
+        let connecting = connect_as_game(&ui);
+        run_until_window(cx, &ui, |window| window.try_find("dialog").is_some());
+        assert_eq!(
+            ui.view
+                .read_with(cx, |view, _| view.asking.clone())
+                .as_deref(),
+            Some(GAME)
+        );
+
+        click_in_dialog(cx, &ui, "ok"); // "Allow"
+        run_until_window(cx, &ui, |window| window.try_find("dialog").is_none());
+        let answer = ui._runtime.block_on(connecting).unwrap();
+        assert!(
+            answer.contains(" 101 "),
+            "the waiting connection got in: {answer}"
+        );
+        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml")).unwrap();
+        assert_eq!(saved.server.api_origins, [GAME], "and the site is saved");
+    }
+
+    #[gpui_kit::test]
+    fn deny_refuses_the_site_without_saving_it(cx: &mut TestAppContext) {
+        let ui = open_asking(cx);
+        let connecting = connect_as_game(&ui);
+        run_until_window(cx, &ui, |window| window.try_find("dialog").is_some());
+        click_in_dialog(cx, &ui, "cancel"); // "Deny"
+        run_until_window(cx, &ui, |window| window.try_find("dialog").is_none());
+        let answer = ui._runtime.block_on(connecting).unwrap();
+        assert!(answer.contains(" 403 "), "{answer}");
+        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml"));
+        assert!(saved.is_err(), "nothing to save");
+    }
+
+    #[gpui_kit::test]
+    fn the_question_goes_away_when_the_api_is_switched_off(cx: &mut TestAppContext) {
+        let ui = open_asking(cx);
+        let connecting = connect_as_game(&ui);
+        run_until_window(cx, &ui, |window| window.try_find("dialog").is_some());
+        ui.engine.handle().set_api_enabled(false);
+        run_until_window(cx, &ui, |window| window.try_find("dialog").is_none());
+        let answer = ui._runtime.block_on(connecting).unwrap();
+        assert!(answer.contains(" 403 "), "{answer}");
     }
 }

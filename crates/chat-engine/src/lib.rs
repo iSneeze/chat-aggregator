@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use chat_core::Hub;
-use chat_server::{Connections, ServerState};
+use chat_server::{ApiOrigins, Connections, ServerState};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -32,7 +32,7 @@ mod config_file;
 mod factory;
 mod status;
 
-pub use chat_server::{Builtin, Newest, Stagger, ThemeSource};
+pub use chat_server::{ANSWER_TIMEOUT, Builtin, Newest, Stagger, ThemeSource};
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
@@ -62,6 +62,12 @@ pub struct EngineConfig {
     pub stagger: Stagger,
     /// Whether the JSON API (`/api/v1/ws`) accepts clients.
     pub api: bool,
+    /// Web sites allowed to use the JSON API (`https://game.example`).
+    pub api_origins: Vec<String>,
+    /// Whether other sites wait for the streamer's answer (the app shows
+    /// the question, see `Status::api_requests`) or are refused right away
+    /// (headless mode: nobody to ask).
+    pub ask_api_origins: bool,
     /// Default end of the overlay for the newest message.
     pub newest: Newest,
 }
@@ -77,6 +83,8 @@ impl Default for EngineConfig {
             themes_dir: None,
             stagger: Stagger::default(),
             api: false,
+            api_origins: Vec::new(),
+            ask_api_origins: false,
             newest: Newest::default(),
         }
     }
@@ -96,6 +104,7 @@ pub struct EngineHandle {
     api: Arc<watch::Sender<bool>>,
     newest: Arc<watch::Sender<Newest>>,
     hub: Arc<Hub>,
+    origins: Arc<ApiOrigins>,
 }
 
 impl EngineHandle {
@@ -198,6 +207,20 @@ impl EngineHandle {
         *self.newest.borrow()
     }
 
+    /// The streamer's answer to a site waiting in `Status::api_requests`.
+    /// "Allow" lets it in now and from then on (saving it is up to the
+    /// caller); "deny" refuses it until the engine restarts.
+    pub fn answer_api_request(&self, origin: &str, allow: bool) {
+        self.origins.answer(origin, allow);
+    }
+
+    /// Replaces the web sites allowed to use the JSON API (e.g. one was
+    /// removed in the settings). Connected clients of removed sites are
+    /// disconnected.
+    pub fn set_api_origins(&self, origins: Vec<String>) {
+        self.origins.set_allowed(origins);
+    }
+
     /// The live status. A `watch` receiver always holds the latest value;
     /// `changed().await` waits for the next update.
     pub fn status(&self) -> watch::Receiver<Status> {
@@ -253,11 +276,19 @@ impl Engine {
             overlay_url: format!("http://{addr}/"),
             overlays_connected: 0,
             api_clients: 0,
+            api_requests: Vec::new(),
             sources: Vec::new(),
         });
         let connections = Arc::new(Connections::default());
+        let origins = Arc::new(ApiOrigins::new(config.api_origins, config.ask_api_origins));
         let (commands_tx, commands_rx) = mpsc::channel(32);
-        let actor = Actor::new(factory, hub.clone(), status_tx, connections.clone());
+        let actor = Actor::new(
+            factory,
+            hub.clone(),
+            status_tx,
+            connections.clone(),
+            origins.requests(),
+        );
         tasks.spawn(actor.run(commands_rx, shutdown.clone()));
 
         let (theme_tx, theme_rx) = watch::channel(config.theme);
@@ -273,6 +304,7 @@ impl Engine {
             newest: newest_rx,
             themes_dir: config.themes_dir,
             connections,
+            origins: origins.clone(),
         };
         tasks.spawn(async move {
             if let Err(e) = chat_server::serve(listener, state).await {
@@ -288,6 +320,7 @@ impl Engine {
             api: Arc::new(api_tx),
             newest: Arc::new(newest_tx),
             hub: hub.clone(),
+            origins,
         };
         for source in config.sources {
             handle.add_source(source).await?;
@@ -384,6 +417,44 @@ mod tests {
             .unwrap();
         let status = wait_for(&engine.handle(), |s| s.overlays_connected == 1).await;
         assert_eq!(status.api_clients, 0);
+        engine.shutdown().await;
+    }
+
+    /// A web site connecting to the API waits; the status shows it, and the
+    /// answer lets its connection through.
+    #[tokio::test]
+    async fn sites_waiting_for_an_answer_show_in_the_status() {
+        const GAME: &str = "https://game.example";
+        let engine = Engine::start(EngineConfig {
+            bind: local(),
+            api: true,
+            ask_api_origins: true,
+            ..EngineConfig::default()
+        })
+        .await
+        .unwrap();
+        // The WebSocket opening request, as a page on that site sends it.
+        let url = format!("http://{}/api/v1/ws", engine.addr());
+        let connecting = tokio::spawn(async move {
+            reqwest::Client::new()
+                .get(url)
+                .header("connection", "upgrade")
+                .header("upgrade", "websocket")
+                .header("sec-websocket-version", "13")
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .header("origin", GAME)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        });
+
+        let handle = engine.handle();
+        wait_for(&handle, |s| s.api_requests == [GAME]).await;
+        handle.answer_api_request(GAME, true);
+        let status = timeout(WAIT, connecting).await.unwrap().unwrap();
+        assert_eq!(status, reqwest::StatusCode::SWITCHING_PROTOCOLS);
+        wait_for(&handle, |s| s.api_requests.is_empty()).await;
         engine.shutdown().await;
     }
 

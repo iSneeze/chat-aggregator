@@ -62,6 +62,9 @@ fn run(config_path: PathBuf) -> anyhow::Result<()> {
         .unwrap_or_default();
     let mut engine_config = file.clone().into_engine_config(&settings_dir);
     engine_config.sources.clear();
+    // Unlike headless mode, the app can ask the streamer about web sites
+    // that want to use the JSON API (`AppView` shows the question).
+    engine_config.ask_api_origins = true;
     let engine = runtime.block_on(Engine::start(engine_config))?;
     let handle = engine.handle();
     let mut config = AppConfig::new(file, config_path);

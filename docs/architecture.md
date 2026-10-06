@@ -171,6 +171,10 @@ the total isn't counted twice.
   closes it every ~10 seconds (a bug on their side); the source reconnects
   with the last `page_token`, so nothing is lost. Each reconnect costs 5
   units, which is why a day's quota lasts roughly 5–6 streaming hours.
+  A connection that dies without a word (Wi-Fi switch, laptop sleep) would
+  leave that read waiting forever, so a stream that stays completely silent
+  for 60 s counts as dead: the source opens a fresh connection and resumes
+  with the same `page_token`.
 - **Quota used up** ("resource exhausted"): the source reports *Blocked*
   and sleeps until midnight Pacific time instead of failing or retrying
   pointlessly. A short-term rate limit only backs off briefly; when unsure
@@ -413,8 +417,20 @@ happened to another overlay: CVE-2024-7971).
    blocked, even from a hostile theme. Theme files get `nosniff` and
    `script-src 'none'`.
 3. **Localhost only.** The server binds `127.0.0.1`: other machines can't
-   reach it. Web pages in the streamer's browser can, which is why the JSON
-   API is **off by default** and closes its clients when switched off.
+   reach it. Web pages in the streamer's browser still could, so
+   (`chat-server/src/local.rs`): every request whose `Host` isn't
+   `127.0.0.1`/`localhost`/`[::1]` is refused (DNS rebinding), and the JSON
+   API only accepts clients without an `Origin` (programs), with a localhost
+   origin, OBS's local-file origin `http://absolute`, or a web site the
+   streamer allowed (`approvals.rs`); not `null`, which any website can send
+   from a sandboxed frame. An unknown site's opening request *waits* while
+   the app asks (its question is in `Status::api_requests`, the answer goes
+   back through `EngineHandle::answer_api_request`), so "Allow" lets the
+   same connection through. One question per site, at most 3 open, "Deny"
+   until restart, 2 minutes to answer; an RAII guard withdraws a question
+   when its last waiting connection is gone. Headless mode doesn't ask.
+   The API is also **off by default** and closes its clients when switched
+   off.
 4. **No reading outside the theme.** `/theme/…` accepts only plain path
    segments, so `../config.toml` (with the client secret) can't be fetched.
 5. **Secrets**: the refresh token in the OS keyring, the config file 0600,

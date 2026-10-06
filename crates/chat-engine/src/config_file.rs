@@ -92,9 +92,15 @@ pub struct ServerSettings {
     pub theme: Option<String>,
     pub stagger_ms: u64,
     pub stagger_max_ms: u64,
-    /// The JSON API for other programs. Off by default: any web page open
-    /// in the browser could connect to it too.
+    /// The JSON API for other programs. Off by default: most streamers
+    /// never need it.
     pub api: bool,
+    /// Web sites allowed to use the JSON API, e.g. a browser game
+    /// (`"https://game.example"`). Programs, pages served from this
+    /// computer and OBS browser sources don't need to be listed. The app
+    /// asks about other sites and adds them here on "Allow".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub api_origins: Vec<String>,
     /// Which end of the overlay new messages appear at, unless the overlay
     /// URL says otherwise (`?newest=top`).
     pub newest: Newest,
@@ -109,6 +115,7 @@ impl Default for ServerSettings {
             stagger_ms: 250,
             stagger_max_ms: 2000,
             api: false,
+            api_origins: Vec::new(),
             newest: Newest::Bottom,
         }
     }
@@ -188,6 +195,9 @@ impl ConfigFile {
                 Duration::from_millis(server.stagger_max_ms),
             ),
             api: server.api,
+            api_origins: server.api_origins,
+            // Headless mode has nobody to ask; the app switches this on.
+            ask_api_origins: false,
             newest: server.newest,
         }
     }
@@ -236,6 +246,7 @@ mod tests {
             stagger_ms = 100
             stagger_max_ms = 1000
             api = true
+            api_origins = ["https://game.example"]
             newest = "top"
 
             [youtube]
@@ -289,6 +300,8 @@ mod tests {
         );
         assert_eq!(engine.bind.port(), 8080);
         assert!(engine.api);
+        assert_eq!(engine.api_origins, ["https://game.example"]);
+        assert!(!engine.ask_api_origins, "headless mode has nobody to ask");
         assert_eq!(engine.newest, Newest::Top);
         assert_eq!(engine.history, 5);
         assert_eq!(

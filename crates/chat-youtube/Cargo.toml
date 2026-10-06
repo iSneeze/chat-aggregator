@@ -28,6 +28,9 @@ directories.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+# Tests stand in for YouTube's gRPC endpoint, which speaks HTTP/2.
+axum = { workspace = true, features = ["http2"] }
+futures-util.workspace = true
 # The examples open the login page; the library leaves that to the caller.
 webbrowser.workspace = true
 

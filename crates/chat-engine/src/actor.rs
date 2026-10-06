@@ -71,6 +71,9 @@ pub(crate) struct Actor<F> {
     internal_rx: mpsc::UnboundedReceiver<Internal>,
     status: watch::Sender<Status>,
     connections: Arc<Connections>,
+    /// Sites waiting for an answer (`ApiOrigins::requests`): shown in the
+    /// status, and a change is published right away.
+    api_requests: watch::Receiver<Vec<String>>,
 }
 
 struct Slot {
@@ -137,6 +140,7 @@ impl<F: SourceFactory> Actor<F> {
         hub: Arc<Hub>,
         status: watch::Sender<Status>,
         connections: Arc<Connections>,
+        api_requests: watch::Receiver<Vec<String>>,
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
         Self {
@@ -148,6 +152,7 @@ impl<F: SourceFactory> Actor<F> {
             internal_rx,
             status,
             connections,
+            api_requests,
         }
     }
 
@@ -171,6 +176,9 @@ impl<F: SourceFactory> Actor<F> {
                 // while the actor runs: `Some` is guaranteed.
                 Some(message) = self.internal_rx.recv() => self.internal(message),
                 _ = tick.tick() => {}
+                // A question for the streamer: show it now, not at the next
+                // tick. (`Err` would mean the server is gone: shutting down.)
+                Ok(()) = self.api_requests.changed() => {}
                 () = shutdown.cancelled() => break,
             }
             self.publish();
@@ -440,13 +448,16 @@ impl<F: SourceFactory> Actor<F> {
             .collect::<Vec<_>>();
         let overlays = self.connections.overlays();
         let api_clients = self.connections.api_clients();
+        let api_requests = self.api_requests.borrow().clone();
         self.status.send_if_modified(|status| {
             let unchanged = status.sources == sources
                 && status.overlays_connected == overlays
-                && status.api_clients == api_clients;
+                && status.api_clients == api_clients
+                && status.api_requests == api_requests;
             status.sources = sources;
             status.overlays_connected = overlays;
             status.api_clients = api_clients;
+            status.api_requests = api_requests;
             !unchanged
         });
     }
