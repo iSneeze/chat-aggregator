@@ -6,10 +6,12 @@
 //! KeePassXC, ...) on Linux. Without a keyring, a file in the app's config
 //! folder that only the user can read.
 
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+
+use chat_core::fs::write_private;
 
 use super::OAuthApp;
 
@@ -152,30 +154,6 @@ fn read_file(path: &Path) -> anyhow::Result<Option<String>> {
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
-}
-
-/// Writes a file only the current user can read (on Unix: mode 0600; on
-/// Windows the user's profile folder already restricts access).
-fn write_private(path: &Path, contents: &str) -> anyhow::Result<()> {
-    let result = (|| {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            options.mode(0o600);
-            // `mode` only applies when the file is created; tighten an
-            // existing file too.
-            if path.exists() {
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-            }
-        }
-        options.open(path)?.write_all(contents.as_bytes())
-    })();
-    result.with_context(|| format!("writing {}", path.display()))
 }
 
 fn remove_file(path: &Path) -> anyhow::Result<()> {

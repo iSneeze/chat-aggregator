@@ -19,7 +19,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, IconName, Root, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -509,7 +509,12 @@ macro_rules! number_type {
 number_type!(u16, u64, usize);
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // `Root` keeps dialogs and notifications but doesn't draw them: the
+        // window's view has to (see `AppView`'s `render`). Without this,
+        // `report` would show nothing here.
+        let dialogs = Root::render_dialog_layer(window, cx);
+        let notifications = Root::render_notification_layer(window, cx);
         div()
             .size_full()
             .bg(cx.theme().background)
@@ -519,6 +524,8 @@ impl Render for SettingsWindow {
                     .sidebar_width(px(170.))
                     .pages(self.pages(cx)),
             )
+            .children(dialogs)
+            .children(notifications)
     }
 }
 
@@ -691,5 +698,23 @@ mod tests {
         ui.view()
             .update(cx, |this, cx| this.remove_api_origin(GAME, cx));
         assert!(ui.saved().unwrap().server.api_origins.is_empty());
+    }
+
+    /// Regression test: errors reported in this window must reach the
+    /// screen (gpui-kit only draws notifications the view renders).
+    #[gpui_kit::test]
+    fn reported_errors_are_shown(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt;
+        let ui = open(cx, "report");
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            crate::app_view::report(window, cx, "something went wrong".into());
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("notification").is_some());
+        })
+        .unwrap();
     }
 }

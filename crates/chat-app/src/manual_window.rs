@@ -11,7 +11,7 @@ use chat_engine::{EngineHandle, ManualInput, SourceId};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Root, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::app_view::report;
@@ -324,7 +324,12 @@ impl ManualWindow {
 }
 
 impl Render for ManualWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // `Root` keeps dialogs and notifications but doesn't draw them: the
+        // window's view has to (see `AppView`'s `render`). Without this,
+        // `report` would show nothing here.
+        let dialogs = Root::render_dialog_layer(window, cx);
+        let notifications = Root::render_notification_layer(window, cx);
         let platforms = RadioGroup::horizontal("manual-platform")
             .selected_index(Some(match self.platform {
                 ChatPlatform::YouTube => 1,
@@ -429,6 +434,8 @@ impl Render for ManualWindow {
                             .child(format!("{} sent", self.sent)),
                     ),
             )
+            .children(dialogs)
+            .children(notifications)
     }
 }
 
@@ -693,5 +700,26 @@ mod tests {
             .unwrap();
         let status = ui.engine.handle().status();
         run_until(cx, |_| status.borrow().source(id).is_none());
+    }
+
+    /// Regression test: errors reported in this window must reach the
+    /// screen (gpui-kit only draws notifications the view renders).
+    #[gpui_kit::test]
+    fn reported_errors_are_shown(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            crate::app_view::report(window, cx, "something went wrong".into());
+        })
+        .unwrap();
+        // The window talks to the engine (tokio) as it opens: wait with
+        // `run_until`, which allows that.
+        let window = ui.window;
+        run_until(cx, |cx| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("notification").is_some()
+            })
+            .unwrap()
+        });
     }
 }

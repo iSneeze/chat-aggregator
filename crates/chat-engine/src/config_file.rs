@@ -2,12 +2,13 @@
 //! the app. The engine itself only ever *reads* it; saving is up to the
 //! caller (the app's settings window, or your text editor).
 
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
+use chat_core::fs::write_private;
 
 use crate::config::{SourceConfig, YouTubeSettings};
 use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Newest, Stagger, ThemeSource};
@@ -207,28 +208,6 @@ fn is_not_found(e: &anyhow::Error) -> bool {
     e.chain()
         .filter_map(|e| e.downcast_ref::<std::io::Error>())
         .any(|e| e.kind() == ErrorKind::NotFound)
-}
-
-/// Only the current user may read it (Unix: mode 0600; on Windows the
-/// user's profile folder already restricts access).
-fn write_private(path: &Path, contents: &str) -> anyhow::Result<()> {
-    let result = (|| {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            options.mode(0o600);
-            if path.exists() {
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-            }
-        }
-        options.open(path)?.write_all(contents.as_bytes())
-    })();
-    result.with_context(|| format!("writing {}", path.display()))
 }
 
 #[cfg(test)]

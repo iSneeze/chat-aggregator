@@ -20,7 +20,7 @@
 //! `Video` is one-shot: it resolves once and completes when the stream ends.
 
 pub use crate::emoji::EmojiMap;
-pub use crate::resolver::{Auth, channel_title};
+pub use crate::resolver::{Auth, channel_title, rest_client};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -48,16 +48,31 @@ use resolver::ResolvedStream;
 const ENDPOINT: &str = "https://youtube.googleapis.com:443";
 
 /// Scan-mode cadence: how often to re-resolve while waiting for a broadcast
-/// to go live. Short once the scheduled start is within `NEAR_WINDOW`, long
-/// otherwise (cheap REST calls, unlike an idle gRPC stream).
+/// to go live. Short once the scheduled start is within `NEAR_WINDOW` (or
+/// past, but not stale), long while it's further away (cheap REST calls,
+/// 1 unit each, unlike an idle gRPC stream).
 const POLL_NEAR: Duration = Duration::from_secs(30);
 const POLL_FAR: Duration = Duration::from_secs(5 * 60);
 const NEAR_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
 
+/// How often to check while nothing is live or coming up: that's also the
+/// longest chat takes to appear after going live without scheduling (just
+/// "Start streaming" in OBS). 2 min = 720 quota units a day (user's choice,
+/// 2026-10-07: 5 min was too slow to start, 1 min too costly).
+const POLL_IDLE: Duration = Duration::from_secs(2 * 60);
+
+/// Waits between reconnects grow from 2 s up to this while connections end
+/// without delivering anything (a quiet chat, or a problem), and drop back to
+/// 2 s once messages flow. Slowing down saves quota (5 units per reconnect)
+/// in quiet stretches; the cap bounds how late the first message after a
+/// quiet stretch can be (user's choice, 2026-10-07: 30 s felt too long).
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(20);
+const FIRST_RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
+
 /// After a broadcast ends, pause before re-resolving so that
 /// `liveBroadcasts.list` has moved it to `complete`. Resolving while it
-/// still reads as `live` would re-attach to a closed chat, which the
-/// server rejects with a fatal `FailedPrecondition`.
+/// still reads as `live` would re-attach to the closed chat, which the
+/// server rejects with `FailedPrecondition` (handled as another "ended").
 const SETTLE_AFTER_END: Duration = Duration::from_secs(15);
 
 /// Minimum wait after a short-term rate limit ("too many requests").
@@ -116,7 +131,7 @@ impl ChatSource for YouTubeSource {
         let mut client = connect().await?;
         // Same idea for REST: one client = one connection pool, reused by
         // every resolve instead of a fresh TLS handshake per call.
-        let http = reqwest::Client::new();
+        let http = rest_client();
         let mut first_scan = true;
 
         // `outer`: resolve a broadcast, attach, and — for OwnBroadcast —
@@ -126,12 +141,12 @@ impl ChatSource for YouTubeSource {
             let stream = match self.resolve(&http, &mut first_scan).await {
                 Ok(Some(stream)) => stream,
                 Ok(None) => {
-                    activity.set(Activity::Idle(
-                        "no live or scheduled broadcast on your channel; checking every 5 min"
-                            .into(),
-                    ));
-                    info!(next_check = ?POLL_FAR, "nothing live or scheduled");
-                    tokio::time::sleep(POLL_FAR).await;
+                    activity.set(Activity::Idle(format!(
+                        "no live or upcoming broadcast on your channel; checking every {} min",
+                        POLL_IDLE.as_secs() / 60
+                    )));
+                    info!(next_check = ?POLL_IDLE, "nothing live or upcoming");
+                    tokio::time::sleep(POLL_IDLE).await;
                     continue 'outer;
                 }
                 // Every call fails until the daily reset: wait for it
@@ -146,18 +161,14 @@ impl ChatSource for YouTubeSource {
             // A scheduled broadcast has no chat yet: idle cheaply by
             // polling, faster as the start time approaches.
             if !stream.is_live {
-                let wait = scan_interval(stream.scheduled_start_time);
-                let when = stream
+                let start = stream
                     .scheduled_start_time
-                    .map(|t| {
-                        format!(
-                            " (scheduled for {})",
-                            t.with_timezone(&chrono::Local).format("%H:%M")
-                        )
-                    })
-                    .unwrap_or_default();
+                    .context("a scheduled broadcast without a start time")?;
+                let wait = scan_interval(start);
+                let now = chrono::Local::now();
+                let when = start_label(start.with_timezone(&chrono::Local), now.date_naive());
                 activity.set(Activity::Idle(format!(
-                    "waiting for your broadcast to start{when}"
+                    "waiting for your broadcast to start (scheduled for {when})"
                 )));
                 info!(
                     video_id = %stream.video_id,
@@ -168,16 +179,24 @@ impl ChatSource for YouTubeSource {
                 continue 'outer;
             }
 
-            let live_chat_id = stream
-                .live_chat_id
-                .context("live broadcast is missing a live chat id")?;
+            // Live, but with chat switched off: nothing to read. Not an
+            // error: check again later, the chat may be switched on.
+            let Some(live_chat_id) = stream.live_chat_id else {
+                activity.set(Activity::Idle(format!(
+                    "your broadcast is live, but its chat is off; checking again in {} min",
+                    POLL_IDLE.as_secs() / 60
+                )));
+                info!(video_id = %stream.video_id, "live broadcast without a chat");
+                tokio::time::sleep(POLL_IDLE).await;
+                continue 'outer;
+            };
 
             // --- Attach phase: per-broadcast reconnect state ---
             // Reset per outer iteration: a page_token or dedupe set from
             // a finished broadcast must not leak into the next one.
             let mut page_token: Option<String> = None;
             let mut dedupe = BoundedIdSet::new(2048);
-            let mut backoff = Duration::from_secs(2);
+            let mut backoff = FIRST_RECONNECT_BACKOFF;
 
             'inner: loop {
                 let mut request = Request::new(LiveChatMessageListRequest {
@@ -211,7 +230,7 @@ impl ChatSource for YouTubeSource {
                 {
                     Ok((n, StreamEnd::Eof)) => {
                         if n > 0 {
-                            backoff = Duration::from_secs(2); // stream was healthy
+                            backoff = FIRST_RECONNECT_BACKOFF; // messages flow
                         }
                         // The ~10s server EOF: routine, so debug level only.
                         debug!(
@@ -222,11 +241,7 @@ impl ChatSource for YouTubeSource {
                     }
                     Ok((_, StreamEnd::Offline)) => {
                         if is_own_broadcast {
-                            activity.set(Activity::Idle(
-                                "broadcast ended; waiting for your next one".into(),
-                            ));
-                            info!("broadcast ended; back to scan mode");
-                            tokio::time::sleep(SETTLE_AFTER_END).await;
+                            broadcast_ended(&activity).await;
                             first_scan = true; // re-list all broadcasts next scan
                             break 'inner;
                         }
@@ -252,14 +267,14 @@ impl ChatSource for YouTubeSource {
                     Ok((_, StreamEnd::ReceiverGone)) => {
                         return Ok(()); // server shutting down
                     }
-                    Err(status) => match quota::classify(&status) {
-                        Some(Exhaustion::Daily) => {
+                    Err(status) => match on_error(&status, is_own_broadcast) {
+                        OnError::WaitForQuota => {
                             quota::wait_for_reset(status.message(), &activity).await;
                             // Hours may have passed: find the broadcast anew.
                             first_scan = true;
                             continue 'outer;
                         }
-                        Some(Exhaustion::RateLimit) => {
+                        OnError::RateLimited => {
                             backoff = backoff.max(RATE_LIMIT_BACKOFF);
                             activity.set(Activity::Degraded(format!(
                                 "rate limited by YouTube, retrying in {} s",
@@ -267,10 +282,16 @@ impl ChatSource for YouTubeSource {
                             )));
                             warn!(%status, ?backoff, "rate limited by YouTube, reconnecting");
                         }
-                        None if is_fatal(&status) => {
+                        OnError::BroadcastEnded => {
+                            debug!(%status, "chat closed");
+                            broadcast_ended(&activity).await;
+                            first_scan = true;
+                            break 'inner;
+                        }
+                        OnError::Fatal => {
                             return Err(status).context("YouTube gRPC stream failed");
                         }
-                        None => {
+                        OnError::Retry => {
                             activity.set(Activity::Degraded(format!(
                                 "connection problem, reconnecting: {}",
                                 status.message()
@@ -281,7 +302,7 @@ impl ChatSource for YouTubeSource {
                 }
 
                 tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(30));
+                backoff = next_backoff(backoff);
             }
             // Fell out of 'inner: for OwnBroadcast the broadcast is over,
             // so 'outer re-resolves (the next one, or nothing).
@@ -320,11 +341,82 @@ impl YouTubeSource {
 
 /// How long to wait before re-checking a broadcast that is not live yet:
 /// short when its start time is near (or already past but the chat has not
-/// come up), long otherwise.
-fn scan_interval(start: Option<chrono::DateTime<chrono::Utc>>) -> Duration {
-    match start {
-        Some(t) if t - chrono::Utc::now() <= NEAR_WINDOW => POLL_NEAR,
-        _ => POLL_FAR,
+/// come up), long otherwise. (Stale ones never get here, see
+/// `resolver::STALE_AFTER`.)
+fn scan_interval(start: chrono::DateTime<chrono::Utc>) -> Duration {
+    if start - chrono::Utc::now() <= NEAR_WINDOW {
+        POLL_NEAR
+    } else {
+        POLL_FAR
+    }
+}
+
+/// A scheduled start for the status line: just the time if it's `today`,
+/// otherwise with the day ("Thu 8 Oct 20:00"), so a stream tomorrow isn't
+/// mistaken for one today. Generic over the time zone so tests can use a
+/// fixed one; the app passes local time.
+fn start_label<Tz: chrono::TimeZone>(
+    start: chrono::DateTime<Tz>,
+    today: chrono::NaiveDate,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if start.date_naive() == today {
+        start.format("%H:%M").to_string()
+    } else {
+        start.format("%a %-d %b %H:%M").to_string()
+    }
+}
+
+/// The next wait between reconnects: doubled, up to `MAX_RECONNECT_BACKOFF`.
+fn next_backoff(current: Duration) -> Duration {
+    (current * 2).min(MAX_RECONNECT_BACKOFF)
+}
+
+/// The broadcast is over: say so, give YouTube a moment to list it as
+/// complete (see `SETTLE_AFTER_END`), then the caller scans for the next one.
+async fn broadcast_ended(activity: &Reporter) {
+    activity.set(Activity::Idle(
+        "broadcast ended; waiting for your next one".into(),
+    ));
+    info!("broadcast ended; back to scan mode");
+    tokio::time::sleep(SETTLE_AFTER_END).await;
+}
+
+/// What a failed streamList call means for the source.
+#[derive(Debug, PartialEq)]
+enum OnError {
+    /// The daily quota is used up: wait for the reset.
+    WaitForQuota,
+    /// Too many requests: back off a while, then reconnect.
+    RateLimited,
+    /// The chat is closed: your broadcast is over, scan for the next one.
+    BroadcastEnded,
+    /// Retrying can't help: end the source with the error.
+    Fatal,
+    /// Probably passing (network blip): reconnect after the usual wait.
+    Retry,
+}
+
+fn on_error(status: &Status, is_own_broadcast: bool) -> OnError {
+    match quota::classify(status) {
+        Some(Exhaustion::Daily) => return OnError::WaitForQuota,
+        Some(Exhaustion::RateLimit) => return OnError::RateLimited,
+        None => {}
+    }
+    // "Live chat ended" arrives as `FailedPrecondition`. When following
+    // your own broadcasts that's the normal end of a stream (often instead
+    // of the `offline_at` marker, because of the ~10 s EOF bug): back to
+    // waiting for the next one, not an error. A single watched video is
+    // simply over then, like any other permanent failure.
+    if is_own_broadcast && status.code() == Code::FailedPrecondition {
+        return OnError::BroadcastEnded;
+    }
+    if is_fatal(status) {
+        OnError::Fatal
+    } else {
+        OnError::Retry
     }
 }
 
@@ -417,7 +509,7 @@ fn is_fatal(status: &Status) -> bool {
             | Code::PermissionDenied
             | Code::Unauthenticated
             | Code::Unimplemented
-            | Code::FailedPrecondition // live chat closed or invalid id!
+            | Code::FailedPrecondition // live chat closed (see `on_error`)
     )
 }
 
@@ -425,6 +517,46 @@ fn is_fatal(status: &Status) -> bool {
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn reconnects_slow_down_to_twenty_seconds() {
+        let mut waits = vec![FIRST_RECONNECT_BACKOFF];
+        for _ in 0..5 {
+            waits.push(next_backoff(*waits.last().unwrap()));
+        }
+        let secs: Vec<u64> = waits.iter().map(Duration::as_secs).collect();
+        assert_eq!(secs, [2, 4, 8, 16, 20, 20]);
+        // After a rate limit's long wait, back to the cap.
+        assert_eq!(next_backoff(RATE_LIMIT_BACKOFF), MAX_RECONNECT_BACKOFF);
+    }
+
+    #[test]
+    fn a_closed_chat_ends_your_broadcast_but_not_the_source() {
+        let closed = Status::failed_precondition("The live chat is no longer live.");
+        assert_eq!(on_error(&closed, true), OnError::BroadcastEnded);
+        assert_eq!(
+            on_error(&closed, false),
+            OnError::Fatal,
+            "a watched video is over"
+        );
+
+        let daily = Status::resource_exhausted("you have exceeded your quota");
+        assert_eq!(on_error(&daily, true), OnError::WaitForQuota);
+        let per_minute = Status::resource_exhausted("Queries per minute");
+        assert_eq!(on_error(&per_minute, true), OnError::RateLimited);
+        assert_eq!(on_error(&Status::not_found("x"), true), OnError::Fatal);
+        assert_eq!(on_error(&Status::unavailable("blip"), true), OnError::Retry);
+    }
+
+    #[test]
+    fn start_times_name_the_day_unless_it_is_today() {
+        use chrono::TimeZone as _;
+        let zone = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+        let at = |d, h| zone.with_ymd_and_hms(2026, 10, d, h, 0, 0).unwrap();
+        assert_eq!(start_label(at(7, 20), today), "20:00");
+        assert_eq!(start_label(at(8, 20), today), "Thu 8 Oct 20:00");
+    }
 
     /// Runs `consume_stream` against `addr` with a short stall limit, and
     /// fails the test if it doesn't come back on its own.

@@ -132,7 +132,7 @@ async fn login(app: &OAuthApp) -> anyhow::Result<()> {
     pending.complete().await?;
 
     let auth = Auth::OAuth(TokenProvider::from_store(app.clone()).await?);
-    let channel = chat_youtube::channel_title(&reqwest::Client::new(), &auth).await?;
+    let channel = chat_youtube::channel_title(&chat_youtube::rest_client(), &auth).await?;
     println!("logged in as \"{channel}\"");
     Ok(())
 }

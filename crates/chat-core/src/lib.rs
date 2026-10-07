@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 
 pub mod activity;
 pub mod demo;
+pub mod fs;
 pub mod hub;
 
 pub use activity::{Activity, Reporter};

@@ -121,7 +121,7 @@ pub async fn logout(app: &OAuthApp) -> anyhow::Result<()> {
 /// valid login (none stored, or revoked/expired).
 pub async fn logged_in_channel(app: &OAuthApp) -> anyhow::Result<String> {
     let tokens = TokenProvider::from_store(app.clone()).await?;
-    crate::channel_title(&reqwest::Client::new(), &crate::Auth::OAuth(tokens)).await
+    crate::channel_title(&crate::rest_client(), &crate::Auth::OAuth(tokens)).await
 }
 
 /// HTTP client for talking to Google's token endpoint.

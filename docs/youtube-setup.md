@@ -16,7 +16,10 @@ users couldn't even cover one channel. With your own project, your quota is
 yours alone.
 
 Checking whether you're live while you're offline is cheap (1 unit every
-30 seconds to 5 minutes), so leaving the app running all day is fine.
+2 minutes, every 30 seconds shortly before a scheduled stream), so leaving
+the app running all day is fine. When you go live without scheduling the
+stream, chat appears within those 2 minutes, including the messages from
+the first minutes.
 
 ## 1. Create a project
 

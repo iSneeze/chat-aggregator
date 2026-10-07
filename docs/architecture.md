@@ -166,12 +166,20 @@ the total isn't counted twice.
 - **Finding the chat** uses REST (`liveBroadcasts.list?mine=true` for your
   own broadcasts, `videos.list` for a given video): 1 unit per call. While
   nothing is live, the source polls this cheaply ("scan mode") instead of
-  holding an expensive chat connection open.
+  holding an expensive chat connection open: every 2 min with nothing
+  coming up, every 30 s from 5 min before a scheduled start. A scheduled
+  broadcast more than 3 h late counts as *stale* (a "free chat" waiting
+  room, a forgotten draft) and isn't waited for; otherwise it would look
+  like "starting any minute" forever.
 - **Reading the chat** uses the gRPC `streamList` call. Google currently
   closes it every ~10 seconds (a bug on their side); the source reconnects
   with the last `page_token`, so nothing is lost. Each reconnect costs 5
   units, which is why a day's quota lasts roughly 5–6 streaming hours.
-  A connection that dies without a word (Wi-Fi switch, laptop sleep) would
+  While connections end without delivering anything (a quiet chat), the
+  wait before the next one grows from 2 s to at most 20 s, which saves
+  quota; it drops back to 2 s once messages flow. A closed chat
+  (`FailedPrecondition`) is the normal end of your broadcast: back to scan
+  mode, not an error. A connection that dies without a word (Wi-Fi switch, laptop sleep) would
   leave that read waiting forever, so a stream that stays completely silent
   for 60 s counts as dead: the source opens a fresh connection and resumes
   with the same `page_token`.
@@ -434,8 +442,9 @@ happened to another overlay: CVE-2024-7971).
 4. **No reading outside the theme.** `/theme/…` accepts only plain path
    segments, so `../config.toml` (with the client secret) can't be fetched.
 5. **Secrets**: the refresh token in the OS keyring, the config file 0600,
-   redacted debug output, API keys sent as headers (never in URLs, which end
-   up in logs).
+   written atomically (`chat_core::fs::write_private`: temp file, sync,
+   rename, so a crash never leaves it half-written), redacted debug output,
+   API keys sent as headers (never in URLs, which end up in logs).
 
 ## Testing
 

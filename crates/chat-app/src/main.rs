@@ -15,7 +15,7 @@
 //! need the tokio runtime, only their wakers.
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::Context as _;
@@ -30,21 +30,47 @@ mod emoji_import;
 mod logging;
 mod manual_window;
 mod settings_window;
+mod startup_error;
 mod youtube_panel;
 
 use app_config::AppConfig;
 use app_view::AppView;
+use startup_error::{Stage, StartupError};
 
 fn main() -> anyhow::Result<()> {
     let config_path = ConfigFile::default_path()?;
     logging::init(config_path.parent());
-    // An error returned from `main` is only printed to the console; log it
-    // too, so a failed start (e.g. the port is taken) is in the log file.
-    run(config_path).inspect_err(|e| tracing::error!("{e:#}"))
+    let settings_dir = config_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    match start(config_path, &settings_dir) {
+        Ok(started) => {
+            run(started);
+            Ok(())
+        }
+        Err(failed) => {
+            // Logged, so a failed start is in the log file too...
+            tracing::error!("{:#}", failed.error);
+            // ...and shown: on Windows there's no console to print it to.
+            startup_error::show(&failed, &settings_dir);
+            Err(failed.error)
+        }
+    }
 }
 
-fn run(config_path: PathBuf) -> anyhow::Result<()> {
-    let file = ConfigFile::load_or_default(&config_path)?;
+/// Everything that's ready once starting up worked.
+struct Started {
+    runtime: tokio::runtime::Runtime,
+    engine: Engine,
+    config: AppConfig,
+}
+
+/// Reads the settings and starts the engine. Each step's errors are marked
+/// with the step (`Stage`), so the error window can give fitting advice.
+fn start(config_path: PathBuf, settings_dir: &Path) -> Result<Started, StartupError> {
+    let file =
+        ConfigFile::load_or_default(&config_path).map_err(StartupError::at(Stage::Config))?;
 
     // Two workers are plenty for chat; tokio's default is one per CPU core.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -52,24 +78,38 @@ fn run(config_path: PathBuf) -> anyhow::Result<()> {
         .thread_name("chat-engine")
         .enable_all()
         .build()
-        .context("starting the tokio runtime")?;
+        .context("starting the tokio runtime")
+        .map_err(StartupError::at(Stage::Other))?;
 
     // The engine starts without sources: `AppConfig` adds them one by one
     // to learn the id the engine gives each.
-    let settings_dir = config_path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_default();
-    let mut engine_config = file.clone().into_engine_config(&settings_dir);
+    let mut engine_config = file.clone().into_engine_config(settings_dir);
     engine_config.sources.clear();
     // Unlike headless mode, the app can ask the streamer about web sites
     // that want to use the JSON API (`AppView` shows the question).
     engine_config.ask_api_origins = true;
-    let engine = runtime.block_on(Engine::start(engine_config))?;
-    let handle = engine.handle();
+    let engine = runtime
+        .block_on(Engine::start(engine_config))
+        .map_err(StartupError::at(Stage::Server))?;
     let mut config = AppConfig::new(file, config_path);
-    runtime.block_on(config.start_all(&handle))?;
+    runtime
+        .block_on(config.start_all(&engine.handle()))
+        .map_err(StartupError::at(Stage::Other))?;
+    Ok(Started {
+        runtime,
+        engine,
+        config,
+    })
+}
 
+/// Opens the main window and runs until the app quits.
+fn run(started: Started) {
+    let Started {
+        runtime,
+        engine,
+        config,
+    } = started;
+    let handle = engine.handle();
     let tokio = runtime.handle().clone();
     let tokio_for_quit = tokio.clone();
     // `Option`, because the quit callback may in principle run more than
@@ -136,5 +176,61 @@ fn run(config_path: PathBuf) -> anyhow::Result<()> {
         })
         .detach();
     });
-    Ok(())
+    // Only now: the engine's tasks run on this runtime until the app quits.
+    drop(runtime);
+}
+
+// Explicit imports, see `startup_error::tests`.
+#[cfg(test)]
+mod tests {
+    use std::io::ErrorKind;
+    use std::path::PathBuf;
+
+    use super::{Stage, start};
+
+    fn settings_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("chat-app-start-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_taken_port_fails_at_the_server_step() {
+        // Something else already listens on the port.
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let dir = settings_dir("port");
+        let config = dir.join("config.toml");
+        std::fs::write(&config, format!("[server]\nport = {port}\n")).unwrap();
+
+        let failed = start(config, &dir).err().expect("the port is taken");
+        assert_eq!(failed.stage, Stage::Server);
+        let kind = failed
+            .error
+            .chain()
+            .find_map(|e| e.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind);
+        assert_eq!(kind, Some(ErrorKind::AddrInUse));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_broken_config_fails_at_the_config_step_and_is_left_alone() {
+        let dir = settings_dir("config");
+        let config = dir.join("config.toml");
+        std::fs::write(&config, "[server]\nprot = 7878\n").unwrap();
+
+        let failed = start(config.clone(), &dir)
+            .err()
+            .expect("the config is broken");
+        assert_eq!(failed.stage, Stage::Config);
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "[server]\nprot = 7878\n",
+            "nothing in the file was changed"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
