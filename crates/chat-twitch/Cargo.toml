@@ -9,3 +9,7 @@ twitch-irc = "6.1.1"
 chat-core = { path = "../chat-core" }
 tokio.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+# Local timestamps in the raw_twitch example (already built for chat-core).
+chrono.workspace = true

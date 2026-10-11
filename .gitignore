@@ -1,2 +1,4 @@
 **/target
 .direnv
+# Scratch logs (e.g. from the raw_twitch example) hold real chat data.
+*.log

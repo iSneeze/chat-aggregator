@@ -181,7 +181,8 @@ pub enum MessageKind {
         /// Number of gifted subs/memberships.
         count: usize,
     },
-    /// Raids, announcements, etc.
+    /// Raids, announcements, watch streaks, etc.: platform events without a
+    /// kind of their own.
     #[serde(rename = "notice")]
     SystemNotice {
         /// The platform's description.

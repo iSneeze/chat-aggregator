@@ -264,7 +264,7 @@
           "type": "object"
         },
         {
-          "description": "Raids, announcements, etc.",
+          "description": "Raids, announcements, watch streaks, etc.: platform events without a\nkind of their own.",
           "properties": {
             "info": {
               "description": "The platform's description.",

@@ -88,7 +88,7 @@ A chat message or a platform event (donation, sub, raid, ...).
 | `special`    | `image_url`, `amount`, `info`, `tier` (each may be `null`) | YouTube Super Sticker (`info` = sticker description), YouTube gift |
 | `membership` | `info`, `months` | new sub/member, resub, milestone; `months` = how long they've been a member (resub, milestone), `null` for a new one |
 | `gift`       | `count` | gifted subs (Twitch) or memberships (YouTube) |
-| `notice`     | `info` | raid, announcement |
+| `notice`     | `info` | raid, announcement, watch streak, new chatter, … (Twitch events without a kind of their own) |
 
 `amount` is a display string as the platform formats it (currency and all);
 it's meant for showing, not for arithmetic.

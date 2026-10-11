@@ -198,7 +198,17 @@ fn convert_user_notice(un: UserNoticeMessage) -> Option<ChatMessage> {
         } => MessageKind::MembershipGift {
             count: mass_gift_count as usize,
         },
-        _ => return None,
+        // Its `system-msg` is only "bits badge tier notification".
+        UserNoticeEvent::BitsBadgeTier { threshold } => MessageKind::SystemNotice {
+            info: format!("{} earned the {threshold} bits badge!", un.sender.name),
+        },
+        // Everything else Twitch announces carries a readable `system-msg`:
+        // watch streaks (`viewermilestone`), new chatters, gift-sub
+        // upgrades, and the event types Twitch adds without notice (which
+        // twitch-irc reports as `Unknown`).
+        _ => MessageKind::SystemNotice {
+            info: un.system_message,
+        },
     };
 
     Some(ChatMessage {
@@ -405,6 +415,42 @@ mod tests {
         assert!(matches!(
             out.kind,
             MessageKind::MembershipJoin { months: None, .. }
+        ));
+    }
+
+    /// A watch streak, which twitch-irc doesn't know (`Unknown`): shape as
+    /// seen live, names and ids replaced.
+    const WATCH_STREAK: &str = "@badge-info=;badges=;color=;display-name=Viewer42;emotes=emotesv2_0000:10-20;flags=;id=w1;login=viewer42;mod=0;msg-id=viewermilestone;msg-param-category=watch-streak;msg-param-copoReward=450;msg-param-id=w0;msg-param-value=5;room-id=123;subscriber=0;system-msg=Viewer42\\swatched\\s5\\sconsecutive\\sstreams\\sand\\ssparked\\sa\\swatch\\sstreak!;tmi-sent-ts=1700000000000;user-id=47;user-type= :tmi.twitch.tv USERNOTICE #your_channel :5 yippee! :_hypeWave:";
+
+    #[test]
+    fn unknown_user_notice_becomes_a_notice() {
+        let out = convert_msg(WATCH_STREAK);
+        match out.kind {
+            MessageKind::SystemNotice { info } => assert_eq!(
+                info,
+                "Viewer42 watched 5 consecutive streams and sparked a watch streak!"
+            ),
+            other => panic!("expected SystemNotice, got {other:?}"),
+        }
+        assert_eq!(out.author.name, "Viewer42");
+        assert_eq!(out.text, "5 yippee! :_hypeWave:");
+        assert_eq!(out.emotes.len(), 1);
+        assert_eq!(out.emotes[0].code, ":_hypeWave:");
+    }
+
+    #[test]
+    fn bits_badge_gets_a_readable_notice() {
+        let raw = WATCH_STREAK
+            .replacen("msg-id=viewermilestone;", "msg-id=bitsbadgetier;msg-param-threshold=1000;", 1)
+            .replacen(
+                "Viewer42\\swatched\\s5\\sconsecutive\\sstreams\\sand\\ssparked\\sa\\swatch\\sstreak!",
+                "bits\\sbadge\\stier\\snotification",
+                1,
+            );
+        let out = convert_msg(&raw);
+        assert!(matches!(
+            out.kind,
+            MessageKind::SystemNotice { info } if info == "Viewer42 earned the 1000 bits badge!"
         ));
     }
 
