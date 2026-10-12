@@ -52,8 +52,9 @@ pub struct EngineConfig {
     /// (`ConfigFile::into_engine_config`). The engine owns them from then
     /// on: see `EngineHandle::edit_settings`.
     pub settings: Settings,
-    /// Started right away, in this order.
-    pub sources: Vec<SourceConfig>,
+    /// Added in this order: started right away, or listed as switched off
+    /// (`enabled = false`).
+    pub sources: Vec<SourceEntry>,
     /// The folder of named themes (`themes/` next to `config.toml`): where
     /// the settings' theme name and overlay URLs' `?theme=<name>` are looked
     /// up. `None`: only built-in themes in overlay URLs.
@@ -62,6 +63,10 @@ pub struct EngineConfig {
     /// the question, see `Status::api_requests`) or are refused right away
     /// (headless mode: nobody to ask).
     pub ask_api_origins: bool,
+    /// Where the engine saves the settings and sources after each change
+    /// (`config.toml`). `None`: never written (headless mode, which leaves
+    /// your file and its comments alone, and tests).
+    pub save_to: Option<PathBuf>,
 }
 
 /// Controls a running engine. Cheap to clone: the UI, headless mode and
@@ -125,18 +130,24 @@ impl EngineHandle {
 
     /// Changes settings: `change` edits the current ones, and the engine
     /// applies whatever changed (overlays reload for a new theme or chat
-    /// direction, YouTube sources restart for new YouTube settings, …).
-    /// When this returns, `settings()` has the result.
+    /// direction, YouTube sources restart for new YouTube settings, …) and
+    /// saves them. When the returned future finishes, `settings()` has the
+    /// result.
     ///
     /// A closure rather than the new settings: it runs on the newest
     /// settings inside the engine, so a window can't undo another one's
     /// change by sending back an older copy. Change only what you mean to.
-    pub async fn edit_settings(
-        &self,
-        change: impl FnOnce(&mut Settings) + Send + 'static,
-    ) -> anyhow::Result<()> {
+    ///
+    /// Not an `async fn`: the change is sent right away, when this is
+    /// called, not when the future is first awaited. So a change made just
+    /// before the app quits (the settings window's last edit) still reaches
+    /// the engine, which handles it before shutting down. (`use<C>`: the
+    /// future doesn't borrow `self`, so it can outlive this handle.)
+    pub fn edit_settings<C>(&self, change: C) -> impl Future<Output = anyhow::Result<()>> + use<C>
+    where
+        C: FnOnce(&mut Settings) + Send + 'static,
+    {
         self.call(|reply| Command::EditSettings(Box::new(change), reply))
-            .await
     }
 
     /// Makes connected overlays reload, e.g. after editing the theme files.
@@ -169,17 +180,30 @@ impl EngineHandle {
         self.status.clone()
     }
 
-    /// Sends a command with a fresh reply channel and waits for the answer.
-    /// `make` builds the command around the reply sender.
-    async fn call<T>(&self, make: impl FnOnce(Reply<T>) -> Command) -> anyhow::Result<T> {
+    /// Sends a command with a fresh reply channel, and returns a future for
+    /// the answer. `make` builds the command around the reply sender. The
+    /// command goes out right away, not when the future is first awaited
+    /// (see `edit_settings`), unless 32 commands are already waiting: then
+    /// it's sent once the future gets its turn.
+    fn call<T, M>(&self, make: M) -> impl Future<Output = anyhow::Result<T>> + use<T, M>
+    where
+        M: FnOnce(Reply<T>) -> Command,
+    {
+        let shut_down = || anyhow!("the engine has shut down");
         let (reply, answer) = oneshot::channel();
-        self.commands
-            .send(make(reply))
-            .await
-            .map_err(|_| anyhow!("the engine has shut down"))?;
-        answer
-            .await
-            .map_err(|_| anyhow!("the engine has shut down"))?
+        let later = match self.commands.try_send(make(reply)) {
+            Ok(()) => Ok(None),
+            Err(mpsc::error::TrySendError::Full(command)) => {
+                Ok(Some((self.commands.clone(), command)))
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(shut_down()),
+        };
+        async move {
+            if let Some((commands, command)) = later? {
+                commands.send(command).await.map_err(|_| shut_down())?;
+            }
+            answer.await.map_err(|_| shut_down())?
+        }
     }
 }
 
@@ -254,17 +278,20 @@ impl Engine {
             overlays_connected: 0,
             api_clients: 0,
             api_requests: Vec::new(),
+            save_error: None,
             sources: Vec::new(),
         });
         let (settings_tx, settings_rx) = watch::channel(config.settings);
         let (commands_tx, commands_rx) = mpsc::channel(32);
-        let actor = Actor::new(
+        let mut actor = Actor::new(
             factory,
             settings_tx,
             controls.clone(),
             status_tx,
             connections,
+            config.save_to,
         );
+        actor.add_from_config(config.sources);
         tasks.spawn(actor.run(commands_rx, shutdown.clone()));
         tasks.spawn(async move {
             if let Err(e) = chat_server::serve(listener, state).await {
@@ -278,9 +305,6 @@ impl Engine {
             settings: settings_rx,
             controls,
         };
-        for source in config.sources {
-            handle.add_source(source).await?;
-        }
 
         info!("overlay running at http://{addr}/");
         Ok(Self {
@@ -336,7 +360,7 @@ mod tests {
 
     async fn start_demo() -> Engine {
         Engine::start(EngineConfig {
-            sources: vec![SourceConfig::Demo],
+            sources: vec![SourceConfig::Demo.into()],
             settings: local(),
             ..EngineConfig::default()
         })
@@ -440,7 +464,7 @@ mod tests {
     #[tokio::test]
     async fn youtube_without_settings_needs_attention() {
         let engine = Engine::start(EngineConfig {
-            sources: vec![SourceConfig::YouTube { video_id: None }],
+            sources: vec![SourceConfig::YouTube { video_id: None }.into()],
             settings: local(),
             ..EngineConfig::default()
         })
@@ -564,7 +588,7 @@ mod tests {
         let factory = Arc::new(Scripted::default());
         let engine = Engine::start_with(
             EngineConfig {
-                sources: sources.iter().map(|s| script(s)).collect(),
+                sources: sources.iter().map(|s| script(s).into()).collect(),
                 settings: local(),
                 ..EngineConfig::default()
             },
@@ -804,11 +828,12 @@ mod tests {
         let engine = Engine::start_with(
             EngineConfig {
                 sources: vec![
-                    SourceConfig::YouTube { video_id: None },
+                    SourceConfig::YouTube { video_id: None }.into(),
                     SourceConfig::YouTube {
                         video_id: Some("off".into()),
-                    },
-                    script("emit:0"),
+                    }
+                    .into(),
+                    script("emit:0").into(),
                 ],
                 settings: local(),
                 ..EngineConfig::default()
@@ -887,6 +912,128 @@ mod tests {
         })
         .await;
         engine.shutdown().await;
+    }
+
+    // ---- saving config.toml ----
+
+    /// Where a test's `config.toml` goes, in a fresh folder.
+    fn temp_config(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("chat-engine-save-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("config.toml")
+    }
+
+    /// Changes to the settings and the sources are saved: the sources in
+    /// the order they were added, each with its on/off switch. The test
+    /// window's source has no settings and isn't saved. Starting saves
+    /// nothing (a file nobody changed keeps its comments).
+    #[tokio::test(start_paused = true)]
+    async fn changes_are_saved_with_the_sources() {
+        let path = temp_config("changes");
+        let switched_off = SourceEntry {
+            config: script("fail-then-run:99"),
+            enabled: false,
+        };
+        let engine = Engine::start_with(
+            EngineConfig {
+                settings: local(),
+                sources: vec![script("emit:0").into(), switched_off.clone()],
+                save_to: Some(path.clone()),
+                ..EngineConfig::default()
+            },
+            Arc::new(Scripted::default()),
+        )
+        .await
+        .unwrap();
+        let handle = engine.handle();
+        let s = wait_for(&handle, |s| s.sources.len() == 2).await;
+        assert!(!path.exists(), "nothing changed, nothing written");
+
+        let saved = || ConfigFile::load(&path).unwrap();
+        handle
+            .edit_settings(|s| s.server.newest = Newest::Top)
+            .await
+            .unwrap();
+        assert_eq!(saved().server.newest, Newest::Top);
+        assert_eq!(saved().sources, [script("emit:0").into(), switched_off]);
+
+        // Switched off and on: remembered.
+        let (first, second) = (s.sources[0].id, s.sources[1].id);
+        handle.stop_source(first).await.unwrap();
+        handle.start_source(second).await.unwrap();
+        let switches: Vec<bool> = saved().sources.iter().map(|e| e.enabled).collect();
+        assert_eq!(switches, [false, true], "on, even while it's failing");
+
+        // Added at the end, removed, changed; the test window's never.
+        let added = handle.add_source(script("emit:1")).await.unwrap();
+        handle.remove_source(first).await.unwrap();
+        handle.update_source(added, script("emit:2")).await.unwrap();
+        let (_manual, _input) = handle.add_manual_source().await.unwrap();
+        let configs: Vec<SourceConfig> = saved().sources.into_iter().map(|e| e.config).collect();
+        assert_eq!(configs, [script("fail-then-run:99"), script("emit:2")]);
+
+        engine.shutdown().await;
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// Saving can fail (here: a folder is where the file should go). The
+    /// status says so, until a save works again.
+    #[tokio::test]
+    async fn a_failed_save_shows_in_the_status() {
+        let path = temp_config("failed");
+        std::fs::create_dir_all(&path).unwrap();
+        let engine = Engine::start(EngineConfig {
+            settings: local(),
+            save_to: Some(path.clone()),
+            ..EngineConfig::default()
+        })
+        .await
+        .unwrap();
+        let handle = engine.handle();
+
+        handle
+            .edit_settings(|s| s.server.history = 5)
+            .await
+            .unwrap();
+        let status = wait_for(&handle, |s| s.save_error.is_some()).await;
+        let error = status.save_error.unwrap();
+        assert!(error.contains("config.toml"), "names the file: {error}");
+        assert_eq!(
+            handle.settings().borrow().server.history,
+            5,
+            "applied anyway"
+        );
+
+        std::fs::remove_dir(&path).unwrap();
+        handle
+            .edit_settings(|s| s.server.history = 6)
+            .await
+            .unwrap();
+        wait_for(&handle, |s| s.save_error.is_none()).await;
+        assert_eq!(ConfigFile::load(&path).unwrap().server.history, 6);
+
+        engine.shutdown().await;
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// A change sent right before the engine shuts down (the settings
+    /// window's last edit, while the app quits) is still applied and saved,
+    /// though nobody waited for the engine's answer.
+    #[tokio::test]
+    async fn a_change_sent_just_before_shutdown_is_saved() {
+        let path = temp_config("shutdown");
+        let engine = Engine::start(EngineConfig {
+            settings: local(),
+            save_to: Some(path.clone()),
+            ..EngineConfig::default()
+        })
+        .await
+        .unwrap();
+        let _never_awaited = engine.handle().edit_settings(|s| s.server.history = 7);
+        engine.shutdown().await;
+        assert_eq!(ConfigFile::load(&path).unwrap().server.history, 7);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test(start_paused = true)]

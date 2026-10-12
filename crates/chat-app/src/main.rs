@@ -63,7 +63,8 @@ fn main() -> anyhow::Result<()> {
 struct Started {
     runtime: tokio::runtime::Runtime,
     engine: Engine,
-    config: AppConfig,
+    /// Where `config.toml` and the app's other files live.
+    settings_dir: PathBuf,
 }
 
 /// Reads the settings and starts the engine. Each step's errors are marked
@@ -81,25 +82,19 @@ fn start(config_path: PathBuf, settings_dir: &Path) -> Result<Started, StartupEr
         .context("starting the tokio runtime")
         .map_err(StartupError::at(Stage::Other))?;
 
-    // The engine starts without sources: `AppConfig` adds them one by one
-    // to learn the id the engine gives each.
-    let sources = file.sources.clone();
     let mut engine_config = file.into_engine_config(settings_dir);
-    engine_config.sources.clear();
-    // Unlike headless mode, the app can ask the streamer about web sites
-    // that want to use the JSON API (`AppView` shows the question).
+    // Unlike headless mode, the app asks the streamer about web sites that
+    // want to use the JSON API (`AppView` shows the question), and the
+    // engine saves every change made in its windows.
     engine_config.ask_api_origins = true;
+    engine_config.save_to = Some(config_path);
     let engine = runtime
         .block_on(Engine::start(engine_config))
         .map_err(StartupError::at(Stage::Server))?;
-    let mut config = AppConfig::new(config_path, engine.handle().settings());
-    runtime
-        .block_on(config.start_all(&engine.handle(), sources))
-        .map_err(StartupError::at(Stage::Other))?;
     Ok(Started {
         runtime,
         engine,
-        config,
+        settings_dir: settings_dir.to_path_buf(),
     })
 }
 
@@ -108,7 +103,7 @@ fn run(started: Started) {
     let Started {
         runtime,
         engine,
-        config,
+        settings_dir,
     } = started;
     let handle = engine.handle();
     let tokio = runtime.handle().clone();
@@ -135,12 +130,15 @@ fn run(started: Started) {
         // ...and quitting shuts the engine down cleanly first. `shutdown()`
         // runs on the tokio runtime; GPUI just awaits its result.
         cx.on_app_quit(move |_| {
-            let shutdown = engine
-                .take()
-                .map(|engine| tokio_for_quit.spawn(engine.shutdown()));
+            let engine = engine.take();
+            let tokio = tokio_for_quit.clone();
+            // Started in the future, not right here: GPUI closes the windows
+            // in between, and a closing window may hand the engine one last
+            // change (the settings window applies its pending edits). Sent
+            // before the shutdown, it's still applied and saved.
             async move {
-                if let Some(shutdown) = shutdown {
-                    let _ = shutdown.await;
+                if let Some(engine) = engine {
+                    let _ = tokio.spawn(engine.shutdown()).await;
                 }
             }
         })
@@ -166,9 +164,10 @@ fn run(started: Started) {
                 .open_window(options, |window, cx| {
                     // The look chosen in the settings (by default: follow
                     // the system's light/dark mode, now and later).
-                    appearance::apply(config.settings().app.appearance, Some(window), cx);
-                    // Shared with the settings window from here on.
-                    let config = cx.new(|_| config);
+                    let appearance = handle.settings().borrow().app.appearance;
+                    appearance::apply(appearance, Some(window), cx);
+                    // Shared with the other windows from here on.
+                    let config = AppConfig::new(&handle, settings_dir, cx);
                     let view = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 })
@@ -214,6 +213,24 @@ mod tests {
             .find_map(|e| e.downcast_ref::<std::io::Error>())
             .map(std::io::Error::kind);
         assert_eq!(kind, Some(ErrorKind::AddrInUse));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The engine saves after changes, not at startup: a hand-written file
+    /// (with its comments) stays as it is until something changes.
+    #[test]
+    fn starting_leaves_the_config_file_alone() {
+        let dir = settings_dir("untouched");
+        let config = dir.join("config.toml");
+        let text =
+            "# my notes\n[server]\nport = 0\n\n[[sources]]\ntype = \"demo\"\nenabled = false\n";
+        std::fs::write(&config, text).unwrap();
+
+        let started = start(config.clone(), &dir).unwrap_or_else(|e| panic!("{:#}", e.error));
+        let status = started.engine.handle().status().borrow().clone();
+        assert_eq!(status.sources.len(), 1, "the switched-off source is listed");
+        started.runtime.block_on(started.engine.shutdown());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -27,7 +27,7 @@ use gpui_kit::*;
 use crate::appearance;
 use chat_engine::{Appearance, Newest};
 
-use crate::app_config::{AppConfig, edit_settings, save_after};
+use crate::app_config::{AppConfig, edit_settings};
 use crate::manual_window::ManualWindow;
 use crate::settings_window::SettingsWindow;
 use crate::youtube_panel::YouTubePanel;
@@ -271,7 +271,6 @@ impl AppView {
             None => Some(label.to_string()),
         };
         edit_settings(
-            &self.config,
             &self.engine,
             window.window_handle(),
             move |settings| settings.server.theme = theme,
@@ -284,7 +283,6 @@ impl AppView {
     /// with `?newest=` in their URL keep their own), and it's saved.
     fn set_newest(&mut self, newest: Newest, window: &mut Window, cx: &mut Context<Self>) {
         edit_settings(
-            &self.config,
             &self.engine,
             window.window_handle(),
             move |settings| settings.server.newest = newest,
@@ -336,8 +334,9 @@ impl AppView {
         cx.open_with_system(&dir);
     }
 
-    /// Redraws whenever the engine publishes a new status, and asks about
-    /// web sites waiting to use the JSON API.
+    /// Redraws whenever the engine publishes a new status, asks about web
+    /// sites waiting to use the JSON API, and says when saving the settings
+    /// failed.
     fn watch_status(engine: &EngineHandle, window: &mut Window, cx: &mut Context<Self>) {
         let mut status = engine.status();
         // `this` is a *weak* handle: the task doesn't keep the view alive,
@@ -350,6 +349,13 @@ impl AppView {
                 // and must not live across the `.await` below.
                 let current = status.borrow_and_update().clone();
                 let still_open = this.update_in(cx, |view, window, cx| {
+                    // A new problem saving config.toml (whichever window's
+                    // change it was): said once, not on every status.
+                    if let Some(error) = &current.save_error
+                        && view.status.save_error.as_ref() != Some(error)
+                    {
+                        report(window, cx, format!("Couldn't save the settings: {error}"));
+                    }
                     view.status = current;
                     view.ask_about_api_requests(window, cx);
                     cx.notify();
@@ -397,10 +403,10 @@ impl AppView {
         window.open_alert_dialog(cx, move |alert, _, _| {
             let answer = |allow: bool| {
                 let (view, origin) = (view.clone(), origin.clone());
-                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                     if let Some(view) = view.upgrade() {
                         view.update(cx, |view, cx| {
-                            view.answer_api_request(&origin, allow, window, cx);
+                            view.answer_api_request(&origin, allow, cx);
                         });
                     }
                     true // close the question
@@ -431,29 +437,18 @@ impl AppView {
     }
 
     /// The streamer's answer about `origin`: the engine lets it in (or not)
-    /// right away; "Allow" is also saved, "Deny" lasts until restart.
-    fn answer_api_request(
-        &mut self,
-        origin: &str,
-        allow: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// right away; "Allow" also goes into the settings (saved), "Deny" lasts
+    /// until restart.
+    fn answer_api_request(&mut self, origin: &str, allow: bool, cx: &mut Context<Self>) {
         self.asking = None;
         self.answered.push(origin.to_string());
         let (engine, origin) = (self.engine.clone(), origin.to_string());
-        if allow {
-            // The engine adds it to the allowed sites in its settings.
-            let answer = async move { engine.answer_api_request(&origin, true).await };
-            save_after(&self.config, window.window_handle(), answer, cx);
-        } else {
-            cx.spawn(async move |_, _| {
-                if let Err(e) = engine.answer_api_request(&origin, false).await {
-                    tracing::warn!("couldn't pass on the answer: {e:#}");
-                }
-            })
-            .detach();
-        }
+        cx.spawn(async move |_, _| {
+            if let Err(e) = engine.answer_api_request(&origin, allow).await {
+                tracing::warn!("couldn't pass on the answer: {e:#}");
+            }
+        })
+        .detach();
         cx.notify();
     }
 
@@ -494,23 +489,19 @@ impl AppView {
         self.input
             .update(cx, |input, cx| input.set_value("", window, cx));
 
+        // The engine saves it (and every other change to the sources).
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = engine.add_source(config.clone()).await;
-            let _ = this.update_in(cx, |view, window, cx| match result {
-                Ok(id) => {
-                    let saved = view.config.update(cx, |c, _| c.added(id, config));
-                    if let Err(e) = saved {
-                        view.report_save_error(e, window, cx);
-                    }
-                }
-                Err(e) => report(window, cx, format!("Couldn't add the source: {e:#}")),
-            });
+            if let Err(e) = engine.add_source(config).await {
+                let message = format!("Couldn't add the source: {e:#}");
+                let _ = this.update_in(cx, |_, window, cx| report(window, cx, message));
+            }
         })
         .detach();
     }
 
-    /// Switches a source on or off, and remembers that for the next start.
+    /// Switches a source on or off; the engine remembers that for the next
+    /// start.
     fn set_running(&mut self, id: SourceId, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -519,15 +510,10 @@ impl AppView {
             } else {
                 engine.stop_source(id).await
             };
-            let _ = this.update_in(cx, |view, window, cx| match result {
-                Ok(()) => {
-                    let saved = view.config.update(cx, |c, _| c.set_enabled(id, on));
-                    if let Err(e) = saved {
-                        view.report_save_error(e, window, cx);
-                    }
-                }
-                Err(e) => report(window, cx, format!("Couldn't switch the source: {e:#}")),
-            });
+            if let Err(e) = result {
+                let message = format!("Couldn't switch the source: {e:#}");
+                let _ = this.update_in(cx, |_, window, cx| report(window, cx, message));
+            }
         })
         .detach();
     }
@@ -535,16 +521,10 @@ impl AppView {
     fn remove_source(&mut self, id: SourceId, window: &mut Window, cx: &mut Context<Self>) {
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = engine.remove_source(id).await;
-            let _ = this.update_in(cx, |view, window, cx| match result {
-                Ok(()) => {
-                    let saved = view.config.update(cx, |c, _| c.removed(id));
-                    if let Err(e) = saved {
-                        view.report_save_error(e, window, cx);
-                    }
-                }
-                Err(e) => report(window, cx, format!("Couldn't remove the source: {e:#}")),
-            });
+            if let Err(e) = engine.remove_source(id).await {
+                let message = format!("Couldn't remove the source: {e:#}");
+                let _ = this.update_in(cx, |_, window, cx| report(window, cx, message));
+            }
         })
         .detach();
     }
@@ -578,11 +558,6 @@ impl AppView {
             window,
             cx,
         );
-    }
-
-    fn report_save_error(&self, e: anyhow::Error, window: &mut Window, cx: &mut App) {
-        let path = self.config.read(cx).config_path().display().to_string();
-        report(window, cx, format!("Couldn't save {path}: {e:#}"));
     }
 
     // ---- drawing ----
@@ -1050,9 +1025,14 @@ mod tests {
     }
 
     /// `open` with engine settings of the test's choosing (always on a free
-    /// local port, with the themes folder in the test's settings folder).
+    /// local port, saving into the test's settings folder, with the themes
+    /// folder there too).
     fn open_with(cx: &mut TestAppContext, mut engine: EngineConfig) -> Ui {
         cx.update(gpui_kit::init);
+        // The engine runs on real tokio threads, and its answers and new
+        // settings wake GPUI tasks from there at any moment: the test
+        // executor must accept that (see `manual_window::tests::run_until`).
+        cx.executor().allow_parking();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -1063,15 +1043,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&settings_dir);
         engine.settings.server.port = 0; // the OS picks a free one
         engine.themes_dir = Some(ConfigFile::themes_dir(&settings_dir));
+        engine.save_to = Some(settings_dir.join("config.toml"));
         let engine = runtime.block_on(Engine::start(engine)).unwrap();
-        let config = AppConfig::new(settings_dir.join("config.toml"), engine.handle().settings());
         let (handle, tokio) = (engine.handle(), runtime.handle().clone());
+        let dir = settings_dir.clone();
 
         // `add_window` builds the root element; the view is created inside
         // and handed out through `view` for the test to inspect.
         let mut view = None;
         let window = cx.add_window(|window, cx| {
-            let config = cx.new(|_| config);
+            let config = AppConfig::new(&handle, dir, cx);
             let app = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));
             view = Some(app.clone());
             Root::new(app, window, cx)
@@ -1270,6 +1251,23 @@ mod tests {
             ui.engine.handle().settings().borrow().server.newest,
             chat_engine::Newest::Top
         );
+    }
+
+    /// The engine saves; when that fails, the main window says so (here: a
+    /// folder is where config.toml should go).
+    #[gpui_kit::test]
+    fn a_failed_save_is_shown(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        std::fs::create_dir_all(ui.settings_dir.join("config.toml")).unwrap();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            ui.view.update(cx, |view, cx| {
+                view.set_newest(chat_engine::Newest::Top, window, cx);
+            });
+        })
+        .unwrap();
+        run_until_window(cx, &ui, |window| window.try_find("notification").is_some());
+        let error = ui.engine.handle().status().borrow().save_error.clone();
+        assert!(error.is_some_and(|e| e.contains("config.toml")));
     }
 
     #[gpui_kit::test]

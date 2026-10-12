@@ -163,7 +163,6 @@ impl SettingsWindow {
         self.dirty = false;
         let draft = self.draft.clone();
         edit_settings(
-            &self.config,
             &self.engine,
             self.window,
             move |settings| draft.write_to(settings),
@@ -187,7 +186,6 @@ impl SettingsWindow {
     fn remove_api_origin(&mut self, origin: &str, cx: &mut Context<Self>) {
         let origin = origin.to_string();
         edit_settings(
-            &self.config,
             &self.engine,
             self.window,
             move |settings| settings.server.api_origins.retain(|o| *o != origin),
@@ -198,7 +196,6 @@ impl SettingsWindow {
     /// Changes the look right away, and saves it.
     fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
         edit_settings(
-            &self.config,
             &self.engine,
             self.window,
             move |settings| settings.app.appearance = appearance,
@@ -533,23 +530,27 @@ mod tests {
 
     fn open(cx: &mut TestAppContext, name: &str) -> Ui {
         cx.update(gpui_kit::init);
+        // New settings wake GPUI tasks from the engine's tokio threads
+        // (see `manual_window::tests::run_until`).
+        cx.executor().allow_parking();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
             .unwrap();
-        let mut config = EngineConfig::default();
-        config.settings.server.port = 0; // the OS picks a free one
-        let engine = runtime.block_on(Engine::start(config)).unwrap();
         let path = std::env::temp_dir()
             .join(format!("chat-app-settings-{}-{name}", std::process::id()))
             .join("config.toml");
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-        let config = AppConfig::new(path.clone(), engine.handle().settings());
+        let settings_dir = path.parent().unwrap().to_path_buf();
+        let _ = std::fs::remove_dir_all(&settings_dir);
+        let mut config = EngineConfig::default();
+        config.settings.server.port = 0; // the OS picks a free one
+        config.save_to = Some(path.clone());
+        let engine = runtime.block_on(Engine::start(config)).unwrap();
         let handle = engine.handle();
         let mut view = None;
         let window = cx.add_window(|window, cx| {
-            let config = cx.new(|_| config);
+            let config = AppConfig::new(&handle, settings_dir, cx);
             let settings = cx.new(|cx| SettingsWindow::new(handle, config, window, cx));
             view = Some(settings.clone());
             Root::new(settings, window, cx)

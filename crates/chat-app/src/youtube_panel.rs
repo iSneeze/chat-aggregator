@@ -260,7 +260,6 @@ impl YouTubePanel {
         cx: &mut Context<Self>,
     ) {
         edit_settings(
-            &self.config,
             &self.engine,
             window.window_handle(),
             move |settings| change(&mut settings.youtube),

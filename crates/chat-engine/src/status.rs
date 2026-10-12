@@ -135,6 +135,9 @@ pub struct Status {
     /// Web sites waiting for the streamer to allow or deny them the JSON
     /// API, oldest first: answer with `EngineHandle::answer_api_request`.
     pub api_requests: Vec<String>,
+    /// Why saving `config.toml` failed the last time; `None` once a save
+    /// works again (and always, if the engine has no file to save to).
+    pub save_error: Option<String>,
     /// In the order they were added.
     pub sources: Vec<SourceStatus>,
 }
@@ -199,6 +202,7 @@ mod tests {
             overlays_connected: 0,
             api_clients: 0,
             api_requests: vec![],
+            save_error: None,
             sources: vec![],
         };
         assert_eq!(all.overall(), Health::Off);

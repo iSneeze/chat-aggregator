@@ -1,10 +1,11 @@
 //! The settings file (`config.toml`), shared by headless mode and the app.
 //!
 //! The engine starts with what's in it and from then on owns the settings
-//! ([`Settings`]): it applies changes (`EngineHandle::edit_settings`) and
-//! publishes the current ones. It never writes the file itself: the app
-//! saves the engine's settings after each change; headless mode never
-//! writes it (and your comments in it stay).
+//! ([`Settings`]) and the sources: it applies changes
+//! (`EngineHandle::edit_settings`, the source commands), publishes the
+//! current state and saves it here after each change
+//! (`EngineConfig::save_to`). Never at startup, and never in headless mode:
+//! a file nobody changed keeps its comments.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -219,17 +220,12 @@ impl ConfigFile {
                 youtube: self.youtube,
                 app: self.app,
             },
-            // Switched-off sources aren't started; headless mode has no
-            // switch to turn them on, the app adds them itself.
-            sources: self
-                .sources
-                .into_iter()
-                .filter(|entry| entry.enabled)
-                .map(|entry| entry.config)
-                .collect(),
+            sources: self.sources,
             themes_dir: Some(Self::themes_dir(settings_dir)),
-            // Headless mode has nobody to ask; the app switches this on.
+            // Headless mode has nobody to ask, and leaves the file alone;
+            // the app switches both on.
             ask_api_origins: false,
+            save_to: None,
         }
     }
 }
@@ -298,16 +294,11 @@ mod tests {
             ]
         );
 
+        let sources = file.sources.clone();
         let engine = file.into_engine_config(Path::new("/settings"));
-        assert_eq!(
-            engine.sources,
-            [
-                twitch("your_channel"),
-                SourceConfig::YouTube { video_id: None }
-            ],
-            "switched-off sources don't start"
-        );
+        assert_eq!(engine.sources, sources, "switched-off ones too: listed");
         assert!(!engine.ask_api_origins, "headless mode has nobody to ask");
+        assert_eq!(engine.save_to, None, "headless mode leaves the file alone");
         let server = &engine.settings.server;
         assert_eq!(server.port, 8080);
         assert!(server.api);

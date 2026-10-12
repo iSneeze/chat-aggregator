@@ -352,8 +352,15 @@ every window reads the current ones instead of keeping a copy.
 - Each closure is its own type, so the actor's command holds it as a
   `Box<dyn FnOnce(&mut Settings) + Send>`: a trait object, because here
   (unlike the sources) the set of types isn't known in advance.
-- Saving is the app's job for now: after each change it writes the
-  engine's settings to `config.toml`. Headless mode never writes the file.
+- **The engine saves** `config.toml` after every change to the settings
+  or the sources (`EngineConfig::save_to`, the app's file; headless mode
+  has none). A failed save goes into the status (`save_error`), and the
+  main window says so.
+- **The last change before quitting still counts**: `edit_settings` sends
+  its command right away, not when its future is first awaited, and the
+  actor handles the commands already waiting before it stops. The app
+  starts the engine's shutdown only after GPUI has closed the windows, so
+  the settings window's pending edit (applied when it closes) is saved.
 
 ### Restarts and health
 
@@ -389,9 +396,10 @@ Linux) with `[server]`, `[youtube]`, `[app]` and `[[sources]]`:
   when off).
 - **Written with mode 0600** (only your user can read it): it contains the
   OAuth client secret. Secrets are redacted in debug output.
-- The engine only *reads* the file; the app writes it (the engine's
-  settings, after each change). Saving rewrites the file without comments
-  (a known limitation).
+- **Written by the engine** after a change (see [Settings](#settings)),
+  never at startup: the configured sources are added without saving, so a
+  file nobody changed keeps its comments. Saving rewrites the file without
+  them (a known limitation). Headless mode never writes it.
 - **`theme`** is a built-in theme's name, a folder name in `themes/`, or
   the full path of a theme folder anywhere.
 
@@ -415,14 +423,14 @@ awaited from GPUI.
 - **Windows**: the main window (status, theme row, sources, YouTube section,
   add form), the test messages window and the settings window. The side
   windows open once; clicking again brings them to the front.
-- **`Entity<AppConfig>`**: the app's side of `config.toml`, shared by all
-  windows. A GPUI entity is shared, reference-counted state (like
-  `Rc<RefCell<…>>`, but GPUI hands out access and tracks changes). It keeps
-  no copy of the settings: it reads the engine's (`settings()`), so no
-  window works on a stale one. Windows change settings with
-  `app_config::edit_settings`, which hands the change to the engine, saves
-  the file once the engine has applied it, and notifies the windows that
-  observe the config, so they redraw.
+- **`Entity<AppConfig>`**: the windows' read-only view of the settings,
+  shared by all windows. A GPUI entity is shared, reference-counted state
+  (like `Rc<RefCell<…>>`, but GPUI hands out access and tracks changes). It
+  keeps no copy: it reads the engine's (`settings()`), so no window works
+  on a stale one, and a small task notifies its observers whenever they
+  change, so they redraw. Windows change settings with
+  `app_config::edit_settings` and sources with the engine's commands; the
+  engine saves.
 - **The test window's source** lives exactly as long as the window: it's
   added when the window opens and removed when the view is released (window
   closed). The window holds a sender; dropping it ends the source.

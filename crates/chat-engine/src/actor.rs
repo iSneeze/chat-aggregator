@@ -6,6 +6,7 @@
 //! change in: each runs on the settings the other one left.)
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
@@ -21,7 +22,7 @@ use tokio_util::task::AbortOnDropHandle;
 use tracing::{info, warn};
 
 use crate::config::SourceConfig;
-use crate::config_file::Settings;
+use crate::config_file::{ConfigFile, Settings, SourceEntry};
 use crate::factory::{SourceFactory, is_login_required, needs_attention};
 use crate::settings::Controls;
 use crate::status::{SourceId, SourceState, SourceStatus, Status, label};
@@ -86,6 +87,10 @@ pub(crate) struct Actor<F> {
     settings: watch::Sender<Settings>,
     /// What the settings steer (overlays, the JSON API, the hub).
     controls: Arc<Controls>,
+    /// Where the settings and sources are saved; `None`: nowhere.
+    save_to: Option<PathBuf>,
+    /// Why the last save failed, for the status; `None` once one works.
+    save_error: Option<String>,
     // A BTreeMap keeps sources ordered by id, i.e. in the order they were
     // added, so status lists don't jump around.
     slots: BTreeMap<SourceId, Slot>,
@@ -204,6 +209,7 @@ impl<F: SourceFactory> Actor<F> {
         controls: Arc<Controls>,
         status: watch::Sender<Status>,
         connections: Arc<Connections>,
+        save_to: Option<PathBuf>,
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
         let api_requests = controls.origins.requests();
@@ -211,6 +217,8 @@ impl<F: SourceFactory> Actor<F> {
             factory: Arc::new(factory),
             settings,
             controls,
+            save_to,
+            save_error: None,
             slots: BTreeMap::new(),
             next_id: 1,
             internal_tx,
@@ -221,6 +229,17 @@ impl<F: SourceFactory> Actor<F> {
         }
     }
 
+    /// Adds the sources from the config file, before the actor runs, so
+    /// they're in the very first status. Not saved: nothing changed, and an
+    /// untouched file keeps its comments.
+    pub(crate) fn add_from_config(&mut self, sources: Vec<SourceEntry>) {
+        for entry in sources {
+            self.add(entry.config, entry.enabled);
+        }
+        self.publish();
+    }
+
+    /// Handles commands until the engine shuts down.
     pub(crate) async fn run(
         mut self,
         mut commands: mpsc::Receiver<Command>,
@@ -248,6 +267,12 @@ impl<F: SourceFactory> Actor<F> {
             }
             self.publish();
         }
+        // Commands sent before the shutdown still count, e.g. the settings
+        // window's last change, sent while the app quits: it's applied and
+        // saved. (A source one of them starts is stopped again right below.)
+        while let Ok(command) = commands.try_recv() {
+            self.handle(command);
+        }
         // Returning drops `self` and with it every slot's task handle, which
         // aborts all running sources.
     }
@@ -255,14 +280,8 @@ impl<F: SourceFactory> Actor<F> {
     fn handle(&mut self, command: Command) {
         match command {
             Command::Add(config, start, reply) => {
-                let id = SourceId(self.next_id);
-                self.next_id += 1;
-                info!(source = %config.label(), %id, "added");
-                self.slots
-                    .insert(id, Slot::new(SlotSource::Configured(config)));
-                if start {
-                    self.start(id);
-                }
+                let id = self.add(config, start);
+                self.save();
                 let _ = reply.send(Ok(id));
             }
             Command::AddManual(reply) => {
@@ -279,6 +298,9 @@ impl<F: SourceFactory> Actor<F> {
                 let result = match self.slots.remove(&id) {
                     Some(slot) => {
                         info!(source = %slot.source.label(), "removed");
+                        if slot.source.config().is_some() {
+                            self.save();
+                        }
                         Ok(()) // dropping the slot aborts its task
                     }
                     None => Err(unknown(id)),
@@ -291,8 +313,15 @@ impl<F: SourceFactory> Actor<F> {
                     // Already running: nothing to do.
                     Some(slot) if slot.task.is_some() => Ok(()),
                     Some(slot) => {
+                        // Switched on, rather than started again after a
+                        // failure: that goes into the file.
+                        let switched_on =
+                            slot.state == SourceState::Stopped && slot.source.config().is_some();
                         slot.attempt = 0;
                         self.start(id);
+                        if switched_on {
+                            self.save();
+                        }
                         Ok(())
                     }
                 };
@@ -302,9 +331,14 @@ impl<F: SourceFactory> Actor<F> {
                 let result = match self.slots.get_mut(&id) {
                     None => Err(unknown(id)),
                     Some(slot) => {
+                        let switched_off =
+                            slot.state != SourceState::Stopped && slot.source.config().is_some();
                         stop(slot);
                         slot.state = SourceState::Stopped;
                         info!(source = %slot.source.label(), "stopped");
+                        if switched_off {
+                            self.save();
+                        }
                         Ok(())
                     }
                 };
@@ -354,12 +388,68 @@ impl<F: SourceFactory> Actor<F> {
                         if !was_stopped {
                             self.start(id);
                         }
+                        self.save();
                         Ok(())
                     }
                 };
                 let _ = reply.send(result);
             }
         }
+    }
+
+    /// Adds a source from its settings: started right away, or listed as
+    /// switched off.
+    fn add(&mut self, config: SourceConfig, start: bool) -> SourceId {
+        let id = SourceId(self.next_id);
+        self.next_id += 1;
+        info!(source = %config.label(), %id, "added");
+        self.slots
+            .insert(id, Slot::new(SlotSource::Configured(config)));
+        if start {
+            self.start(id);
+        }
+        id
+    }
+
+    /// Writes `config.toml`, if the engine has one: the settings, and the
+    /// sources with their on/off switch (the test window's source has no
+    /// settings, so it isn't in there). Called after every change to
+    /// either, but never at startup: an untouched file keeps its comments.
+    /// A problem shows in the status until a later save works.
+    fn save(&mut self) {
+        let Some(path) = &self.save_to else {
+            return;
+        };
+        let Settings {
+            server,
+            youtube,
+            app,
+        } = self.settings.borrow().clone();
+        let sources = self
+            .slots
+            .values()
+            .filter_map(|slot| {
+                slot.source.config().map(|config| SourceEntry {
+                    config: config.clone(),
+                    // On unless you switched it off: a source that failed
+                    // or ended is still meant to run next time.
+                    enabled: slot.state != SourceState::Stopped,
+                })
+            })
+            .collect();
+        let file = ConfigFile {
+            server,
+            youtube,
+            app,
+            sources,
+        };
+        self.save_error = match file.save(path) {
+            Ok(()) => None,
+            Err(e) => {
+                warn!("couldn't save the settings: {e:#}");
+                Some(format!("{e:#}"))
+            }
+        };
     }
 
     /// Runs `change` on the current settings, hands what changed to the
@@ -375,13 +465,14 @@ impl<F: SourceFactory> Actor<F> {
         if youtube_changed {
             self.factory.set_youtube(new.youtube.clone());
         }
-        // Published before the caller gets its answer: whoever awaited the
-        // change finds it in `settings()` right away.
+        // Published (and saved) before the caller gets its answer: whoever
+        // awaited the change finds it in `settings()` and in the file.
         self.settings.send_replace(new);
         if youtube_changed {
             info!("YouTube settings changed");
             self.restart_youtube();
         }
+        self.save();
     }
 
     /// Restarts every YouTube source that is meant to run, with a fresh
@@ -546,15 +637,18 @@ impl<F: SourceFactory> Actor<F> {
         let overlays = self.connections.overlays();
         let api_clients = self.connections.api_clients();
         let api_requests = self.api_requests.borrow().clone();
+        let save_error = self.save_error.clone();
         self.status.send_if_modified(|status| {
             let unchanged = status.sources == sources
                 && status.overlays_connected == overlays
                 && status.api_clients == api_clients
-                && status.api_requests == api_requests;
+                && status.api_requests == api_requests
+                && status.save_error == save_error;
             status.sources = sources;
             status.overlays_connected = overlays;
             status.api_clients = api_clients;
             status.api_requests = api_requests;
+            status.save_error = save_error;
             !unchanged
         });
     }
