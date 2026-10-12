@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use chat_youtube::EmojiMap;
+use chat_engine::EmojiMap;
 
 /// The copy's file name inside the settings folder.
 const FILE_NAME: &str = "youtube-emojis.json";

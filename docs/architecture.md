@@ -192,7 +192,11 @@ the total isn't counted twice.
   an intercepted code is useless). The long-lived refresh token goes into
   the OS keyring (a file only the user can read if there's none);
   `TokenProvider` hands out access tokens and renews them before they
-  expire.
+  expire. The app asks the engine for all of it (`youtube_account`,
+  `youtube_login`, `youtube_logout`): the engine has the client in its
+  settings, runs the login on its own tokio runtime and restarts the
+  YouTube sources afterwards. Cancelling a login is dropping it
+  (`YouTubeLogin`), which stops the local server.
 - **Custom emoji**: the API only sends `:codes:`. A userscript exports the
   channel's codes and image URLs from YouTube's emoji picker; the source
   maps codes to images with it.
@@ -349,6 +353,11 @@ every window reads the current ones instead of keeping a copy.
   channels (a new direction or theme makes the overlays reload once), the
   allowed sites to the API's gate, new YouTube settings restart the
   YouTube sources, and a new port waits for the next start.
+- **Changes the settings can't see** need their own command. A new emoji
+  export imported over the old file leaves `emojis` as it was, so
+  `use_youtube_emojis` restarts the YouTube sources anyway; a login made
+  or removed does the same internally. (Edited theme files have "Reload
+  overlays".)
 - Each closure is its own type, so the actor's command holds it as a
   `Box<dyn FnOnce(&mut Settings) + Send>`: a trait object, because here
   (unlike the sources) the set of types isn't known in advance.
@@ -414,9 +423,11 @@ Linux) with `[server]`, `[youtube]`, `[app]` and `[[sources]]`:
 They only talk through `tokio::sync` channels (`EngineHandle` commands, the
 `watch` status), which can be awaited from either side: awaiting only needs
 a waker, not the tokio runtime. So a GPUI task can `await
-engine.add_source(…)` directly. Work that needs tokio itself (the OAuth
-login's local server) is spawned on the tokio runtime and its `JoinHandle`
-awaited from GPUI.
+engine.add_source(…)` directly. Work that needs tokio itself (the YouTube
+login's local server, the keyring calls) the engine spawns on its own
+runtime (`EngineHandle::youtube_login` and friends), so the windows never
+need a tokio handle. The app reaches the platform crates only through
+`chat-engine`, which re-exports what it needs (e.g. `EmojiMap`).
 
 ### Views and shared state
 

@@ -32,11 +32,15 @@ mod config_file;
 mod factory;
 mod settings;
 mod status;
+mod youtube;
 
 pub use chat_server::{ANSWER_TIMEOUT, Builtin, Newest, Stagger, ThemeSource};
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, Settings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
+pub use youtube::{YouTubeAccount, YouTubeLogin};
+// For checking a custom emoji export before using it (the app's import).
+pub use chat_youtube::EmojiMap;
 
 pub use actor::ManualInput;
 use actor::{Actor, Command, Reply};
@@ -80,6 +84,10 @@ pub struct EngineHandle {
     /// Shared with the actor; used here only to reload the overlays, which
     /// changes nothing the actor owns.
     controls: Arc<Controls>,
+    /// The engine's tokio runtime, for work that needs one (the YouTube
+    /// login's local server, the keyring): callers may be on any executor,
+    /// like the app's GPUI tasks.
+    runtime: tokio::runtime::Handle,
 }
 
 impl EngineHandle {
@@ -166,12 +174,6 @@ impl EngineHandle {
             reply,
         })
         .await
-    }
-
-    /// The stored YouTube login changed (someone logged in or out): YouTube
-    /// sources that are switched on restart with it.
-    pub async fn youtube_login_changed(&self) -> anyhow::Result<()> {
-        self.call(Command::YouTubeLoginChanged).await
     }
 
     /// The live status. A `watch` receiver always holds the latest value;
@@ -304,6 +306,8 @@ impl Engine {
             status: status_rx,
             settings: settings_rx,
             controls,
+            // `start` runs on the engine's runtime: this is it.
+            runtime: tokio::runtime::Handle::current(),
         };
 
         info!("overlay running at http://{addr}/");
@@ -867,6 +871,41 @@ mod tests {
         // A login made (or removed) restarts them too.
         handle.youtube_login_changed().await.unwrap();
         wait_for(&handle, |_| factory.builds("youtube") == 4).await;
+        engine.shutdown().await;
+    }
+
+    /// Importing a new emoji export over the old file leaves the setting as
+    /// it was, but the sources must load the new emoji: they restart anyway
+    /// (once per import).
+    #[tokio::test(start_paused = true)]
+    async fn a_reimported_emoji_file_restarts_youtube_sources() {
+        let factory = Arc::new(Scripted::default());
+        let engine = Engine::start_with(
+            EngineConfig {
+                sources: vec![SourceConfig::YouTube { video_id: None }.into()],
+                settings: local(),
+                ..EngineConfig::default()
+            },
+            factory.clone(),
+        )
+        .await
+        .unwrap();
+        let handle = engine.handle();
+        wait_for(&handle, |_| factory.builds("youtube") == 1).await;
+
+        let file = PathBuf::from("youtube-emojis.json");
+        handle.use_youtube_emojis(file.clone()).await.unwrap();
+        wait_for(&handle, |_| factory.builds("youtube") == 2).await;
+        assert_eq!(
+            handle.settings().borrow().youtube.emojis,
+            Some(file.clone())
+        );
+
+        // The same file again, now with a new export in it.
+        handle.use_youtube_emojis(file).await.unwrap();
+        wait_for(&handle, |_| factory.builds("youtube") == 3).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(factory.builds("youtube"), 3, "one restart per import");
         engine.shutdown().await;
     }
 

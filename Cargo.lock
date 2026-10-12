@@ -1014,7 +1014,6 @@ dependencies = [
  "chat-core",
  "chat-engine",
  "chat-render",
- "chat-youtube",
  "chrono",
  "gpui-kit",
  "tokio",

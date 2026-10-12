@@ -14,6 +14,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use chat_core::{Activity, ChatEvent, ChatSource, Hub, Reporter};
 use chat_server::Connections;
+use chat_youtube::oauth::OAuthApp;
 use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
@@ -56,6 +57,11 @@ pub(crate) enum Command {
     },
     /// The stored YouTube login changed: someone logged in or out.
     YouTubeLoginChanged(Reply<()>),
+    /// The OAuth client in the current settings (`SetupError`: none yet).
+    YouTubeClient(Reply<OAuthApp>),
+    /// Use this custom emoji export, and load it even if it's the file
+    /// already set (a new export imported over the old one).
+    UseYouTubeEmojis(PathBuf, Reply<()>),
 }
 
 /// A settings change: a closure that edits them. Every closure has a type
@@ -369,6 +375,24 @@ impl<F: SourceFactory> Actor<F> {
             Command::YouTubeLoginChanged(reply) => {
                 info!("YouTube login changed");
                 self.restart_youtube();
+                let _ = reply.send(Ok(()));
+            }
+            Command::YouTubeClient(reply) => {
+                let app = self.settings.borrow().youtube.oauth_app();
+                let _ = reply.send(app.map_err(Into::into));
+            }
+            Command::UseYouTubeEmojis(path, reply) => {
+                // A different file is a settings change: that restarts the
+                // YouTube sources by itself. The same file is news too, but
+                // only in its contents, which the settings can't see.
+                let same_file = self.settings.borrow().youtube.emojis.as_ref() == Some(&path);
+                self.edit_settings(Box::new(move |settings| {
+                    settings.youtube.emojis = Some(path);
+                }));
+                if same_file {
+                    info!("YouTube emoji file replaced");
+                    self.restart_youtube();
+                }
                 let _ = reply.send(Ok(()));
             }
             Command::Update(id, config, reply) => {

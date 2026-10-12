@@ -1,23 +1,20 @@
 //! The YouTube section of the window: entering your Google project's
 //! client, logging in through the browser, "connected as …", logging out.
 //!
-//! The login needs tokio (it runs a small local server for Google's
-//! redirect), so it runs on the engine's tokio runtime; GPUI awaits its
-//! results. The settings themselves live in the shared `AppConfig`: the
-//! settings window changes the API key there too, so the panel keeps no
-//! copy of its own that could go stale.
+//! The engine does the login itself (`EngineHandle::youtube_login` and
+//! friends): it has the client from the settings and the tokio runtime the
+//! login needs, and restarts the YouTube sources afterwards. The panel just
+//! awaits the results. The settings themselves live in the engine (read
+//! through the shared `AppConfig`): the settings window changes the API key
+//! too, so the panel keeps no copy of its own that could go stale.
 
-use chat_engine::{EngineHandle, Health, YouTubeSettings};
-use chat_youtube::oauth::{self, LoginRequired, OAuthApp};
+use chat_engine::{EngineHandle, Health, YouTubeAccount, YouTubeSettings};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::path::PathBuf;
-
-use tokio::runtime::Handle;
-use tokio::task::AbortHandle;
 
 use crate::app_config::{AppConfig, edit_settings};
 use crate::app_view::{light, report};
@@ -42,10 +39,11 @@ enum Login {
     NotConnected {
         error: Option<String>,
     },
-    /// Waiting for the user to finish in the browser. Aborting the task
-    /// drops the pending login, which also stops its local server.
+    /// Waiting for the user to finish in the browser. Dropping the task
+    /// cancels the login: the GPUI task drops the engine's login, which
+    /// stops its task and with it the local server waiting for Google.
     LoggingIn {
-        abort: AbortHandle,
+        _task: Task<()>,
     },
     /// `channel` is `None` if the name couldn't be fetched (e.g. offline).
     Connected {
@@ -53,9 +51,19 @@ enum Login {
     },
 }
 
+impl From<YouTubeAccount> for Login {
+    fn from(account: YouTubeAccount) -> Self {
+        match account {
+            YouTubeAccount::NotSetUp | YouTubeAccount::LoggedOut => {
+                Login::NotConnected { error: None }
+            }
+            YouTubeAccount::LoggedIn { channel } => Login::Connected { channel },
+        }
+    }
+}
+
 pub struct YouTubePanel {
     engine: EngineHandle,
-    tokio: Handle,
     config: Entity<AppConfig>,
     login: Login,
     emoji: Emoji,
@@ -70,7 +78,6 @@ pub struct YouTubePanel {
 impl YouTubePanel {
     pub fn new(
         engine: EngineHandle,
-        tokio: Handle,
         config: Entity<AppConfig>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -84,7 +91,7 @@ impl YouTubePanel {
                 .placeholder("GOCSPX-…")
                 .masked(true)
         });
-        let app = settings.oauth_app().ok();
+        let set_up = settings.oauth_app().is_ok();
         let emoji = match &settings.emojis {
             None => Emoji::None,
             Some(path) => match emoji_import::count(path) {
@@ -96,18 +103,17 @@ impl YouTubePanel {
         let subscriptions = vec![cx.observe(&config, |_, _, cx| cx.notify())];
         let mut panel = Self {
             engine,
-            tokio,
             config,
             login: Login::Checking,
             emoji,
-            editing: app.is_none(),
+            editing: !set_up,
             form_error: None,
             client_id,
             client_secret,
             _subscriptions: subscriptions,
         };
-        if let Some(app) = app {
-            panel.check_login(app, cx);
+        if set_up {
+            panel.check_login(cx);
         }
         panel
     }
@@ -117,29 +123,20 @@ impl YouTubePanel {
         self.config.read(cx).settings().youtube
     }
 
-    /// Asks YouTube which channel `app`'s stored login belongs to.
-    fn check_login(&mut self, app: OAuthApp, cx: &mut Context<Self>) {
+    /// Asks the engine whose login is stored (with the client in the
+    /// settings, including one saved a moment before).
+    fn check_login(&mut self, cx: &mut Context<Self>) {
         self.login = Login::Checking;
-        // `spawn` on the tokio runtime returns a `JoinHandle`, which is just
-        // a future: GPUI can await it like any other.
-        let task = self
-            .tokio
-            .spawn(async move { oauth::logged_in_channel(&app).await });
+        let engine = self.engine.clone();
         cx.spawn(async move |this, cx| {
-            let result = task.await;
+            let login = match engine.youtube_account().await {
+                Ok(account) => Login::from(account),
+                Err(e) => Login::NotConnected {
+                    error: Some(format!("{e:#}")),
+                },
+            };
             let _ = this.update(cx, |panel, cx| {
-                panel.login = match result {
-                    Ok(Ok(channel)) => Login::Connected {
-                        channel: Some(channel),
-                    },
-                    Ok(Err(e)) if e.is::<LoginRequired>() => Login::NotConnected { error: None },
-                    // A login is stored, but the name couldn't be fetched
-                    // (offline, quota): the sources will tell the rest.
-                    Ok(Err(_)) => Login::Connected { channel: None },
-                    Err(e) => Login::NotConnected {
-                        error: Some(format!("{e}")),
-                    },
-                };
+                panel.login = login;
                 cx.notify();
             });
         })
@@ -147,45 +144,22 @@ impl YouTubePanel {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(app) = self.settings(cx).oauth_app() else {
-            return;
-        };
-        let (url_tx, url_rx) = tokio::sync::oneshot::channel();
-        let task = self.tokio.spawn(async move {
-            let pending = oauth::begin_login(&app).await?;
-            let _ = url_tx.send(pending.url().to_string());
-            pending.complete().await?;
-            oauth::logged_in_channel(&app).await
-        });
-        self.login = Login::LoggingIn {
-            abort: task.abort_handle(),
-        };
-        cx.notify();
-
         let engine = self.engine.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            // First result: the consent page's URL, to open in the browser.
-            if let Ok(url) = url_rx.await {
-                let _ = this.update(cx, |_, cx| cx.open_url(&url));
-            }
-            // Second result: how the login ended.
-            let result = task.await;
-            let connected = matches!(result, Ok(Ok(_)));
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let result = match engine.youtube_login().await {
+                Ok(login) => {
+                    // First the consent page, in the browser...
+                    let url = login.url().to_string();
+                    let _ = this.update(cx, |_, cx| cx.open_url(&url));
+                    // ...then however the login ends there. (The engine
+                    // restarts the YouTube sources with it.)
+                    login.finish().await
+                }
+                Err(e) => Err(e),
+            };
+            // Replacing `LoggingIn` drops this very task: fine, it's done.
             let _ = this.update_in(cx, |panel, window, cx| {
-                panel.login = match result {
-                    Ok(Ok(channel)) => Login::Connected {
-                        channel: Some(channel),
-                    },
-                    Ok(Err(e)) => Login::NotConnected {
-                        error: Some(format!("{e:#}")),
-                    },
-                    // Cancelled by the user: not an error.
-                    Err(e) if e.is_cancelled() => Login::NotConnected { error: None },
-                    Err(e) => Login::NotConnected {
-                        error: Some(format!("{e}")),
-                    },
-                };
-                if connected {
+                if let Ok(YouTubeAccount::LoggedIn { .. }) = result {
                     window.push_notification(
                         gpui_kit::component::notification::Notification::success(
                             "Connected to YouTube",
@@ -193,45 +167,33 @@ impl YouTubePanel {
                         cx,
                     );
                 }
+                panel.login = match result {
+                    Ok(account) => Login::from(account),
+                    Err(e) => Login::NotConnected {
+                        error: Some(format!("{e:#}")),
+                    },
+                };
                 cx.notify();
             });
-            // Let the YouTube sources pick up the new login right away.
-            if connected && let Err(e) = engine.youtube_login_changed().await {
-                let _ = this.update_in(cx, |_, window, cx| {
-                    report(window, cx, format!("Couldn't restart YouTube: {e:#}"));
-                });
-            }
-        })
-        .detach();
+        });
+        self.login = Login::LoggingIn { _task: task };
+        cx.notify();
     }
 
+    /// Dropping the waiting login (with `LoggingIn`) cancels it.
     fn cancel_login(&mut self, cx: &mut Context<Self>) {
-        if let Login::LoggingIn { abort } = &self.login {
-            abort.abort();
-        }
         self.login = Login::NotConnected { error: None };
         cx.notify();
     }
 
     fn log_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(app) = self.settings(cx).oauth_app() else {
-            return;
-        };
         self.login = Login::NotConnected { error: None };
         cx.notify();
-        let task = self.tokio.spawn(async move { oauth::logout(&app).await });
+        // The YouTube sources notice the missing login (the engine restarts
+        // them) and turn red.
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = match task.await {
-                Ok(result) => result,
-                Err(e) => Err(e.into()),
-            };
-            // The sources notice the missing login and turn red.
-            let result = match result {
-                Ok(()) => engine.youtube_login_changed().await,
-                Err(e) => Err(e),
-            };
-            if let Err(e) = result {
+            if let Err(e) = engine.youtube_logout().await {
                 let _ = this.update_in(cx, |_, window, cx| {
                     report(window, cx, format!("Couldn't log out: {e:#}"));
                 });
@@ -312,7 +274,7 @@ impl YouTubePanel {
                 match result {
                     Ok((copy, count)) => {
                         panel.emoji = Emoji::Loaded(count);
-                        panel.change_settings(|s| s.emojis = Some(copy), window, cx);
+                        panel.use_emojis(copy, window, cx);
                         window.push_notification(
                             gpui_kit::component::notification::Notification::success(format!(
                                 "{count} custom emoji loaded"
@@ -328,6 +290,21 @@ impl YouTubePanel {
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// Hands the imported export to the engine, which loads it into the
+    /// YouTube sources (restarting them), also when it replaced the
+    /// previous export in the same file.
+    fn use_emojis(&self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let engine = self.engine.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            if let Err(e) = engine.use_youtube_emojis(path).await {
+                let _ = this.update_in(cx, |_, window, cx| {
+                    report(window, cx, format!("Couldn't use the emoji: {e:#}"));
+                });
+            }
         })
         .detach();
     }
@@ -361,9 +338,6 @@ impl YouTubePanel {
         }
         self.editing = false;
         self.form_error = None;
-        // Checked with the new client right away: the engine takes the new
-        // settings in the background.
-        let app = OAuthApp::new(&id, &secret);
         self.change_settings(
             |settings| {
                 settings.client_id = Some(id);
@@ -372,7 +346,9 @@ impl YouTubePanel {
             window,
             cx,
         );
-        self.check_login(app, cx);
+        // Asked after the change was sent: the engine answers with the new
+        // client.
+        self.check_login(cx);
     }
 
     /// Only offer "Cancel" if there's a working client to go back to.

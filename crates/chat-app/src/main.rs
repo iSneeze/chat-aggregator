@@ -106,8 +106,8 @@ fn run(started: Started) {
         settings_dir,
     } = started;
     let handle = engine.handle();
+    // Only for shutting the engine down when the app quits.
     let tokio = runtime.handle().clone();
-    let tokio_for_quit = tokio.clone();
     // `Option`, because the quit callback may in principle run more than
     // once (it's an `FnMut`), but the engine can only be shut down once.
     let mut engine = Some(engine);
@@ -131,7 +131,7 @@ fn run(started: Started) {
         // runs on the tokio runtime; GPUI just awaits its result.
         cx.on_app_quit(move |_| {
             let engine = engine.take();
-            let tokio = tokio_for_quit.clone();
+            let tokio = tokio.clone();
             // Started in the future, not right here: GPUI closes the windows
             // in between, and a closing window may hand the engine one last
             // change (the settings window applies its pending edits). Sent
@@ -168,7 +168,7 @@ fn run(started: Started) {
                     appearance::apply(appearance, Some(window), cx);
                     // Shared with the other windows from here on.
                     let config = AppConfig::new(&handle, settings_dir, cx);
-                    let view = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));
+                    let view = cx.new(|cx| AppView::new(handle, config, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 })
                 .expect("failed to open the window");

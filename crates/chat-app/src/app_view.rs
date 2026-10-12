@@ -142,13 +142,11 @@ impl AppView {
     pub fn new(
         engine: EngineHandle,
         config: Entity<AppConfig>,
-        tokio: tokio::runtime::Handle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("channel name"));
-        let youtube =
-            cx.new(|cx| YouTubePanel::new(engine.clone(), tokio, config.clone(), window, cx));
+        let youtube = cx.new(|cx| YouTubePanel::new(engine.clone(), config.clone(), window, cx));
         let themes = themes::list(&config.read(cx).themes_dir());
         let settings = config.read(cx).settings();
         let current = theme_label(settings.server.theme.as_deref());
@@ -1045,7 +1043,7 @@ mod tests {
         engine.themes_dir = Some(ConfigFile::themes_dir(&settings_dir));
         engine.save_to = Some(settings_dir.join("config.toml"));
         let engine = runtime.block_on(Engine::start(engine)).unwrap();
-        let (handle, tokio) = (engine.handle(), runtime.handle().clone());
+        let handle = engine.handle();
         let dir = settings_dir.clone();
 
         // `add_window` builds the root element; the view is created inside
@@ -1053,7 +1051,7 @@ mod tests {
         let mut view = None;
         let window = cx.add_window(|window, cx| {
             let config = AppConfig::new(&handle, dir, cx);
-            let app = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));
+            let app = cx.new(|cx| AppView::new(handle, config, window, cx));
             view = Some(app.clone());
             Root::new(app, window, cx)
         });
