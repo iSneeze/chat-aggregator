@@ -142,6 +142,7 @@ impl EngineHandle {
     }
 
     /// Changes a source's settings and restarts it (unless it's stopped).
+    /// The test window's source has none: that's an error.
     pub async fn update_source(&self, id: SourceId, config: SourceConfig) -> anyhow::Result<()> {
         self.call(|reply| Command::Update(id, config, reply)).await
     }
@@ -808,7 +809,7 @@ mod tests {
         // Fixing the settings brings it back, without waiting for a retry.
         handle.update_source(id, script("emit:1")).await.unwrap();
         let s = wait_for(&handle, |s| s.sources[0].messages == 1).await;
-        assert_eq!(s.sources[0].config, script("emit:1"));
+        assert_eq!(s.sources[0].config, Some(script("emit:1")));
         assert_eq!(factory.builds("emit:1"), 1);
         engine.shutdown().await;
     }
@@ -863,6 +864,11 @@ mod tests {
         })
         .await;
         assert_eq!(s.source(id).unwrap().label(), "Test messages");
+        assert_eq!(s.source(id).unwrap().config, None, "it has no settings");
+        assert!(
+            handle.update_source(id, SourceConfig::Demo).await.is_err(),
+            "so there are none to change"
+        );
 
         let msg = chat_core::demo::sample_messages(0).remove(0);
         input.send(ChatEvent::Message(msg.clone())).await.unwrap();
@@ -888,17 +894,6 @@ mod tests {
         })
         .await;
         engine.shutdown().await;
-    }
-
-    #[test]
-    fn manual_sources_never_end_up_in_the_config_file() {
-        let file = ConfigFile {
-            sources: vec![SourceConfig::Demo.into(), SourceConfig::Manual.into()],
-            ..ConfigFile::default()
-        };
-        // serde skips the variant: serializing it is an error rather than
-        // writing something that can't be read back.
-        assert!(toml::to_string(&file).is_err());
     }
 
     #[tokio::test(start_paused = true)]

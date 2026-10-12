@@ -63,7 +63,9 @@ pub enum Health {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceStatus {
     pub id: SourceId,
-    pub config: SourceConfig,
+    /// Its settings; `None` for the app's test window source, which has
+    /// none: the window feeds it, and closing the window removes it.
+    pub config: Option<SourceConfig>,
     pub state: SourceState,
     /// What the source reports it's doing; only while `Running`.
     pub activity: Option<Activity>,
@@ -74,7 +76,7 @@ pub struct SourceStatus {
 
 impl SourceStatus {
     pub fn label(&self) -> String {
-        self.config.label()
+        label(self.config.as_ref())
     }
 
     pub fn health(&self) -> Health {
@@ -113,6 +115,12 @@ impl SourceStatus {
             },
         }
     }
+}
+
+/// Short name for status displays and logs: from the settings, or the test
+/// window's (which has none).
+pub(crate) fn label(config: Option<&SourceConfig>) -> String {
+    config.map_or_else(|| "Test messages".into(), SourceConfig::label)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,7 +162,7 @@ mod tests {
     fn status(state: SourceState, activity: Option<Activity>) -> SourceStatus {
         SourceStatus {
             id: SourceId(1),
-            config: SourceConfig::Demo,
+            config: Some(SourceConfig::Demo),
             state,
             activity,
             messages: 0,

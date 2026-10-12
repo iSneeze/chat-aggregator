@@ -262,7 +262,16 @@ impl YouTubePanel {
     ) {
         let mut settings = self.settings(cx);
         change(&mut settings);
-        apply_youtube(&self.config, &self.engine, settings, window, cx);
+        let saved = apply_youtube(
+            &self.config,
+            &self.engine,
+            settings,
+            window.window_handle(),
+            cx,
+        );
+        if let Err(e) = saved {
+            report(window, cx, format!("Couldn't save the settings: {e:#}"));
+        }
     }
 
     fn choose_emoji_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -609,31 +618,30 @@ impl Render for YouTubePanel {
 
 /// New YouTube settings take effect: saved to the config, and the engine
 /// restarts the YouTube sources with them. Shared with the settings window
-/// (API key). A free function rather than a method: it needs no panel, only
-/// the window to report problems in.
+/// (API key). A free function rather than a method: it needs no panel.
+///
+/// The engine gets the settings even if saving fails (the app goes on with
+/// them either way); that error is returned for the caller to show. The
+/// restart's own problems arrive later and are shown in `window`, or only
+/// logged if it has closed by then: the settings window applies its last
+/// edit while closing. A window *handle* rather than `&mut Window` for that
+/// reason: it can be asked later whether the window is still there.
 pub(crate) fn apply_youtube(
     config: &Entity<AppConfig>,
     engine: &EngineHandle,
     settings: YouTubeSettings,
-    window: &mut Window,
+    window: AnyWindowHandle,
     cx: &mut App,
-) {
+) -> anyhow::Result<()> {
     let saved = config.update(cx, |config, _| config.set_youtube(settings.clone()));
-    if let Err(e) = saved {
-        report(window, cx, format!("Couldn't save the settings: {e:#}"));
-    }
     let engine = engine.clone();
-    window
-        .spawn(cx, async move |cx| {
-            if let Err(e) = engine.update_youtube(settings).await {
-                let _ = cx.update(|window, cx| {
-                    report(
-                        window,
-                        cx,
-                        format!("Couldn't apply the YouTube settings: {e:#}"),
-                    );
-                });
-            }
-        })
-        .detach();
+    cx.spawn(async move |cx| {
+        if let Err(e) = engine.update_youtube(settings).await {
+            let message = format!("Couldn't apply the YouTube settings: {e:#}");
+            tracing::warn!("{message}");
+            let _ = window.update(cx, |_, window, cx| report(window, cx, message));
+        }
+    })
+    .detach();
+    saved
 }

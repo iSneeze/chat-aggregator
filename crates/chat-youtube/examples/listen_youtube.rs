@@ -23,9 +23,9 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     let (target, auth) = match (args.get(1).map(String::as_str), args.get(2)) {
-        (Some("--login"), _) => return login(&OAuthApp::from_env()?).await,
+        (Some("--login"), _) => return login(&app_from_env()?).await,
         (Some("--logout"), _) => {
-            oauth::logout(&OAuthApp::from_env()?).await?;
+            oauth::logout(&app_from_env()?).await?;
             println!("logged out");
             return Ok(());
         }
@@ -138,10 +138,24 @@ async fn login(app: &OAuthApp) -> anyhow::Result<()> {
 }
 
 async fn oauth_auth() -> anyhow::Result<Auth> {
-    let provider = TokenProvider::from_store(OAuthApp::from_env()?)
+    let provider = TokenProvider::from_store(app_from_env()?)
         .await
         .context("run `listen_youtube --login` first")?;
     Ok(Auth::OAuth(provider))
+}
+
+/// Your OAuth client from `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`.
+/// (The app and headless mode read it from `config.toml` instead.)
+fn app_from_env() -> anyhow::Result<OAuthApp> {
+    let var = |name: &str| {
+        std::env::var(name).with_context(|| {
+            format!("{name} must be set (your OAuth client, see docs/youtube-setup.md)")
+        })
+    };
+    Ok(OAuthApp::new(
+        var("YOUTUBE_CLIENT_ID")?,
+        var("YOUTUBE_CLIENT_SECRET")?,
+    ))
 }
 
 fn env(name: &str) -> String {

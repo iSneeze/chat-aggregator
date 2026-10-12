@@ -20,7 +20,7 @@ use tracing::{info, warn};
 
 use crate::config::{SourceConfig, YouTubeSettings};
 use crate::factory::{SourceFactory, is_login_required, needs_attention};
-use crate::status::{SourceId, SourceState, SourceStatus, Status};
+use crate::status::{SourceId, SourceState, SourceStatus, Status, label};
 
 /// First retry after 2 s, doubling up to this.
 const MAX_BACKOFF: Duration = Duration::from_secs(5 * 60);
@@ -77,7 +77,7 @@ pub(crate) struct Actor<F> {
 }
 
 struct Slot {
-    config: SourceConfig,
+    source: SlotSource,
     state: SourceState,
     /// Bumped on every start and stop. Messages from an older run (a late
     /// "ended", a retry timer) carry the old number and are ignored.
@@ -88,10 +88,50 @@ struct Slot {
     activity: Option<watch::Receiver<Activity>>,
     stats: Arc<Stats>,
     attempt: u32,
-    /// Manual sources only: where their messages arrive. Shared behind a
-    /// Mutex so a stop/start can re-attach: the running task holds the lock,
-    /// aborting it releases the lock for the next run.
-    manual: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ChatEvent>>>>,
+}
+
+impl Slot {
+    /// Added, not running yet.
+    fn new(source: SlotSource) -> Self {
+        Self {
+            source,
+            state: SourceState::Stopped,
+            generation: 0,
+            task: None,
+            activity: None,
+            stats: Arc::default(),
+            attempt: 0,
+        }
+    }
+}
+
+/// Where a slot's chat comes from. An enum rather than a `SourceConfig`
+/// plus an optional receiver: each kind has exactly what it needs, so the
+/// test window's source, which has no settings, can't get into the config
+/// file by mistake (`SourceConfig` has no variant for it).
+#[derive(Clone)]
+enum SlotSource {
+    /// A source built from its settings, anew on every (re)start.
+    Configured(SourceConfig),
+    /// The app's test window: its messages arrive here, sent through a
+    /// `ManualInput`. Shared behind a Mutex so a stop/start can re-attach:
+    /// the running task holds the lock, aborting it releases the lock for
+    /// the next run.
+    Manual(Arc<tokio::sync::Mutex<mpsc::Receiver<ChatEvent>>>),
+}
+
+impl SlotSource {
+    /// Its settings; `None` for the test window's source.
+    fn config(&self) -> Option<&SourceConfig> {
+        match self {
+            SlotSource::Configured(config) => Some(config),
+            SlotSource::Manual(_) => None,
+        }
+    }
+
+    fn label(&self) -> String {
+        label(self.config())
+    }
 }
 
 /// Sends messages into a manual source (the app's test window). The source
@@ -193,19 +233,8 @@ impl<F: SourceFactory> Actor<F> {
                 let id = SourceId(self.next_id);
                 self.next_id += 1;
                 info!(source = %config.label(), %id, "added");
-                self.slots.insert(
-                    id,
-                    Slot {
-                        config,
-                        state: SourceState::Stopped,
-                        generation: 0,
-                        task: None,
-                        activity: None,
-                        stats: Arc::default(),
-                        attempt: 0,
-                        manual: None,
-                    },
-                );
+                self.slots
+                    .insert(id, Slot::new(SlotSource::Configured(config)));
                 if start {
                     self.start(id);
                 }
@@ -216,26 +245,15 @@ impl<F: SourceFactory> Actor<F> {
                 self.next_id += 1;
                 let (tx, rx) = mpsc::channel(64);
                 info!(%id, "test window source added");
-                self.slots.insert(
-                    id,
-                    Slot {
-                        config: SourceConfig::Manual,
-                        state: SourceState::Stopped,
-                        generation: 0,
-                        task: None,
-                        activity: None,
-                        stats: Arc::default(),
-                        attempt: 0,
-                        manual: Some(Arc::new(tokio::sync::Mutex::new(rx))),
-                    },
-                );
+                let input = Arc::new(tokio::sync::Mutex::new(rx));
+                self.slots.insert(id, Slot::new(SlotSource::Manual(input)));
                 self.start(id);
                 let _ = reply.send(Ok((id, ManualInput(tx))));
             }
             Command::Remove(id, reply) => {
                 let result = match self.slots.remove(&id) {
                     Some(slot) => {
-                        info!(source = %slot.config.label(), "removed");
+                        info!(source = %slot.source.label(), "removed");
                         Ok(()) // dropping the slot aborts its task
                     }
                     None => Err(unknown(id)),
@@ -261,7 +279,7 @@ impl<F: SourceFactory> Actor<F> {
                     Some(slot) => {
                         stop(slot);
                         slot.state = SourceState::Stopped;
-                        info!(source = %slot.config.label(), "stopped");
+                        info!(source = %slot.source.label(), "stopped");
                         Ok(())
                     }
                 };
@@ -278,8 +296,10 @@ impl<F: SourceFactory> Actor<F> {
                     .slots
                     .iter()
                     .filter(|(_, slot)| {
-                        matches!(slot.config, SourceConfig::YouTube { .. })
-                            && slot.state != SourceState::Stopped
+                        matches!(
+                            slot.source,
+                            SlotSource::Configured(SourceConfig::YouTube { .. })
+                        ) && slot.state != SourceState::Stopped
                     })
                     .map(|(id, _)| *id)
                     .collect();
@@ -296,10 +316,14 @@ impl<F: SourceFactory> Actor<F> {
             Command::Update(id, config, reply) => {
                 let result = match self.slots.get_mut(&id) {
                     None => Err(unknown(id)),
+                    Some(Slot {
+                        source: SlotSource::Manual(_),
+                        ..
+                    }) => Err(anyhow!("the test messages source has no settings")),
                     Some(slot) => {
                         let was_stopped = slot.state == SourceState::Stopped;
                         stop(slot);
-                        slot.config = config;
+                        slot.source = SlotSource::Configured(config);
                         slot.attempt = 0;
                         // New settings may fix whatever was wrong, so restart
                         // it; unless you had turned it off.
@@ -329,10 +353,9 @@ impl<F: SourceFactory> Actor<F> {
         let factory = self.factory.clone();
         let hub = self.hub.clone();
         let stats = slot.stats.clone();
-        let config = slot.config.clone();
-        let manual = slot.manual.clone();
+        let source = slot.source.clone();
         let internal = self.internal_tx.clone();
-        info!(source = %config.label(), "starting");
+        info!(source = %source.label(), "starting");
         slot.task = Some(AbortOnDropHandle::new(tokio::spawn(async move {
             let started = Instant::now();
             // Wakes the actor whenever the source reports a new activity,
@@ -346,9 +369,11 @@ impl<F: SourceFactory> Actor<F> {
                 std::future::pending::<()>().await
             };
             let run = async {
-                match manual {
-                    Some(input) => run_manual(&input, &hub, &stats, reporter).await,
-                    None => run_source(&*factory, &config, &hub, &stats, reporter).await,
+                match &source {
+                    SlotSource::Configured(config) => {
+                        run_source(&*factory, config, &hub, &stats, reporter).await
+                    }
+                    SlotSource::Manual(input) => run_manual(input, &hub, &stats, reporter).await,
                 }
             };
             let result = tokio::select! {
@@ -380,7 +405,7 @@ impl<F: SourceFactory> Actor<F> {
                 }
                 slot.task = None;
                 slot.activity = None;
-                let label = slot.config.label();
+                let label = slot.source.label();
                 match result {
                     Ok(()) => {
                         info!(source = %label, "finished");
@@ -439,7 +464,7 @@ impl<F: SourceFactory> Actor<F> {
             .iter()
             .map(|(id, slot)| SourceStatus {
                 id: *id,
-                config: slot.config.clone(),
+                config: slot.source.config().cloned(),
                 state: slot.state.clone(),
                 activity: slot.activity.as_ref().map(|a| a.borrow().clone()),
                 messages: slot.stats.messages.load(Ordering::Relaxed),

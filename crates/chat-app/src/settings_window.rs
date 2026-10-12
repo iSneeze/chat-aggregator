@@ -26,6 +26,7 @@ use gpui_kit::*;
 use crate::app_config::AppConfig;
 use crate::app_view::report;
 use crate::appearance;
+use crate::youtube_panel::apply_youtube;
 
 /// How long typing must pause before edits apply.
 const APPLY_AFTER: Duration = Duration::from_millis(800);
@@ -170,15 +171,7 @@ impl SettingsWindow {
         let key = Some(draft.api_key).filter(|key| !key.is_empty());
         if key != youtube.api_key {
             youtube.api_key = key;
-            self.config
-                .update(cx, |config, _| config.set_youtube(youtube.clone()))?;
-            let engine = self.engine.clone();
-            cx.spawn(async move |_| {
-                if let Err(e) = engine.update_youtube(youtube).await {
-                    tracing::warn!("couldn't apply the YouTube API key: {e:#}");
-                }
-            })
-            .detach();
+            apply_youtube(&self.config, &self.engine, youtube, self.window, cx)?;
         }
         Ok(())
     }
@@ -656,6 +649,28 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(ui.saved().unwrap().server.stagger_ms, 0);
         assert!(ui.engine.handle().stagger().is_off());
+    }
+
+    /// The API key goes through `apply_youtube` like the YouTube section's
+    /// settings, also when the window closes within the pause (and isn't
+    /// there any more to show problems in).
+    #[gpui_kit::test]
+    fn a_pending_api_key_is_saved_when_the_window_closes(cx: &mut TestAppContext) {
+        let mut ui = open(cx, "api-key");
+        // The engine's answer to the restart comes from tokio's threads:
+        // the test executor must accept that (see `manual_window::tests`).
+        cx.executor().allow_parking();
+        ui.view().update(cx, |this, cx| {
+            this.change(|draft| draft.api_key = "test-key".into(), cx);
+        });
+        ui.view = None;
+        cx.update_window(ui.window.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            ui.saved().unwrap().youtube.api_key.as_deref(),
+            Some("test-key")
+        );
     }
 
     #[gpui_kit::test]

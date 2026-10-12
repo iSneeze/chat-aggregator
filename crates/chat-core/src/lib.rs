@@ -190,44 +190,47 @@ pub enum MessageKind {
     },
 }
 
-pub struct MockSource {
-    pub count: usize,
-    pub delay: std::time::Duration,
-}
-
-impl ChatSource for MockSource {
-    async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
-        activity.set(Activity::Receiving);
-        for i in 0..self.count {
-            tokio::time::sleep(self.delay).await;
-
-            let msg = ChatMessage {
-                id: format!("mock-{i}"),
-                platform: ChatPlatform::Twitch,
-                author: Author {
-                    id: format!("mock-user-{i}"),
-                    name: format!("MockUser{i}"),
-                    color: Some("#7f5af0".to_string()),
-                    badges: vec![],
-                    avatar_url: None,
-                },
-                text: format!("mock message number {i}"),
-                emotes: vec![],
-                timestamp: chrono::Utc::now(),
-                kind: MessageKind::Text,
-            };
-            // If this errors, the receiver was dropped: nobody is
-            // listening anymore, so we shut down gracefully.
-            tx.send(ChatEvent::Message(msg)).await?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// The smallest possible source, to try the `ChatSource` contract on.
+    /// Test-only: the real sources live in their own crates (and the demo
+    /// one in `demo`).
+    struct MockSource {
+        count: usize,
+        delay: Duration,
+    }
+
+    impl ChatSource for MockSource {
+        async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
+            activity.set(Activity::Receiving);
+            for i in 0..self.count {
+                tokio::time::sleep(self.delay).await;
+
+                let msg = ChatMessage {
+                    id: format!("mock-{i}"),
+                    platform: ChatPlatform::Twitch,
+                    author: Author {
+                        id: format!("mock-user-{i}"),
+                        name: format!("MockUser{i}"),
+                        color: Some("#7f5af0".to_string()),
+                        badges: vec![],
+                        avatar_url: None,
+                    },
+                    text: format!("mock message number {i}"),
+                    emotes: vec![],
+                    timestamp: chrono::Utc::now(),
+                    kind: MessageKind::Text,
+                };
+                // If this errors, the receiver was dropped: nobody is
+                // listening anymore, so we shut down gracefully.
+                tx.send(ChatEvent::Message(msg)).await?;
+            }
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn mock_source_sends_messages_then_ends() {

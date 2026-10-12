@@ -1,9 +1,14 @@
 //! Turns chat messages into styled HTML for the overlay.
 //!
-//! A [`Theme`] is a message template (minijinja, `message.html`) plus a
+//! A theme is a message template (minijinja, `message.html`) plus a
 //! stylesheet (`overlay.css`). The built-in themes ([`Builtin`]) are
-//! compiled into the binary; [`Theme::load`] lets a folder override either
-//! file of the default one. [`ThemeSource`] says which of them to use.
+//! compiled into the binary; a folder can override either file of the
+//! default one. [`ThemeSource`] says which theme to use.
+//!
+//! The two files are loaded separately, so a broken one never takes the
+//! other down: [`ThemeSource::load`] gives the template, ready to render (a
+//! [`Theme`]), and [`ThemeSource::css`] the stylesheet, which is served as
+//! it is.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -110,7 +115,8 @@ impl ThemeSource {
         }
     }
 
-    /// Loads the theme. A folder is read now (see [`Theme::load`]).
+    /// Loads the theme's message template. A folder is read now (see
+    /// [`Theme::load`]).
     pub fn load(&self) -> anyhow::Result<Theme> {
         match self {
             Self::Builtin(builtin) => Ok(Theme::from_builtin(*builtin)),
@@ -118,23 +124,24 @@ impl ThemeSource {
         }
     }
 
-    /// Just the stylesheet. Separate from [`ThemeSource::load`] so a broken
-    /// template doesn't also discard working CSS.
+    /// The theme's stylesheet. A folder without one gets the default
+    /// built-in stylesheet.
     pub fn css(&self) -> anyhow::Result<String> {
         match self {
             Self::Builtin(builtin) => Ok(builtin.css().to_string()),
-            Self::Folder(dir) => read_css(dir),
+            Self::Folder(dir) => read_or_default(&dir.join(CSS_FILE), DEFAULT_CSS),
         }
     }
 }
 
+/// A theme's message template, ready to render messages with. (Its
+/// stylesheet isn't part of it: see the module docs.)
 pub struct Theme {
     env: Environment<'static>,
-    css: String,
 }
 
 impl Theme {
-    /// The default built-in template and CSS.
+    /// The default built-in template.
     pub fn builtin() -> Self {
         Self::from_builtin(Builtin::Default)
     }
@@ -142,22 +149,21 @@ impl Theme {
     pub fn from_builtin(builtin: Builtin) -> Self {
         // Can only fail if a built-in template has a syntax error, which
         // the tests below would catch: a programmer error, not a runtime one.
-        Self::from_sources(builtin.message_template().into(), builtin.css().into())
+        Self::from_template(builtin.message_template().into())
             .expect("built-in message template is valid")
     }
 
-    /// Loads `message.html` and `overlay.css` from `dir`, falling back to
-    /// the built-in version for each file that doesn't exist. Syntax errors
-    /// in the template are reported here, not at render time.
+    /// Loads `message.html` from `dir`, or the built-in one if the folder
+    /// has none. Syntax errors in the template are reported here, not at
+    /// render time.
     pub fn load(dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let dir = dir.as_ref();
         let message = read_or_default(&dir.join(MESSAGE_FILE), DEFAULT_MESSAGE_TEMPLATE)?;
-        let css = read_or_default(&dir.join(CSS_FILE), DEFAULT_CSS)?;
-        Self::from_sources(message, css)
+        Self::from_template(message)
             .with_context(|| format!("invalid {MESSAGE_FILE} in {}", dir.display()))
     }
 
-    fn from_sources(message: String, css: String) -> anyhow::Result<Self> {
+    fn from_template(message: String) -> anyhow::Result<Self> {
         let mut env = Environment::new();
         // Drop the newline after a block tag and the indentation before it,
         // so `{% if %}` lines don't leave blank lines in the output.
@@ -167,7 +173,7 @@ impl Theme {
         env.add_filter("seed", seed::filter);
         // The `.html` name also switches on HTML auto-escaping.
         env.add_template_owned(MESSAGE_FILE, message)?;
-        Ok(Self { env, css })
+        Ok(Self { env })
     }
 
     /// Renders one message to an HTML fragment (`<article class="msg">…`).
@@ -175,16 +181,6 @@ impl Theme {
         let template = self.env.get_template(MESSAGE_FILE)?;
         Ok(template.render(view::MessageView::new(msg))?)
     }
-
-    pub fn css(&self) -> &str {
-        &self.css
-    }
-}
-
-/// Just the stylesheet from `dir` (or the built-in one). Separate from
-/// [`Theme::load`] so a broken template doesn't also discard working CSS.
-pub fn read_css(dir: impl AsRef<Path>) -> anyhow::Result<String> {
-    read_or_default(&dir.as_ref().join(CSS_FILE), DEFAULT_CSS)
 }
 
 impl Default for Theme {
@@ -346,7 +342,7 @@ mod tests {
     fn every_builtin_theme_renders_every_sample() {
         for builtin in Builtin::ALL {
             let theme = Theme::from_builtin(builtin);
-            assert_eq!(theme.css(), builtin.css());
+            assert_eq!(ThemeSource::Builtin(builtin).css().unwrap(), builtin.css());
             for msg in sample_messages(0) {
                 let html = theme.render(&msg).unwrap();
                 assert!(html.contains(r#" class="msg msg--"#), "{builtin:?}: {html}");
@@ -530,9 +526,8 @@ mod tests {
 
     #[test]
     fn templates_can_seed_per_chatter_values() {
-        let theme = Theme::from_sources(
+        let theme = Theme::from_template(
             "{{ author.id | seed(360, 'hue') }} {{ author.id | seed(6) }}".into(),
-            String::new(),
         )
         .unwrap();
         let msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
@@ -545,8 +540,7 @@ mod tests {
         assert_eq!(theme.render(&msg).unwrap(), expected);
 
         // A mistake in a theme is a render error, not a crash.
-        let broken =
-            Theme::from_sources("{{ author.id | seed(0) }}".into(), String::new()).unwrap();
+        let broken = Theme::from_template("{{ author.id | seed(0) }}".into()).unwrap();
         assert!(broken.render(&msg).is_err());
     }
 
@@ -559,10 +553,29 @@ mod tests {
         let theme = Theme::load(&dir).unwrap();
         let msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
         assert_eq!(theme.render(&msg).unwrap(), "<p>Ann</p>");
-        assert_eq!(theme.css(), DEFAULT_CSS); // no overlay.css in dir
+        // No overlay.css in dir: the built-in one.
+        assert_eq!(ThemeSource::Folder(dir.clone()).css().unwrap(), DEFAULT_CSS);
 
         std::fs::write(dir.join(MESSAGE_FILE), "{% if %}").unwrap();
         assert!(Theme::load(&dir).is_err(), "syntax errors surface at load");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The template and the stylesheet are loaded separately, so a broken
+    /// one never takes the other down. Here: an `overlay.css` that can't be
+    /// read as text (saved in an old encoding, e.g. Latin-1 with a `©`).
+    #[test]
+    fn unreadable_css_does_not_cost_the_template() {
+        let dir = std::env::temp_dir().join(format!("chat-render-css-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(MESSAGE_FILE), "<p>{{ author.name }}</p>").unwrap();
+        std::fs::write(dir.join(CSS_FILE), b"/* \xA9 2026 */").unwrap();
+
+        let theme = Theme::load(&dir).expect("the template is fine");
+        let msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
+        assert_eq!(theme.render(&msg).unwrap(), "<p>Ann</p>");
+        assert!(ThemeSource::Folder(dir.clone()).css().is_err());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

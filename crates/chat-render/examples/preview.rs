@@ -8,16 +8,17 @@
 //! The optional argument is a built-in theme's name or a folder with
 //! `message.html` and/or `overlay.css`.
 
-use chat_render::{Builtin, Theme};
+use chat_render::{Builtin, ThemeSource};
 
 fn main() -> anyhow::Result<()> {
-    let theme = match std::env::args().nth(1) {
-        None => Theme::builtin(),
+    let source = match std::env::args().nth(1) {
+        None => ThemeSource::default(),
         Some(arg) => match Builtin::from_name(&arg) {
-            Some(builtin) => Theme::from_builtin(builtin),
-            None => Theme::load(arg)?,
+            Some(builtin) => ThemeSource::Builtin(builtin),
+            None => ThemeSource::Folder(arg.into()),
         },
     };
+    let theme = source.load()?;
 
     let mut messages = String::new();
     for msg in chat_core::demo::sample_messages(0) {
@@ -44,7 +45,7 @@ html {{ background: repeating-conic-gradient(#3b3f4a 0 25%, #454a57 0 50%) 0 0 /
 {messages}</main>
 </body>
 </html>"#,
-        css = theme.css()
+        css = source.css()?
     );
     Ok(())
 }

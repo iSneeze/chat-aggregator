@@ -9,6 +9,11 @@ use chat_youtube::oauth::OAuthApp;
 /// One source, described by its settings. The engine builds the actual
 /// source from this on every (re)start: `ChatSource::run` consumes a source,
 /// so a restart needs a fresh one.
+///
+/// Every source that can be in `config.toml`, and only those: the app's test
+/// window has a source too, but no settings (the window feeds it, see
+/// `EngineHandle::add_manual_source`), so it has no variant here and can't
+/// end up in the file.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 // `deny_unknown_fields`: a typo like `vidoe_id` must be an error; ignoring
 // it would silently turn "this video" into "your own broadcasts".
@@ -26,11 +31,6 @@ pub enum SourceConfig {
     },
     /// Sample messages of every kind, for styling and testing.
     Demo,
-    /// Messages typed into the app's test window. Only ever created by
-    /// `EngineHandle::add_manual_source` (its messages come from that
-    /// window), so it's never read from or written to the config file.
-    #[serde(skip)]
-    Manual,
 }
 
 impl SourceConfig {
@@ -43,7 +43,7 @@ impl SourceConfig {
             SourceConfig::YouTube { video_id: Some(id) } if id.trim().is_empty() => {
                 Err("the video id is empty".into())
             }
-            SourceConfig::YouTube { .. } | SourceConfig::Demo | SourceConfig::Manual => Ok(()),
+            SourceConfig::YouTube { .. } | SourceConfig::Demo => Ok(()),
         }
     }
 
@@ -54,7 +54,6 @@ impl SourceConfig {
             SourceConfig::YouTube { video_id: None } => "YouTube: your channel".into(),
             SourceConfig::YouTube { video_id: Some(id) } => format!("YouTube: video {id}"),
             SourceConfig::Demo => "Demo".into(),
-            SourceConfig::Manual => "Test messages".into(),
         }
     }
 }

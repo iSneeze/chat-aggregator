@@ -122,6 +122,20 @@ impl Default for ServerSettings {
     }
 }
 
+impl ServerSettings {
+    /// The theme `theme` stands for, with the theme folders in
+    /// `themes_dir`. A folder that isn't there (yet) still counts: it loads
+    /// as the built-in look, the app warns about it, and once it's created,
+    /// the next overlay reload picks it up.
+    pub fn theme_source(&self, themes_dir: &Path) -> ThemeSource {
+        self.theme
+            .as_deref()
+            .map_or_else(ThemeSource::default, |name| {
+                ThemeSource::named(themes_dir, name)
+            })
+    }
+}
+
 impl ConfigFile {
     /// `config.toml` in the per-OS config folder: `~/.config/chat-aggregator`
     /// on Linux, `~/Library/Application Support/chat-aggregator` on macOS,
@@ -175,6 +189,7 @@ impl ConfigFile {
     /// looked up next to it.
     pub fn into_engine_config(self, settings_dir: &Path) -> EngineConfig {
         let server = self.server;
+        let themes_dir = Self::themes_dir(settings_dir);
         EngineConfig {
             // Switched-off sources aren't started; headless mode has no
             // switch to turn them on, the app adds them itself.
@@ -187,10 +202,8 @@ impl ConfigFile {
             youtube: self.youtube,
             bind: (Ipv4Addr::LOCALHOST, server.port).into(),
             history: server.history,
-            theme: server.theme.map_or_else(ThemeSource::default, |name| {
-                ThemeSource::named(&Self::themes_dir(settings_dir), &name)
-            }),
-            themes_dir: Some(Self::themes_dir(settings_dir)),
+            theme: server.theme_source(&themes_dir),
+            themes_dir: Some(themes_dir),
             stagger: Stagger::new(
                 Duration::from_millis(server.stagger_ms),
                 Duration::from_millis(server.stagger_max_ms),

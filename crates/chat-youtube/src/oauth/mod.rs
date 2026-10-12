@@ -13,7 +13,6 @@
 
 use std::time::Duration;
 
-use anyhow::Context;
 use oauth2::basic::BasicClient;
 use oauth2::{AuthType, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet, TokenUrl};
 
@@ -67,20 +66,6 @@ impl OAuthApp {
             store: TokenStore::System,
             endpoints: Endpoints::default(),
         }
-    }
-
-    /// From `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` (until the config
-    /// file exists).
-    pub fn from_env() -> anyhow::Result<Self> {
-        let var = |name: &str| {
-            std::env::var(name).with_context(|| {
-                format!("{name} must be set (your OAuth client, see docs/youtube-setup.md)")
-            })
-        };
-        Ok(Self::new(
-            var("YOUTUBE_CLIENT_ID")?,
-            var("YOUTUBE_CLIENT_SECRET")?,
-        ))
     }
 
     /// Where the refresh token is kept (default: [`TokenStore::System`]).

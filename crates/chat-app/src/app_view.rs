@@ -10,7 +10,7 @@ use std::time::Duration;
 use chat_engine::{
     EngineHandle, Health, SourceConfig, SourceId, SourceState, SourceStatus, Status,
 };
-use chat_render::{Builtin, ThemeSource, themes};
+use chat_render::{Builtin, themes};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -267,12 +267,12 @@ impl AppView {
             Some(builtin) => Some(builtin.name().to_string()),
             None => Some(label.to_string()),
         };
-        let themes_dir = self.config.read(cx).themes_dir();
-        self.engine
-            .set_theme(theme.as_deref().map_or_else(ThemeSource::default, |name| {
-                ThemeSource::named(&themes_dir, name)
-            }));
         let saved = self.config.update(cx, |config, _| config.set_theme(theme));
+        // The new choice is in the config now, even if saving it failed: the
+        // engine gets it the same way it got the one at startup.
+        let config = self.config.read(cx);
+        self.engine
+            .set_theme(config.server().theme_source(&config.themes_dir()));
         if let Err(e) = saved {
             self.report_save_error(e, window, cx);
         }
@@ -848,9 +848,9 @@ impl AppView {
                         this.set_running(id, *on, window, cx);
                     })),
             )
-            // The test source belongs to its window: closing the window
-            // removes it.
-            .when(source.config != SourceConfig::Manual, |row| {
+            // The test source (the one without settings) belongs to its
+            // window: closing the window removes it.
+            .when(source.config.is_some(), |row| {
                 row.child(
                     Button::new(("remove", key))
                         .icon(IconName::Close)

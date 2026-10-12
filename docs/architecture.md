@@ -231,6 +231,11 @@ built-in names are refused).
 
 - The server renders messages to HTML, so the overlay page stays a tiny
   script and all the look is in the theme. Streamers only edit HTML and CSS.
+- The template and the stylesheet are loaded separately
+  (`ThemeSource::load` gives the template as a `Theme`, `ThemeSource::css`
+  the stylesheet), so a broken one never takes the other down: a template
+  with a mistake falls back to the built-in one (logged), while the
+  theme's CSS still applies.
 - The template sees a **view model** (`MessageView`), not `ChatMessage`
   itself, so the core types can evolve without breaking people's templates.
   It borrows from the message instead of copying (`&'a str`): it only lives
