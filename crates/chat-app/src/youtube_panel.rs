@@ -8,7 +8,7 @@
 //! copy of its own that could go stale.
 
 use chat_engine::{EngineHandle, Health, YouTubeSettings};
-use chat_youtube::oauth::{self, LoginRequired};
+use chat_youtube::oauth::{self, LoginRequired, OAuthApp};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
 
-use crate::app_config::AppConfig;
+use crate::app_config::{AppConfig, edit_settings};
 use crate::app_view::{light, report};
 use crate::emoji_import;
 
@@ -64,6 +64,7 @@ pub struct YouTubePanel {
     form_error: Option<String>,
     client_id: Entity<InputState>,
     client_secret: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl YouTubePanel {
@@ -74,7 +75,7 @@ impl YouTubePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let settings = config.read(cx).youtube().clone();
+        let settings = config.read(cx).settings().youtube;
         let client_id =
             cx.new(|cx| InputState::new(window, cx).placeholder("….apps.googleusercontent.com"));
         // Masked: shown as dots, like a password.
@@ -83,7 +84,7 @@ impl YouTubePanel {
                 .placeholder("GOCSPX-…")
                 .masked(true)
         });
-        let set_up = settings.oauth_app().is_ok();
+        let app = settings.oauth_app().ok();
         let emoji = match &settings.emojis {
             None => Emoji::None,
             Some(path) => match emoji_import::count(path) {
@@ -91,33 +92,33 @@ impl YouTubePanel {
                 Err(e) => Emoji::Problem(format!("{e:#}")),
             },
         };
+        // New settings (from here or the settings window): redraw.
+        let subscriptions = vec![cx.observe(&config, |_, _, cx| cx.notify())];
         let mut panel = Self {
             engine,
             tokio,
             config,
             login: Login::Checking,
             emoji,
-            editing: !set_up,
+            editing: app.is_none(),
             form_error: None,
             client_id,
             client_secret,
+            _subscriptions: subscriptions,
         };
-        if set_up {
-            panel.check_login(cx);
+        if let Some(app) = app {
+            panel.check_login(app, cx);
         }
         panel
     }
 
-    /// The current settings, a copy: the config may change them any time.
+    /// The current settings, a copy: they may change any time.
     fn settings(&self, cx: &App) -> YouTubeSettings {
-        self.config.read(cx).youtube().clone()
+        self.config.read(cx).settings().youtube
     }
 
-    /// Asks YouTube which channel the stored login belongs to.
-    fn check_login(&mut self, cx: &mut Context<Self>) {
-        let Ok(app) = self.settings(cx).oauth_app() else {
-            return;
-        };
+    /// Asks YouTube which channel `app`'s stored login belongs to.
+    fn check_login(&mut self, app: OAuthApp, cx: &mut Context<Self>) {
         self.login = Login::Checking;
         // `spawn` on the tokio runtime returns a `JoinHandle`, which is just
         // a future: GPUI can await it like any other.
@@ -162,7 +163,6 @@ impl YouTubePanel {
         cx.notify();
 
         let engine = self.engine.clone();
-        let settings = self.settings(cx);
         cx.spawn_in(window, async move |this, cx| {
             // First result: the consent page's URL, to open in the browser.
             if let Ok(url) = url_rx.await {
@@ -196,7 +196,7 @@ impl YouTubePanel {
                 cx.notify();
             });
             // Let the YouTube sources pick up the new login right away.
-            if connected && let Err(e) = engine.update_youtube(settings).await {
+            if connected && let Err(e) = engine.youtube_login_changed().await {
                 let _ = this.update_in(cx, |_, window, cx| {
                     report(window, cx, format!("Couldn't restart YouTube: {e:#}"));
                 });
@@ -221,7 +221,6 @@ impl YouTubePanel {
         cx.notify();
         let task = self.tokio.spawn(async move { oauth::logout(&app).await });
         let engine = self.engine.clone();
-        let settings = self.settings(cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = match task.await {
                 Ok(result) => result,
@@ -229,7 +228,7 @@ impl YouTubePanel {
             };
             // The sources notice the missing login and turn red.
             let result = match result {
-                Ok(()) => engine.update_youtube(settings).await,
+                Ok(()) => engine.youtube_login_changed().await,
                 Err(e) => Err(e),
             };
             if let Err(e) = result {
@@ -252,26 +251,21 @@ impl YouTubePanel {
         cx.notify();
     }
 
-    /// Changes the settings (`change` edits a copy), saves them and
-    /// restarts the YouTube sources with them.
+    /// Changes the YouTube settings (`change` edits them in the engine,
+    /// which restarts the YouTube sources with them) and saves them.
     fn change_settings(
         &mut self,
-        change: impl FnOnce(&mut YouTubeSettings),
+        change: impl FnOnce(&mut YouTubeSettings) + Send + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut settings = self.settings(cx);
-        change(&mut settings);
-        let saved = apply_youtube(
+        edit_settings(
             &self.config,
             &self.engine,
-            settings,
             window.window_handle(),
+            move |settings| change(&mut settings.youtube),
             cx,
         );
-        if let Err(e) = saved {
-            report(window, cx, format!("Couldn't save the settings: {e:#}"));
-        }
     }
 
     fn choose_emoji_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -340,17 +334,12 @@ impl YouTubePanel {
     }
 
     fn remove_emoji(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.change_settings(
-            |settings| {
-                if let Some(path) = settings.emojis.take() {
-                    // Our own copy in the settings folder; the original is
-                    // untouched.
-                    let _ = std::fs::remove_file(path);
-                }
-            },
-            window,
-            cx,
-        );
+        // Our own copy in the settings folder; the original is untouched.
+        // (Running sources have the emoji loaded already.)
+        if let Some(path) = self.settings(cx).emojis {
+            let _ = std::fs::remove_file(path);
+        }
+        self.change_settings(|settings| settings.emojis = None, window, cx);
         self.emoji = Emoji::None;
         cx.notify();
     }
@@ -373,6 +362,9 @@ impl YouTubePanel {
         }
         self.editing = false;
         self.form_error = None;
+        // Checked with the new client right away: the engine takes the new
+        // settings in the background.
+        let app = OAuthApp::new(&id, &secret);
         self.change_settings(
             |settings| {
                 settings.client_id = Some(id);
@@ -381,7 +373,7 @@ impl YouTubePanel {
             window,
             cx,
         );
-        self.check_login(cx);
+        self.check_login(app, cx);
     }
 
     /// Only offer "Cancel" if there's a working client to go back to.
@@ -614,34 +606,4 @@ impl Render for YouTubePanel {
                     .into_any_element()
             })
     }
-}
-
-/// New YouTube settings take effect: saved to the config, and the engine
-/// restarts the YouTube sources with them. Shared with the settings window
-/// (API key). A free function rather than a method: it needs no panel.
-///
-/// The engine gets the settings even if saving fails (the app goes on with
-/// them either way); that error is returned for the caller to show. The
-/// restart's own problems arrive later and are shown in `window`, or only
-/// logged if it has closed by then: the settings window applies its last
-/// edit while closing. A window *handle* rather than `&mut Window` for that
-/// reason: it can be asked later whether the window is still there.
-pub(crate) fn apply_youtube(
-    config: &Entity<AppConfig>,
-    engine: &EngineHandle,
-    settings: YouTubeSettings,
-    window: AnyWindowHandle,
-    cx: &mut App,
-) -> anyhow::Result<()> {
-    let saved = config.update(cx, |config, _| config.set_youtube(settings.clone()));
-    let engine = engine.clone();
-    cx.spawn(async move |cx| {
-        if let Err(e) = engine.update_youtube(settings).await {
-            let message = format!("Couldn't apply the YouTube settings: {e:#}");
-            tracing::warn!("{message}");
-            let _ = window.update(cx, |_, window, cx| report(window, cx, message));
-        }
-    })
-    .detach();
-    saved
 }

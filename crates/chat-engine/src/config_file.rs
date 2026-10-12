@@ -1,9 +1,12 @@
-//! The settings file (`config.toml`), shared by headless mode and, later,
-//! the app. The engine itself only ever *reads* it; saving is up to the
-//! caller (the app's settings window, or your text editor).
+//! The settings file (`config.toml`), shared by headless mode and the app.
+//!
+//! The engine starts with what's in it and from then on owns the settings
+//! ([`Settings`]): it applies changes (`EngineHandle::edit_settings`) and
+//! publishes the current ones. It never writes the file itself: the app
+//! saves the engine's settings after each change; headless mode never
+//! writes it (and your comments in it stay).
 
 use std::io::ErrorKind;
-use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -26,6 +29,17 @@ pub struct ConfigFile {
     pub youtube: YouTubeSettings,
     pub app: AppSettings,
     pub sources: Vec<SourceEntry>,
+}
+
+/// Everything in `config.toml` except the sources (the engine runs those,
+/// see `EngineHandle::add_source`). The engine owns them while it runs:
+/// read them with `EngineHandle::settings`, change them with
+/// `EngineHandle::edit_settings`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Settings {
+    pub server: ServerSettings,
+    pub youtube: YouTubeSettings,
+    pub app: AppSettings,
 }
 
 /// One `[[sources]]` block: what to read, and whether it's switched on.
@@ -86,9 +100,9 @@ pub enum Appearance {
 pub struct ServerSettings {
     pub port: u16,
     pub history: usize,
-    /// Overlay theme: a built-in theme's name (`default`, `minimal`) or a
-    /// folder name in `themes/` next to the config file. `None`: the
-    /// default built-in theme.
+    /// Overlay theme: a built-in theme's name (`default`, `minimal`), a
+    /// folder name in `themes/` next to the config file, or the full path of
+    /// a theme folder anywhere. `None`: the default built-in theme.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     pub stagger_ms: u64,
@@ -127,12 +141,23 @@ impl ServerSettings {
     /// `themes_dir`. A folder that isn't there (yet) still counts: it loads
     /// as the built-in look, the app warns about it, and once it's created,
     /// the next overlay reload picks it up.
-    pub fn theme_source(&self, themes_dir: &Path) -> ThemeSource {
+    pub fn theme_source(&self, themes_dir: Option<&Path>) -> ThemeSource {
+        // Without a themes folder (tests), a name is a folder in the
+        // current directory.
+        let themes_dir = themes_dir.unwrap_or(Path::new(""));
         self.theme
             .as_deref()
             .map_or_else(ThemeSource::default, |name| {
                 ThemeSource::named(themes_dir, name)
             })
+    }
+
+    /// The overlay's burst pacing.
+    pub fn stagger(&self) -> Stagger {
+        Stagger::new(
+            Duration::from_millis(self.stagger_ms),
+            Duration::from_millis(self.stagger_max_ms),
+        )
     }
 }
 
@@ -188,9 +213,12 @@ impl ConfigFile {
     /// `settings_dir` is the folder the config file is in: themes are
     /// looked up next to it.
     pub fn into_engine_config(self, settings_dir: &Path) -> EngineConfig {
-        let server = self.server;
-        let themes_dir = Self::themes_dir(settings_dir);
         EngineConfig {
+            settings: Settings {
+                server: self.server,
+                youtube: self.youtube,
+                app: self.app,
+            },
             // Switched-off sources aren't started; headless mode has no
             // switch to turn them on, the app adds them itself.
             sources: self
@@ -199,20 +227,9 @@ impl ConfigFile {
                 .filter(|entry| entry.enabled)
                 .map(|entry| entry.config)
                 .collect(),
-            youtube: self.youtube,
-            bind: (Ipv4Addr::LOCALHOST, server.port).into(),
-            history: server.history,
-            theme: server.theme_source(&themes_dir),
-            themes_dir: Some(themes_dir),
-            stagger: Stagger::new(
-                Duration::from_millis(server.stagger_ms),
-                Duration::from_millis(server.stagger_max_ms),
-            ),
-            api: server.api,
-            api_origins: server.api_origins,
+            themes_dir: Some(Self::themes_dir(settings_dir)),
             // Headless mode has nobody to ask; the app switches this on.
             ask_api_origins: false,
-            newest: server.newest,
         }
     }
 }
@@ -290,28 +307,49 @@ mod tests {
             ],
             "switched-off sources don't start"
         );
-        assert_eq!(engine.bind.port(), 8080);
-        assert!(engine.api);
-        assert_eq!(engine.api_origins, ["https://game.example"]);
         assert!(!engine.ask_api_origins, "headless mode has nobody to ask");
-        assert_eq!(engine.newest, Newest::Top);
-        assert_eq!(engine.history, 5);
+        let server = &engine.settings.server;
+        assert_eq!(server.port, 8080);
+        assert!(server.api);
+        assert_eq!(server.api_origins, ["https://game.example"]);
+        assert_eq!(server.newest, Newest::Top);
+        assert_eq!(server.history, 5);
+        assert_eq!(engine.settings.app.appearance, Appearance::HighContrast);
         assert_eq!(
-            engine.theme,
-            ThemeSource::Folder("/settings/themes/cozy".into()),
-            "a theme name is a folder in themes/ next to the config file"
+            engine.themes_dir.as_deref(),
+            Some(Path::new("/settings/themes"))
         );
-        let minimal = ConfigFile {
-            server: ServerSettings {
-                theme: Some("minimal".into()),
+    }
+
+    #[test]
+    fn theme_settings_name_or_point_at_a_theme() {
+        let themes_dir = Path::new("/settings/themes");
+        let theme = |name: &str| {
+            ServerSettings {
+                theme: Some(name.into()),
                 ..ServerSettings::default()
-            },
-            ..ConfigFile::default()
+            }
+            .theme_source(Some(themes_dir))
         };
         assert_eq!(
-            minimal.into_engine_config(Path::new("/settings")).theme,
+            ServerSettings::default().theme_source(Some(themes_dir)),
+            ThemeSource::default()
+        );
+        assert_eq!(
+            theme("minimal"),
             ThemeSource::Builtin(crate::Builtin::Minimal),
             "built-in themes by name"
+        );
+        assert_eq!(
+            theme("cozy"),
+            ThemeSource::Folder(themes_dir.join("cozy")),
+            "a theme name is a folder in themes/ next to the config file"
+        );
+        let anywhere = std::env::temp_dir().join("my-theme");
+        assert_eq!(
+            theme(anywhere.to_str().unwrap()),
+            ThemeSource::Folder(anywhere),
+            "or the full path of any theme folder"
         );
     }
 

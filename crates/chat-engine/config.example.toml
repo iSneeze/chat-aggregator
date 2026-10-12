@@ -10,7 +10,8 @@ port = 7878
 history = 20
 # Overlay theme: "minimal" (built in: one line per message), or the name of
 # a folder in the "themes" folder next to this file, containing overlay.css
-# and/or message.html (without it: the built-in default).
+# and/or message.html (without it: the built-in default). The full path of
+# a theme folder elsewhere works too.
 # theme = "my theme"
 # When many messages arrive at once, show them this far apart (0 = off) ...
 stagger_ms = 250

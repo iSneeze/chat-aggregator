@@ -1,40 +1,47 @@
-//! The app's view of `config.toml`: keeps it and the running engine in step
-//! (which config entry belongs to which `SourceId`), and saves after every
-//! change a window makes (sources and their on/off switch, YouTube
-//! settings, overlay theme, the settings window).
+//! The app's side of `config.toml`: which config entry belongs to which
+//! running source (`SourceId`), and saving the file after every change a
+//! window makes (sources and their on/off switch, and the settings).
 //!
-//! Plain Rust without GPUI, so it's testable on its own. The windows only
-//! call these methods after the engine has confirmed a change. They share
-//! one `AppConfig` as a GPUI `Entity`, so none of them works on a stale copy.
+//! The settings themselves belong to the engine (`EngineHandle::settings`).
+//! `AppConfig` reads them from there instead of keeping a copy, so no window
+//! can work on a stale one, and windows change them with [`edit_settings`].
+//! One `AppConfig` is shared by all windows as a GPUI `Entity`.
 
 use std::path::{Path, PathBuf};
 
-use chat_engine::{
-    AppSettings, ConfigFile, EngineHandle, Newest, ServerSettings, SourceConfig, SourceEntry,
-    SourceId, YouTubeSettings,
-};
+use chat_engine::{ConfigFile, EngineHandle, Settings, SourceConfig, SourceEntry, SourceId};
+use gpui_kit::{AnyWindowHandle, App, Entity};
+use tokio::sync::watch;
+
+use crate::app_view::report;
 
 pub struct AppConfig {
-    file: ConfigFile,
     path: PathBuf,
+    /// The engine's settings: a `watch` always holds the latest ones.
+    settings: watch::Receiver<Settings>,
     /// In config order, which is also the order shown in the window.
     entries: Vec<(SourceId, SourceEntry)>,
 }
 
 impl AppConfig {
-    pub fn new(file: ConfigFile, path: PathBuf) -> Self {
+    /// `settings`: the engine's (`EngineHandle::settings`).
+    pub fn new(path: PathBuf, settings: watch::Receiver<Settings>) -> Self {
         Self {
-            file,
             path,
+            settings,
             entries: Vec::new(),
         }
     }
 
-    /// Adds every source from the config file to the engine, remembering
-    /// the id the engine hands out for each. Sources switched off last time
-    /// are listed but not started.
-    pub async fn start_all(&mut self, engine: &EngineHandle) -> anyhow::Result<()> {
-        for entry in self.file.sources.clone() {
+    /// Adds the sources from the config file to the engine, remembering the
+    /// id the engine hands out for each. Sources switched off last time are
+    /// listed but not started.
+    pub async fn start_all(
+        &mut self,
+        engine: &EngineHandle,
+        sources: Vec<SourceEntry>,
+    ) -> anyhow::Result<()> {
+        for entry in sources {
             let config = entry.config.clone();
             let id = if entry.enabled {
                 engine.add_source(config).await?
@@ -70,84 +77,19 @@ impl AppConfig {
         }
     }
 
-    pub fn server(&self) -> &ServerSettings {
-        &self.file.server
+    /// The current settings: a copy, taken out of the engine's `watch`
+    /// right away (a borrow of it, kept around, would lock the engine out of
+    /// changing them).
+    pub fn settings(&self) -> Settings {
+        self.settings.borrow().clone()
     }
 
-    /// Port, history, staggering and the API from the settings window. The
-    /// theme, the chat direction and the allowed sites are part of
-    /// `ServerSettings` too, but have their own setters: they change
-    /// elsewhere (main window, the "Allow" question), so this one keeps
-    /// whatever is set (the settings window's copy may be older).
-    pub fn set_server(&mut self, mut settings: ServerSettings) -> anyhow::Result<()> {
-        settings.theme = self.file.server.theme.take();
-        settings.newest = self.file.server.newest;
-        settings.api_origins = std::mem::take(&mut self.file.server.api_origins);
-        self.file.server = settings;
-        self.save()
-    }
-
-    /// The web sites allowed to use the JSON API.
-    pub fn api_origins(&self) -> &[String] {
-        &self.file.server.api_origins
-    }
-
-    /// Remembers a site the streamer allowed (once, however often it's
-    /// added).
-    pub fn allow_api_origin(&mut self, origin: &str) -> anyhow::Result<()> {
-        if self.api_origins().iter().any(|o| o == origin) {
-            return Ok(());
-        }
-        self.file.server.api_origins.push(origin.to_string());
-        self.save()
-    }
-
-    /// Forgets an allowed site; the next time it connects, it's asked about
-    /// again.
-    pub fn remove_api_origin(&mut self, origin: &str) -> anyhow::Result<()> {
-        self.file.server.api_origins.retain(|o| o != origin);
-        self.save()
-    }
-
-    pub fn set_newest(&mut self, newest: Newest) -> anyhow::Result<()> {
-        self.file.server.newest = newest;
-        self.save()
-    }
-
-    pub fn app(&self) -> &AppSettings {
-        &self.file.app
-    }
-
-    pub fn set_app(&mut self, settings: AppSettings) -> anyhow::Result<()> {
-        self.file.app = settings;
-        self.save()
-    }
-
-    pub fn youtube(&self) -> &YouTubeSettings {
-        &self.file.youtube
-    }
-
-    /// New YouTube settings (entered in the window): remember and save.
-    pub fn set_youtube(&mut self, settings: YouTubeSettings) -> anyhow::Result<()> {
-        self.file.youtube = settings;
-        self.save()
-    }
-
-    /// The folder the config file lives in; other app files go next to it.
+    /// The folder with the overlay themes, next to the config file.
     pub fn themes_dir(&self) -> PathBuf {
         ConfigFile::themes_dir(&self.settings_dir())
     }
 
-    /// The overlay theme's name; `None` = the built-in theme.
-    pub fn theme(&self) -> Option<&str> {
-        self.file.server.theme.as_deref()
-    }
-
-    pub fn set_theme(&mut self, theme: Option<String>) -> anyhow::Result<()> {
-        self.file.server.theme = theme;
-        self.save()
-    }
-
+    /// The folder the config file lives in; other app files go next to it.
     pub fn settings_dir(&self) -> PathBuf {
         self.path
             .parent()
@@ -159,17 +101,81 @@ impl AppConfig {
         &self.path
     }
 
-    fn save(&mut self) -> anyhow::Result<()> {
-        self.file.sources = self.entries.iter().map(|(_, e)| e.clone()).collect();
-        self.file.save(&self.path)
+    /// Writes `config.toml`: the engine's current settings, and the sources.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let Settings {
+            server,
+            youtube,
+            app,
+        } = self.settings();
+        let file = ConfigFile {
+            server,
+            youtube,
+            app,
+            sources: self.entries.iter().map(|(_, e)| e.clone()).collect(),
+        };
+        file.save(&self.path)
     }
+}
+
+/// Changes the engine's settings (`change` edits them, see
+/// `EngineHandle::edit_settings`), then saves `config.toml`. Runs in the
+/// background: problems are shown in `window`, or only logged if it has
+/// closed by then (the settings window applies its last edit while
+/// closing). Windows showing settings redraw when it's done, if they
+/// `cx.observe` the config.
+pub fn edit_settings(
+    config: &Entity<AppConfig>,
+    engine: &EngineHandle,
+    window: AnyWindowHandle,
+    change: impl FnOnce(&mut Settings) + Send + 'static,
+    cx: &mut App,
+) {
+    let engine = engine.clone();
+    save_after(
+        config,
+        window,
+        async move { engine.edit_settings(change).await },
+        cx,
+    );
+}
+
+/// [`edit_settings`] for any engine call that changes the settings: waits
+/// for `change`, then saves.
+pub fn save_after(
+    config: &Entity<AppConfig>,
+    window: AnyWindowHandle,
+    change: impl Future<Output = anyhow::Result<()>> + 'static,
+    cx: &mut App,
+) {
+    // A strong handle: the window that asked may close meanwhile (it's
+    // often the config's last owner then), and the save must still happen.
+    // It's only held until the engine answers, which is quick even while
+    // the app quits (a stopped engine answers with an error at once).
+    let config = config.clone();
+    cx.spawn(async move |cx| {
+        let problem = match change.await {
+            Ok(()) => config
+                .update(cx, |config, cx| {
+                    cx.notify();
+                    config.save()
+                })
+                .err()
+                .map(|e| format!("Couldn't save the settings: {e:#}")),
+            Err(e) => Some(format!("Couldn't change the settings: {e:#}")),
+        };
+        if let Some(message) = problem {
+            tracing::warn!("{message}");
+            let _ = window.update(cx, |_, window, cx| report(window, cx, message));
+        }
+    })
+    .detach();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chat_engine::{Engine, EngineConfig};
-    use std::net::Ipv4Addr;
+    use chat_engine::{Engine, EngineConfig, Newest};
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir()
@@ -177,23 +183,23 @@ mod tests {
             .join("config.toml")
     }
 
+    /// An engine on a free port (the OS picks one).
+    async fn start_engine() -> Engine {
+        let mut config = EngineConfig::default();
+        config.settings.server.port = 0;
+        Engine::start(config).await.unwrap()
+    }
+
     #[tokio::test]
     async fn changes_are_saved_in_config_order() {
-        let engine = Engine::start(EngineConfig {
-            bind: (Ipv4Addr::LOCALHOST, 0).into(),
-            ..EngineConfig::default()
-        })
-        .await
-        .unwrap();
+        let engine = start_engine().await;
         let handle = engine.handle();
 
         let path = temp_path("order");
-        let file = ConfigFile {
-            sources: vec![SourceConfig::Demo.into()],
-            ..ConfigFile::default()
-        };
-        let mut list = AppConfig::new(file, path.clone());
-        list.start_all(&handle).await.unwrap();
+        let mut list = AppConfig::new(path.clone(), handle.settings());
+        list.start_all(&handle, vec![SourceConfig::Demo.into()])
+            .await
+            .unwrap();
         assert_eq!(list.entries.len(), 1);
 
         let twitch = SourceConfig::Twitch {
@@ -217,32 +223,22 @@ mod tests {
     #[tokio::test]
     async fn switched_off_sources_stay_off_after_a_restart() {
         let path = temp_path("enabled");
-        let start = || async {
-            Engine::start(EngineConfig {
-                bind: (Ipv4Addr::LOCALHOST, 0).into(),
-                ..EngineConfig::default()
-            })
-            .await
-            .unwrap()
-        };
-        let file = ConfigFile {
-            sources: vec![SourceConfig::Demo.into()],
-            ..ConfigFile::default()
-        };
+        let sources = vec![SourceConfig::Demo.into()];
 
         // First run: switch the demo off.
-        let engine = start().await;
-        let mut config = AppConfig::new(file, path.clone());
-        config.start_all(&engine.handle()).await.unwrap();
+        let engine = start_engine().await;
+        let mut config = AppConfig::new(path.clone(), engine.handle().settings());
+        config.start_all(&engine.handle(), sources).await.unwrap();
         let id = config.entries[0].0;
         engine.handle().stop_source(id).await.unwrap();
         config.set_enabled(id, false).unwrap();
         engine.shutdown().await;
 
         // Next run: it's listed, but stopped.
-        let engine = start().await;
-        let mut config = AppConfig::new(ConfigFile::load(&path).unwrap(), path.clone());
-        config.start_all(&engine.handle()).await.unwrap();
+        let engine = start_engine().await;
+        let mut config = AppConfig::new(path.clone(), engine.handle().settings());
+        let saved = ConfigFile::load(&path).unwrap().sources;
+        config.start_all(&engine.handle(), saved).await.unwrap();
         let status = engine.handle().status();
         let status = status.borrow();
         let demo = status.source(config.entries[0].0).expect("still listed");
@@ -260,42 +256,29 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
-    #[test]
-    fn server_settings_keep_theme_and_direction() {
-        let path = temp_path("server");
-        let mut config = AppConfig::new(ConfigFile::default(), path.clone());
-        config.set_theme(Some("cozy".into())).unwrap();
-        config.set_newest(Newest::Top).unwrap();
-        config.allow_api_origin("https://game.example").unwrap();
-        config
-            .set_server(ServerSettings {
-                history: 5,
-                // The settings window doesn't manage these three.
-                theme: None,
-                newest: Newest::Bottom,
-                api_origins: vec![],
-                ..ServerSettings::default()
-            })
-            .unwrap();
-        let saved = ConfigFile::load(&path).unwrap();
-        assert_eq!(saved.server.history, 5);
-        assert_eq!(saved.server.theme.as_deref(), Some("cozy"));
-        assert_eq!(saved.server.newest, Newest::Top);
-        assert_eq!(saved.server.api_origins, ["https://game.example"]);
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
+    /// The file gets the engine's settings as they are now: no copy in the
+    /// app that could be behind.
+    #[tokio::test]
+    async fn saving_writes_the_engines_current_settings() {
+        let engine = start_engine().await;
+        let handle = engine.handle();
+        let path = temp_path("settings");
+        let config = AppConfig::new(path.clone(), handle.settings());
 
-    #[test]
-    fn allowed_sites_are_saved_once_and_can_be_removed() {
-        let path = temp_path("origins");
-        let mut config = AppConfig::new(ConfigFile::default(), path.clone());
-        config.allow_api_origin("https://game.example").unwrap();
-        config.allow_api_origin("https://game.example").unwrap();
-        config.allow_api_origin("https://other.example").unwrap();
-        let saved = || ConfigFile::load(&path).unwrap().server.api_origins;
-        assert_eq!(saved(), ["https://game.example", "https://other.example"]);
-        config.remove_api_origin("https://game.example").unwrap();
-        assert_eq!(saved(), ["https://other.example"]);
+        handle
+            .edit_settings(|s| {
+                s.server.newest = Newest::Top;
+                s.server.theme = Some("cozy".into());
+            })
+            .await
+            .unwrap();
+        assert_eq!(config.settings().server.newest, Newest::Top);
+        config.save().unwrap();
+        let saved = ConfigFile::load(&path).unwrap();
+        assert_eq!(saved.server.newest, Newest::Top);
+        assert_eq!(saved.server.theme.as_deref(), Some("cozy"));
+
+        engine.shutdown().await;
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

@@ -96,12 +96,15 @@ impl Default for ThemeSource {
 }
 
 impl ThemeSource {
-    /// A theme by the name used in `config.toml` and overlay URLs: a
-    /// built-in theme's name, otherwise a folder in `themes_dir`. The name
-    /// isn't checked here (see [`themes::validate_name`]).
+    /// A theme as `config.toml` names it: a built-in theme's name,
+    /// otherwise a folder in `themes_dir`, or the full path of a theme
+    /// folder anywhere. Trusted input only: the name isn't checked here
+    /// (names from elsewhere, like overlay URLs, go through
+    /// [`themes::validate_name`] first).
     pub fn named(themes_dir: &Path, name: &str) -> Self {
         match Builtin::from_name(name) {
             Some(builtin) => Self::Builtin(builtin),
+            // `join` with a full path gives that path, so both work.
             None => Self::Folder(themes_dir.join(name)),
         }
     }
@@ -408,6 +411,12 @@ mod tests {
         assert_eq!(
             ThemeSource::named(themes, "cozy"),
             ThemeSource::Folder(themes.join("cozy"))
+        );
+        let anywhere = std::env::temp_dir().join("cozy");
+        assert_eq!(
+            ThemeSource::named(themes, anywhere.to_str().unwrap()),
+            ThemeSource::Folder(anywhere),
+            "a full path is that folder, wherever it is"
         );
         assert_eq!(ThemeSource::default().css().unwrap(), DEFAULT_CSS);
     }

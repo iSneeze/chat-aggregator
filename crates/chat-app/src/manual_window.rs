@@ -471,7 +471,6 @@ fn non_empty(value: String, what: &str) -> Result<String, String> {
 /// UI tests, headless like the main window's (see `app_view::tests`).
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
     use std::time::Duration;
 
     use chat_core::{ChatEvent, MessageKind};
@@ -496,12 +495,9 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let engine = runtime
-            .block_on(Engine::start(EngineConfig {
-                bind: (Ipv4Addr::LOCALHOST, 0).into(),
-                ..EngineConfig::default()
-            }))
-            .unwrap();
+        let mut config = EngineConfig::default();
+        config.settings.server.port = 0; // the OS picks a free one
+        let engine = runtime.block_on(Engine::start(config)).unwrap();
         let handle = engine.handle();
         let mut view = None;
         let window = cx.add_window(|window, cx| {

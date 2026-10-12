@@ -27,7 +27,7 @@ use gpui_kit::*;
 use crate::appearance;
 use chat_engine::{Appearance, Newest};
 
-use crate::app_config::AppConfig;
+use crate::app_config::{AppConfig, edit_settings, save_after};
 use crate::manual_window::ManualWindow;
 use crate::settings_window::SettingsWindow;
 use crate::youtube_panel::YouTubePanel;
@@ -150,13 +150,14 @@ impl AppView {
         let youtube =
             cx.new(|cx| YouTubePanel::new(engine.clone(), tokio, config.clone(), window, cx));
         let themes = themes::list(&config.read(cx).themes_dir());
-        let current = theme_label(config.read(cx).theme());
+        let settings = config.read(cx).settings();
+        let current = theme_label(settings.server.theme.as_deref());
         let theme_select = cx.new(|cx| {
             let mut select = SelectState::new(theme_items(&themes), None, window, cx);
             select.set_selected_value(&current, window, cx);
             select
         });
-        let current_newest = newest_label(config.read(cx).server().newest);
+        let current_newest = newest_label(settings.server.newest);
         let newest_select = cx.new(|cx| {
             let items = NEWEST_CHOICES.iter().map(|(_, l)| (*l).into()).collect();
             let mut select = SelectState::new(items, None, window, cx);
@@ -204,11 +205,13 @@ impl AppView {
             // Follow the system's light/dark setting when it changes, unless
             // a fixed look is chosen in the settings.
             cx.observe_window_appearance(window, |this, window, cx| {
-                let appearance = this.config.read(cx).app().appearance;
+                let appearance = this.config.read(cx).settings().app.appearance;
                 if appearance == Appearance::System {
                     appearance::apply(appearance, Some(window), cx);
                 }
             }),
+            // Settings changed (here or in another window): redraw.
+            cx.observe(&config, |_, _, cx| cx.notify()),
         ];
 
         let status = engine.status().borrow().clone();
@@ -244,7 +247,7 @@ impl AppView {
         if themes == self.themes {
             return;
         }
-        let current = theme_label(config.theme());
+        let current = theme_label(config.settings().server.theme.as_deref());
         self.themes = themes;
         let items = theme_items(&self.themes);
         self.theme_select.update(cx, |select, cx| {
@@ -267,28 +270,26 @@ impl AppView {
             Some(builtin) => Some(builtin.name().to_string()),
             None => Some(label.to_string()),
         };
-        let saved = self.config.update(cx, |config, _| config.set_theme(theme));
-        // The new choice is in the config now, even if saving it failed: the
-        // engine gets it the same way it got the one at startup.
-        let config = self.config.read(cx);
-        self.engine
-            .set_theme(config.server().theme_source(&config.themes_dir()));
-        if let Err(e) = saved {
-            self.report_save_error(e, window, cx);
-        }
+        edit_settings(
+            &self.config,
+            &self.engine,
+            window.window_handle(),
+            move |settings| settings.server.theme = theme,
+            cx,
+        );
         cx.notify();
     }
 
     /// The overlays' default chat direction: they reload to show it (those
     /// with `?newest=` in their URL keep their own), and it's saved.
     fn set_newest(&mut self, newest: Newest, window: &mut Window, cx: &mut Context<Self>) {
-        self.engine.set_newest(newest);
-        let saved = self
-            .config
-            .update(cx, |config, _| config.set_newest(newest));
-        if let Err(e) = saved {
-            self.report_save_error(e, window, cx);
-        }
+        edit_settings(
+            &self.config,
+            &self.engine,
+            window.window_handle(),
+            move |settings| settings.server.newest = newest,
+            cx,
+        );
         cx.notify();
     }
 
@@ -440,14 +441,18 @@ impl AppView {
     ) {
         self.asking = None;
         self.answered.push(origin.to_string());
-        self.engine.answer_api_request(origin, allow);
+        let (engine, origin) = (self.engine.clone(), origin.to_string());
         if allow {
-            let saved = self
-                .config
-                .update(cx, |config, _| config.allow_api_origin(origin));
-            if let Err(e) = saved {
-                self.report_save_error(e, window, cx);
-            }
+            // The engine adds it to the allowed sites in its settings.
+            let answer = async move { engine.answer_api_request(&origin, true).await };
+            save_after(&self.config, window.window_handle(), answer, cx);
+        } else {
+            cx.spawn(async move |_, _| {
+                if let Err(e) = engine.answer_api_request(&origin, false).await {
+                    tracing::warn!("couldn't pass on the answer: {e:#}");
+                }
+            })
+            .detach();
         }
         cx.notify();
     }
@@ -656,13 +661,15 @@ impl AppView {
 
     fn render_themes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let missing = self
-            .config
-            .read(cx)
-            .theme()
-            .filter(|name| Builtin::from_name(name).is_none())
-            .filter(|name| !self.themes.iter().any(|t| t == name))
-            .map(str::to_string);
+        // A theme folder that isn't there: a name from the themes folder, or
+        // a full path set in config.toml. (Built-in themes have no folder.)
+        let config = self.config.read(cx);
+        let server = config.settings().server;
+        let missing = server
+            .theme_source(Some(&config.themes_dir()))
+            .folder()
+            .is_some_and(|dir| !dir.is_dir())
+            .then(|| server.theme.clone().unwrap_or_default());
 
         let row = h_flex()
             .gap_2()
@@ -1010,11 +1017,10 @@ pub(crate) fn report(window: &mut Window, cx: &mut App, message: String) {
 /// built-in `#[test]`.
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
 
     use std::path::PathBuf;
 
-    use chat_engine::{ConfigFile, Engine, EngineConfig, ThemeSource, YouTubeSettings};
+    use chat_engine::{ConfigFile, Engine, EngineConfig};
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
@@ -1044,28 +1050,21 @@ mod tests {
     }
 
     /// `open` with engine settings of the test's choosing (always on a free
-    /// local port).
-    fn open_with(cx: &mut TestAppContext, engine: EngineConfig) -> Ui {
+    /// local port, with the themes folder in the test's settings folder).
+    fn open_with(cx: &mut TestAppContext, mut engine: EngineConfig) -> Ui {
         cx.update(gpui_kit::init);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
             .unwrap();
-        let engine = runtime
-            .block_on(Engine::start(EngineConfig {
-                bind: (Ipv4Addr::LOCALHOST, 0).into(),
-                ..engine
-            }))
-            .unwrap();
-        let file = ConfigFile {
-            youtube: YouTubeSettings::default(), // not set up
-            ..ConfigFile::default()
-        };
         let settings_dir =
             std::env::temp_dir().join(format!("chat-app-ui-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings_dir);
-        let config = AppConfig::new(file, settings_dir.join("config.toml"));
+        engine.settings.server.port = 0; // the OS picks a free one
+        engine.themes_dir = Some(ConfigFile::themes_dir(&settings_dir));
+        let engine = runtime.block_on(Engine::start(engine)).unwrap();
+        let config = AppConfig::new(settings_dir.join("config.toml"), engine.handle().settings());
         let (handle, tokio) = (engine.handle(), runtime.handle().clone());
 
         // `add_window` builds the root element; the view is created inside
@@ -1163,24 +1162,22 @@ mod tests {
             })
             .unwrap();
         };
+        // `None` while there's no file yet.
         let saved = || {
             ConfigFile::load(&ui.settings_dir.join("config.toml"))
-                .unwrap()
-                .server
-                .theme
+                .ok()
+                .map(|file| file.server.theme)
         };
+        let engines = || ui.engine.handle().settings().borrow().server.theme.clone();
 
         pick(cx, "Minimal");
-        assert_eq!(
-            ui.engine.handle().theme(),
-            ThemeSource::Builtin(chat_engine::Builtin::Minimal)
-        );
-        assert_eq!(saved().as_deref(), Some("minimal"));
+        run_until(cx, || saved() == Some(Some("minimal".into())));
+        assert_eq!(engines().as_deref(), Some("minimal"));
         assert_eq!(super::theme_label(Some("minimal")), "Minimal");
 
         pick(cx, "Default");
-        assert_eq!(ui.engine.handle().theme(), ThemeSource::default());
-        assert_eq!(saved(), None, "the default is saved as no theme");
+        run_until(cx, || saved() == Some(None));
+        assert_eq!(engines(), None, "the default is saved as no theme");
     }
 
     #[gpui_kit::test]
@@ -1199,16 +1196,21 @@ mod tests {
             theme.join("overlay.css").exists(),
             "created from the defaults"
         );
+        let saved = || {
+            ConfigFile::load(&ui.settings_dir.join("config.toml"))
+                .is_ok_and(|file| file.server.theme.as_deref() == Some("Cozy Night"))
+        };
+        run_until(cx, saved);
         assert_eq!(
-            ui.engine.handle().theme(),
-            ThemeSource::Folder(theme),
-            "overlays switch to it"
-        );
-        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml")).unwrap();
-        assert_eq!(
-            saved.server.theme.as_deref(),
+            ui.engine
+                .handle()
+                .settings()
+                .borrow()
+                .server
+                .theme
+                .as_deref(),
             Some("Cozy Night"),
-            "and it's saved"
+            "overlays switch to it"
         );
     }
 
@@ -1260,9 +1262,14 @@ mod tests {
             });
         })
         .unwrap();
-        assert_eq!(ui.engine.handle().newest(), chat_engine::Newest::Top);
-        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml")).unwrap();
-        assert_eq!(saved.server.newest, chat_engine::Newest::Top);
+        run_until(cx, || {
+            ConfigFile::load(&ui.settings_dir.join("config.toml"))
+                .is_ok_and(|file| file.server.newest == chat_engine::Newest::Top)
+        });
+        assert_eq!(
+            ui.engine.handle().settings().borrow().server.newest,
+            chat_engine::Newest::Top
+        );
     }
 
     #[gpui_kit::test]
@@ -1319,14 +1326,12 @@ mod tests {
 
     /// An engine like the app's: the API on, asking about web sites.
     fn open_asking(cx: &mut TestAppContext) -> Ui {
-        open_with(
-            cx,
-            EngineConfig {
-                api: true,
-                ask_api_origins: true,
-                ..EngineConfig::default()
-            },
-        )
+        let mut config = EngineConfig {
+            ask_api_origins: true,
+            ..EngineConfig::default()
+        };
+        config.settings.server.api = true;
+        open_with(cx, config)
     }
 
     /// A page on `GAME` opening the JSON API, as raw HTTP (the app's tests
@@ -1407,8 +1412,11 @@ mod tests {
             answer.contains(" 101 "),
             "the waiting connection got in: {answer}"
         );
-        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml")).unwrap();
-        assert_eq!(saved.server.api_origins, [GAME], "and the site is saved");
+        // And the site is saved.
+        run_until(cx, || {
+            ConfigFile::load(&ui.settings_dir.join("config.toml"))
+                .is_ok_and(|file| file.server.api_origins == [GAME])
+        });
     }
 
     #[gpui_kit::test]
@@ -1429,7 +1437,9 @@ mod tests {
         let ui = open_asking(cx);
         let connecting = connect_as_game(&ui);
         run_until_window(cx, &ui, |window| window.try_find("dialog").is_some());
-        ui.engine.handle().set_api_enabled(false);
+        ui._runtime
+            .block_on(ui.engine.handle().edit_settings(|s| s.server.api = false))
+            .unwrap();
         run_until_window(cx, &ui, |window| window.try_find("dialog").is_none());
         let answer = ui._runtime.block_on(connecting).unwrap();
         assert!(answer.contains(" 403 "), "{answer}");

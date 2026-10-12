@@ -23,7 +23,7 @@
 //!                         YOUTUBE_API_KEY if set, otherwise the login
 //!   --theme <name|dir>    overlay theme: "minimal" (built in), a folder name in
 //!                         "themes" next to the config file, or a path to any
-//!                         theme folder
+//!                         theme folder (like `theme` in the config file)
 //!   --port <n>            default 7878
 //!   --history <n>         messages replayed to a new overlay, default 20
 //!   --stagger <ms>        spacing of message bursts in the overlay, default 250 (0 = off)
@@ -48,8 +48,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use chat_engine::{
-    ConfigFile, Engine, EngineConfig, Health, Newest, SourceConfig, Status, ThemeSource,
-    YouTubeSettings,
+    ConfigFile, Engine, EngineConfig, Health, Newest, SourceConfig, Status, YouTubeSettings,
 };
 use chat_youtube::Auth;
 use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
@@ -78,9 +77,11 @@ async fn main() -> anyhow::Result<()> {
 
     let config = build_config(&args)?;
     match args.first().map(String::as_str) {
-        Some("--youtube-login") => return youtube_login(&config.youtube.oauth_app()?).await,
+        Some("--youtube-login") => {
+            return youtube_login(&config.settings.youtube.oauth_app()?).await;
+        }
         Some("--youtube-logout") => {
-            oauth::logout(&config.youtube.oauth_app()?).await?;
+            oauth::logout(&config.settings.youtube.oauth_app()?).await?;
             println!("logged out of YouTube");
             return Ok(());
         }
@@ -93,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let api = config.api;
+    let api = config.settings.server.api;
     let engine = Engine::start(config).await?;
     println!("\n  overlay:  http://{}/   (Ctrl+C to stop)", engine.addr());
     if api {
@@ -168,7 +169,6 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
-    let mut theme_path = None;
 
     let mut flag_sources = Vec::new();
     let mut args = args.iter().cloned();
@@ -190,11 +190,18 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
             // A theme name, or a path to any theme folder.
             "--theme" => {
                 let theme = next_value(&mut args, "--theme")?;
-                if theme.contains(['/', '\\']) {
-                    theme_path = Some(PathBuf::from(theme));
+                server.theme = Some(if theme.contains(['/', '\\']) {
+                    // A path as typed here means "from where I am"; in the
+                    // settings, only a full path does (a relative one would
+                    // be a folder inside "themes").
+                    let path =
+                        std::path::absolute(&theme).with_context(|| format!("--theme {theme}"))?;
+                    path.into_os_string()
+                        .into_string()
+                        .map_err(|_| anyhow::anyhow!("--theme: the path isn't valid text"))?
                 } else {
-                    server.theme = Some(theme);
-                }
+                    theme
+                });
             }
             "--port" => server.port = parse(&mut args, "--port")?,
             "--history" => server.history = parse(&mut args, "--history")?,
@@ -217,11 +224,7 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
         file.sources = flag_sources.into_iter().map(Into::into).collect();
     }
     apply_env(&mut file.youtube);
-    let mut config = file.into_engine_config(&settings_dir);
-    if let Some(path) = theme_path {
-        config.theme = ThemeSource::Folder(path);
-    }
-    Ok(config)
+    Ok(file.into_engine_config(&settings_dir))
 }
 
 fn apply_env(youtube: &mut YouTubeSettings) {

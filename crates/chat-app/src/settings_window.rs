@@ -11,9 +11,7 @@
 
 use std::time::Duration;
 
-use chat_engine::{
-    AppSettings, Appearance, DEFAULT_HISTORY, DEFAULT_PORT, EngineHandle, ServerSettings, Stagger,
-};
+use chat_engine::{Appearance, DEFAULT_HISTORY, DEFAULT_PORT, EngineHandle, ServerSettings};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::setting::{
@@ -23,10 +21,9 @@ use gpui_kit::component::{ActiveTheme, IconName, Root, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app_config::AppConfig;
+use crate::app_config::{AppConfig, edit_settings};
 use crate::app_view::report;
 use crate::appearance;
-use crate::youtube_panel::apply_youtube;
 
 /// How long typing must pause before edits apply.
 const APPLY_AFTER: Duration = Duration::from_millis(800);
@@ -39,11 +36,45 @@ const APPEARANCES: [(Appearance, &str, &str); 4] = [
     (Appearance::HighContrast, "high-contrast", "High contrast"),
 ];
 
-/// The settings being edited, not yet applied.
+/// What this window edits, not yet applied. Only these settings: the
+/// theme, the chat direction and the allowed sites change in other places
+/// too, so this window never writes them (and so can't undo a change made
+/// there while it was open).
 #[derive(Clone, PartialEq)]
 struct Draft {
-    server: ServerSettings,
+    history: usize,
+    stagger_ms: u64,
+    stagger_max_ms: u64,
+    port: u16,
+    api: bool,
     api_key: String,
+}
+
+// The engine's settings by their full name: `Settings` alone is gpui-kit's
+// settings page component here.
+impl Draft {
+    fn new(settings: &chat_engine::Settings) -> Self {
+        let server = &settings.server;
+        Self {
+            history: server.history,
+            stagger_ms: server.stagger_ms,
+            stagger_max_ms: server.stagger_max_ms,
+            port: server.port,
+            api: server.api,
+            api_key: settings.youtube.api_key.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Writes the draft into `settings`, leaving everything else as it is.
+    fn write_to(self, settings: &mut chat_engine::Settings) {
+        let server = &mut settings.server;
+        server.history = self.history;
+        server.stagger_ms = self.stagger_ms;
+        server.stagger_max_ms = self.stagger_max_ms;
+        server.port = self.port;
+        server.api = self.api;
+        settings.youtube.api_key = Some(self.api_key).filter(|key| !key.is_empty());
+    }
 }
 
 pub struct SettingsWindow {
@@ -69,11 +100,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let current = config.read(cx);
-        let draft = Draft {
-            server: current.server().clone(),
-            api_key: current.youtube().api_key.clone().unwrap_or_default(),
-        };
+        let draft = Draft::new(&config.read(cx).settings());
         // Our own input (not gpui-kit's settings text field) to mask it.
         let api_key = cx.new(|cx| {
             InputState::new(window, cx)
@@ -92,13 +119,11 @@ impl SettingsWindow {
             // in its question): redraw the list when they do.
             cx.observe(&config, |_, _, cx| cx.notify()),
             // Closing the window within the pause mustn't lose the last
-            // edit: apply it now. (No window to report in any more, so
-            // problems only go to the log.)
+            // edit: apply it now. (Problems then only go to the log: there's
+            // no window left to show them in.)
             cx.on_release(|this, cx| {
-                if this.dirty
-                    && let Err(e) = this.apply(cx)
-                {
-                    tracing::warn!("couldn't save the settings: {e:#}");
+                if this.dirty {
+                    this.apply(cx);
                 }
             }),
         ];
@@ -122,111 +147,71 @@ impl SettingsWindow {
             return;
         }
         self.dirty = true;
-        let window = self.window;
         self.pending = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(APPLY_AFTER).await;
-            let _ = window.update(cx, |_, window, cx| {
-                let result = this.update(cx, |this, cx| this.apply(cx));
-                if let Ok(Err(e)) = result {
-                    report(window, cx, format!("Couldn't save the settings: {e:#}"));
-                }
-            });
+            let _ = this.update(cx, |this, cx| this.apply(cx));
         }));
         cx.notify();
     }
 
-    /// Hands the draft to the engine and saves it. Only what changed is
-    /// touched: e.g. YouTube restarts only for a new API key. Takes `App`
+    /// Hands the draft to the engine, which applies only what changed (e.g.
+    /// YouTube restarts only for a new API key), and saves it. Takes `App`
     /// rather than `Context<Self>`: it's also called while the view is being
     /// released, when only `App` is available. (A `Context` works too: it
     /// derefs to `App`.)
-    fn apply(&mut self, cx: &mut App) -> anyhow::Result<()> {
+    fn apply(&mut self, cx: &mut App) {
         self.dirty = false;
         let draft = self.draft.clone();
-        let (server, mut youtube) = {
-            let config = self.config.read(cx);
-            (config.server().clone(), config.youtube().clone())
-        };
-
-        let new = &draft.server;
-        if new.history != server.history {
-            self.engine.set_history(new.history);
-        }
-        if (new.stagger_ms, new.stagger_max_ms) != (server.stagger_ms, server.stagger_max_ms) {
-            self.engine.set_stagger(Stagger::new(
-                Duration::from_millis(new.stagger_ms),
-                Duration::from_millis(new.stagger_max_ms),
-            ));
-        }
-        if new.api != server.api {
-            self.engine.set_api_enabled(new.api);
-        }
-        // (A new port is only saved: the server keeps its socket until the
-        // next start.)
-        if *new != server {
-            self.config
-                .update(cx, |config, _| config.set_server(new.clone()))?;
-        }
-
-        let key = Some(draft.api_key).filter(|key| !key.is_empty());
-        if key != youtube.api_key {
-            youtube.api_key = key;
-            apply_youtube(&self.config, &self.engine, youtube, self.window, cx)?;
-        }
-        Ok(())
+        edit_settings(
+            &self.config,
+            &self.engine,
+            self.window,
+            move |settings| draft.write_to(settings),
+            cx,
+        );
     }
 
     /// Switches the JSON API on or off right away (a switch has no
     /// half-typed states to wait out). Edits still waiting for the pause go
     /// along with it.
     fn set_api(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.draft.server.api = on;
+        self.draft.api = on;
         // Dropping the pending timer cancels it; `apply` does its work now.
         self.pending = None;
-        if let Err(e) = self.apply(cx) {
-            let window = self.window;
-            let message = format!("Couldn't save the settings: {e:#}");
-            cx.defer(move |cx| {
-                let _ = window.update(cx, |_, window, cx| report(window, cx, message));
-            });
-        }
+        self.apply(cx);
         cx.notify();
     }
 
     /// Forgets an allowed web site: its API connections end now, and it's
     /// asked about again the next time it connects.
     fn remove_api_origin(&mut self, origin: &str, cx: &mut Context<Self>) {
-        let saved = self
-            .config
-            .update(cx, |config, _| config.remove_api_origin(origin));
-        let remaining = self.config.read(cx).api_origins().to_vec();
-        self.engine.set_api_origins(remaining);
-        if let Err(e) = saved {
-            // See `set_appearance` for why this waits for `defer`.
-            let window = self.window;
-            let message = format!("Couldn't save the settings: {e:#}");
-            cx.defer(move |cx| {
-                let _ = window.update(cx, |_, window, cx| report(window, cx, message));
-            });
-        }
-        cx.notify();
+        let origin = origin.to_string();
+        edit_settings(
+            &self.config,
+            &self.engine,
+            self.window,
+            move |settings| settings.server.api_origins.retain(|o| *o != origin),
+            cx,
+        );
     }
 
     /// Changes the look right away, and saves it.
     fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
-        let saved = self
-            .config
-            .update(cx, |config, _| config.set_app(AppSettings { appearance }));
-        // The settings fields call this while their window is busy
-        // dispatching the click; `defer` runs it right after, when the
-        // window is free to be updated.
+        edit_settings(
+            &self.config,
+            &self.engine,
+            self.window,
+            move |settings| settings.app.appearance = appearance,
+            cx,
+        );
+        // Shown at once rather than after the engine's answer. The settings
+        // fields call this while their window is busy dispatching the
+        // click; `defer` runs it right after, when the window is free to be
+        // updated.
         let window = self.window;
         cx.defer(move |cx| {
             let _ = window.update(cx, |_, window, cx| {
                 appearance::apply(appearance, Some(window), cx);
-                if let Err(e) = saved {
-                    report(window, cx, format!("Couldn't save the settings: {e:#}"));
-                }
             });
         });
     }
@@ -247,7 +232,7 @@ impl SettingsWindow {
                 move |cx| {
                     let current = read
                         .upgrade()
-                        .map(|view| view.read(cx).config.read(cx).app().appearance)
+                        .map(|view| view.read(cx).config.read(cx).settings().app.appearance)
                         .unwrap_or_default();
                     APPEARANCES
                         .iter()
@@ -289,10 +274,7 @@ impl SettingsWindow {
         let json_api = {
             let (read, write) = (view.clone(), view.clone());
             SettingField::switch(
-                move |cx| {
-                    read.upgrade()
-                        .is_some_and(|view| view.read(cx).draft.server.api)
-                },
+                move |cx| read.upgrade().is_some_and(|view| view.read(cx).draft.api),
                 move |on, cx| {
                     if let Some(view) = write.upgrade() {
                         view.update(cx, |this, cx| this.set_api(on, cx));
@@ -317,7 +299,7 @@ impl SettingsWindow {
             SettingField::render(move |_, _, cx| {
                 let origins = view
                     .upgrade()
-                    .map(|v| v.read(cx).config.read(cx).api_origins().to_vec())
+                    .map(|v| v.read(cx).config.read(cx).settings().server.api_origins)
                     .unwrap_or_default();
                 let none = origins.is_empty();
                 let rows = origins.into_iter().enumerate().map(|(ix, origin)| {
@@ -387,13 +369,13 @@ impl SettingsWindow {
                     .items([
                         SettingItem::new(
                             "Replay history",
-                            number(&view, 0., 200., 1., |d| &mut d.server.history)
+                            number(&view, 0., 200., 1., |d| &mut d.history)
                                 .default_value(DEFAULT_HISTORY as f64),
                         )
                         .description("Messages a (re)loaded overlay shows right away."),
                         SettingItem::new(
                             "Burst spacing (ms)",
-                            number(&view, 0., 1000., 50., |d| &mut d.server.stagger_ms)
+                            number(&view, 0., 1000., 50., |d| &mut d.stagger_ms)
                                 .default_value(ServerSettings::default().stagger_ms as f64),
                         )
                         .description(
@@ -402,7 +384,7 @@ impl SettingsWindow {
                         ),
                         SettingItem::new(
                             "Longest delay (ms)",
-                            number(&view, 0., 5000., 250., |d| &mut d.server.stagger_max_ms)
+                            number(&view, 0., 5000., 250., |d| &mut d.stagger_max_ms)
                                 .default_value(ServerSettings::default().stagger_max_ms as f64),
                         )
                         .description("A message is never held back longer than this."),
@@ -425,7 +407,7 @@ impl SettingsWindow {
                     ),
                     SettingItem::new(
                         "Port",
-                        number(&view, 1024., 65535., 1., |d| &mut d.server.port)
+                        number(&view, 1024., 65535., 1., |d| &mut d.port)
                             .default_value(DEFAULT_PORT as f64),
                     )
                     .description(
@@ -525,7 +507,6 @@ impl Render for SettingsWindow {
 /// UI tests, headless (see `app_view::tests` for why imports are explicit).
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
     use std::path::PathBuf;
 
     use chat_core::ChatEvent;
@@ -557,17 +538,14 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let engine = runtime
-            .block_on(Engine::start(EngineConfig {
-                bind: (Ipv4Addr::LOCALHOST, 0).into(),
-                ..EngineConfig::default()
-            }))
-            .unwrap();
+        let mut config = EngineConfig::default();
+        config.settings.server.port = 0; // the OS picks a free one
+        let engine = runtime.block_on(Engine::start(config)).unwrap();
         let path = std::env::temp_dir()
             .join(format!("chat-app-settings-{}-{name}", std::process::id()))
             .join("config.toml");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
-        let config = AppConfig::new(ConfigFile::default(), path.clone());
+        let config = AppConfig::new(path.clone(), engine.handle().settings());
         let handle = engine.handle();
         let mut view = None;
         let window = cx.add_window(|window, cx| {
@@ -593,8 +571,12 @@ mod tests {
         /// What a number field does on each keystroke.
         fn type_history(&self, value: usize, cx: &mut TestAppContext) {
             self.view().update(cx, |this, cx| {
-                this.change(|draft| draft.server.history = value, cx);
+                this.change(|draft| draft.history = value, cx);
             });
+        }
+
+        fn engines(&self) -> chat_engine::Settings {
+            self.engine.handle().settings().borrow().clone()
         }
 
         fn fill_history(&self, count: usize) {
@@ -614,6 +596,20 @@ mod tests {
         }
     }
 
+    /// Lets GPUI tasks run until `done`: the engine answers from tokio's
+    /// threads in real time (see `manual_window::tests::run_until`).
+    fn run_until(cx: &mut TestAppContext, mut done: impl FnMut() -> bool) {
+        cx.executor().allow_parking();
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if done() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("timed out");
+    }
+
     #[gpui_kit::test]
     fn typing_applies_only_the_final_value_after_a_pause(cx: &mut TestAppContext) {
         let ui = open(cx, "debounce");
@@ -629,8 +625,8 @@ mod tests {
         assert_eq!(ui.replayed(), 20);
 
         cx.executor().advance_clock(APPLY_AFTER);
-        cx.run_until_parked();
-        assert_eq!(ui.saved().unwrap().server.history, 25);
+        run_until(cx, || ui.saved().is_some_and(|f| f.server.history == 25));
+        assert_eq!(ui.engines().server.history, 25);
         assert_eq!(ui.replayed(), 20, "the \"2\" in between never applied");
         ui.fill_history(10);
         assert_eq!(ui.replayed(), 25, "the engine uses the new size");
@@ -640,15 +636,14 @@ mod tests {
     fn closing_the_window_applies_what_is_pending(cx: &mut TestAppContext) {
         let mut ui = open(cx, "close");
         ui.view().update(cx, |this, cx| {
-            this.change(|draft| draft.server.stagger_ms = 0, cx);
+            this.change(|draft| draft.stagger_ms = 0, cx);
         });
         // Nothing may hold the view any more for it to be released.
         ui.view = None;
         cx.update_window(ui.window.into(), |_, window, _| window.remove_window())
             .unwrap();
-        cx.run_until_parked();
-        assert_eq!(ui.saved().unwrap().server.stagger_ms, 0);
-        assert!(ui.engine.handle().stagger().is_off());
+        run_until(cx, || ui.saved().is_some_and(|f| f.server.stagger_ms == 0));
+        assert!(ui.engines().server.stagger().is_off());
     }
 
     /// The API key goes through `apply_youtube` like the YouTube section's
@@ -657,33 +652,31 @@ mod tests {
     #[gpui_kit::test]
     fn a_pending_api_key_is_saved_when_the_window_closes(cx: &mut TestAppContext) {
         let mut ui = open(cx, "api-key");
-        // The engine's answer to the restart comes from tokio's threads:
-        // the test executor must accept that (see `manual_window::tests`).
-        cx.executor().allow_parking();
         ui.view().update(cx, |this, cx| {
             this.change(|draft| draft.api_key = "test-key".into(), cx);
         });
         ui.view = None;
         cx.update_window(ui.window.into(), |_, window, _| window.remove_window())
             .unwrap();
-        cx.run_until_parked();
-        assert_eq!(
-            ui.saved().unwrap().youtube.api_key.as_deref(),
-            Some("test-key")
-        );
+        run_until(cx, || {
+            ui.saved()
+                .is_some_and(|f| f.youtube.api_key.as_deref() == Some("test-key"))
+        });
+        assert_eq!(ui.engines().youtube.api_key.as_deref(), Some("test-key"));
     }
 
     #[gpui_kit::test]
     fn the_json_api_switches_at_once_and_is_saved(cx: &mut TestAppContext) {
         let ui = open(cx, "api");
-        assert!(!ui.engine.handle().api_enabled(), "off by default");
+        assert!(!ui.engines().server.api, "off by default");
+        // No pause to wait out: the switch applies on the spot.
         ui.view().update(cx, |this, cx| this.set_api(true, cx));
-        assert!(ui.engine.handle().api_enabled(), "no waiting");
-        assert!(ui.saved().unwrap().server.api);
+        run_until(cx, || ui.saved().is_some_and(|f| f.server.api));
+        assert!(ui.engines().server.api);
 
         ui.view().update(cx, |this, cx| this.set_api(false, cx));
-        assert!(!ui.engine.handle().api_enabled());
-        assert!(!ui.saved().unwrap().server.api);
+        run_until(cx, || ui.saved().is_some_and(|f| !f.server.api));
+        assert!(!ui.engines().server.api);
     }
 
     #[gpui_kit::test]
@@ -696,23 +689,29 @@ mod tests {
         cx.update(|cx| {
             assert_eq!(Theme::global(cx).theme_name().as_ref(), "High Contrast");
         });
-        assert_eq!(ui.saved().unwrap().app.appearance, Appearance::HighContrast);
+        run_until(cx, || {
+            ui.saved()
+                .is_some_and(|f| f.app.appearance == Appearance::HighContrast)
+        });
     }
 
     #[gpui_kit::test]
     fn removing_an_allowed_site_is_saved(cx: &mut TestAppContext) {
         const GAME: &str = "https://game.example";
         let ui = open(cx, "origins");
-        ui.view().update(cx, |this, cx| {
-            // As "Allow" in the main window's question does it.
-            this.config
-                .update(cx, |config, _| config.allow_api_origin(GAME))
-                .unwrap();
-        });
-        assert_eq!(ui.saved().unwrap().server.api_origins, [GAME]);
+        // "Allow" in the main window's question.
+        let handle = ui.engine.handle();
+        ui._runtime
+            .block_on(handle.answer_api_request(GAME, true))
+            .unwrap();
+        assert_eq!(ui.engines().server.api_origins, [GAME]);
+
         ui.view()
             .update(cx, |this, cx| this.remove_api_origin(GAME, cx));
-        assert!(ui.saved().unwrap().server.api_origins.is_empty());
+        run_until(cx, || {
+            ui.saved().is_some_and(|f| f.server.api_origins.is_empty())
+        });
+        assert!(ui.engines().server.api_origins.is_empty());
     }
 
     /// Regression test: errors reported in this window must reach the

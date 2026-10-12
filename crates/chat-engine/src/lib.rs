@@ -30,81 +30,51 @@ mod actor;
 mod config;
 mod config_file;
 mod factory;
+mod settings;
 mod status;
 
 pub use chat_server::{ANSWER_TIMEOUT, Builtin, Newest, Stagger, ThemeSource};
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
-pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, SourceEntry};
+pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, Settings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
 
 pub use actor::ManualInput;
 use actor::{Actor, Command, Reply};
 use factory::{Production, SourceFactory};
+use settings::Controls;
 
 pub const DEFAULT_PORT: u16 = 7878;
 pub const DEFAULT_HISTORY: usize = 20;
 
+#[derive(Default)]
 pub struct EngineConfig {
+    /// The settings to start with, usually from `config.toml`
+    /// (`ConfigFile::into_engine_config`). The engine owns them from then
+    /// on: see `EngineHandle::edit_settings`.
+    pub settings: Settings,
     /// Started right away, in this order.
     pub sources: Vec<SourceConfig>,
-    pub youtube: YouTubeSettings,
-    /// Where the overlay is served. Localhost only by default: nothing else
-    /// on the network can reach it.
-    pub bind: SocketAddr,
-    /// Messages replayed to a newly connected overlay (0 = none).
-    pub history: usize,
-    /// The overlay's theme: built-in, or a folder with a custom
-    /// `message.html` / `overlay.css`.
-    pub theme: ThemeSource,
-    /// The folder of named themes, for overlay URLs with `?theme=<name>`.
+    /// The folder of named themes (`themes/` next to `config.toml`): where
+    /// the settings' theme name and overlay URLs' `?theme=<name>` are looked
+    /// up. `None`: only built-in themes in overlay URLs.
     pub themes_dir: Option<PathBuf>,
-    /// Spacing of message bursts in the overlay.
-    pub stagger: Stagger,
-    /// Whether the JSON API (`/api/v1/ws`) accepts clients.
-    pub api: bool,
-    /// Web sites allowed to use the JSON API (`https://game.example`).
-    pub api_origins: Vec<String>,
     /// Whether other sites wait for the streamer's answer (the app shows
     /// the question, see `Status::api_requests`) or are refused right away
     /// (headless mode: nobody to ask).
     pub ask_api_origins: bool,
-    /// Default end of the overlay for the newest message.
-    pub newest: Newest,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self {
-            sources: Vec::new(),
-            youtube: YouTubeSettings::default(),
-            bind: (Ipv4Addr::LOCALHOST, DEFAULT_PORT).into(),
-            history: DEFAULT_HISTORY,
-            theme: ThemeSource::default(),
-            themes_dir: None,
-            stagger: Stagger::default(),
-            api: false,
-            api_origins: Vec::new(),
-            ask_api_origins: false,
-            newest: Newest::default(),
-        }
-    }
 }
 
 /// Controls a running engine. Cheap to clone: the UI, headless mode and
-/// tests each hold one. All methods just send a message to the actor and
-/// wait for its answer.
+/// tests each hold one. Most methods send a message to the actor and wait
+/// for its answer.
 #[derive(Clone)]
 pub struct EngineHandle {
     commands: mpsc::Sender<Command>,
     status: watch::Receiver<Status>,
-    // Server settings, not source state, so they bypass the actor. `Arc`
-    // because a `watch::Sender` can't be cloned; all handles share one.
-    theme: Arc<watch::Sender<ThemeSource>>,
-    stagger: Arc<watch::Sender<Stagger>>,
-    api: Arc<watch::Sender<bool>>,
-    newest: Arc<watch::Sender<Newest>>,
-    hub: Arc<Hub>,
-    origins: Arc<ApiOrigins>,
+    settings: watch::Receiver<Settings>,
+    /// Shared with the actor; used here only to reload the overlays, which
+    /// changes nothing the actor owns.
+    controls: Arc<Controls>,
 }
 
 impl EngineHandle {
@@ -147,79 +117,50 @@ impl EngineHandle {
         self.call(|reply| Command::Update(id, config, reply)).await
     }
 
-    /// New YouTube settings (e.g. entered in the app), or the same ones after
-    /// logging in or out: forgets the cached login and restarts all YouTube
-    /// sources that are switched on.
-    pub async fn update_youtube(&self, settings: YouTubeSettings) -> anyhow::Result<()> {
-        self.call(|reply| Command::UpdateYouTube(settings, reply))
-            .await
+    /// The current settings. A `watch` receiver always holds the latest
+    /// value; `changed().await` waits for the next change.
+    pub fn settings(&self) -> watch::Receiver<Settings> {
+        self.settings.clone()
     }
 
-    /// Switches the overlay theme; connected overlays reload by themselves.
-    pub fn set_theme(&self, theme: ThemeSource) {
-        self.theme.send_replace(theme);
+    /// Changes settings: `change` edits the current ones, and the engine
+    /// applies whatever changed (overlays reload for a new theme or chat
+    /// direction, YouTube sources restart for new YouTube settings, …).
+    /// When this returns, `settings()` has the result.
+    ///
+    /// A closure rather than the new settings: it runs on the newest
+    /// settings inside the engine, so a window can't undo another one's
+    /// change by sending back an older copy. Change only what you mean to.
+    pub async fn edit_settings(
+        &self,
+        change: impl FnOnce(&mut Settings) + Send + 'static,
+    ) -> anyhow::Result<()> {
+        self.call(|reply| Command::EditSettings(Box::new(change), reply))
+            .await
     }
 
     /// Makes connected overlays reload, e.g. after editing the theme files.
     pub fn reload_overlays(&self) {
-        // `send_modify` notifies watchers even though nothing changed.
-        self.theme.send_modify(|_| {});
-    }
-
-    pub fn theme(&self) -> ThemeSource {
-        self.theme.borrow().clone()
-    }
-
-    /// How many messages a newly connected overlay gets replayed. Applies
-    /// right away; shrinking drops the oldest ones.
-    pub fn set_history(&self, history: usize) {
-        self.hub.set_history(history);
-    }
-
-    /// New burst spacing, used by overlays that connect (or reload) from
-    /// now on. Already connected ones keep theirs until they reload.
-    pub fn set_stagger(&self, stagger: Stagger) {
-        self.stagger.send_replace(stagger);
-    }
-
-    pub fn stagger(&self) -> Stagger {
-        *self.stagger.borrow()
-    }
-
-    /// Switches the JSON API on or off. Off also disconnects the clients
-    /// that are connected.
-    pub fn set_api_enabled(&self, on: bool) {
-        self.api.send_replace(on);
-    }
-
-    pub fn api_enabled(&self) -> bool {
-        *self.api.borrow()
-    }
-
-    /// Changes the default chat direction and reloads the overlays to show
-    /// it (it's written into the page when it loads). Overlays whose URL has
-    /// `?newest=` keep theirs.
-    pub fn set_newest(&self, newest: Newest) {
-        self.newest.send_replace(newest);
-        self.reload_overlays();
-    }
-
-    pub fn newest(&self) -> Newest {
-        *self.newest.borrow()
+        self.controls.reload_overlays();
     }
 
     /// The streamer's answer to a site waiting in `Status::api_requests`.
-    /// "Allow" lets it in now and from then on (saving it is up to the
-    /// caller); "deny" refuses it until the engine restarts.
-    pub fn answer_api_request(&self, origin: &str, allow: bool) {
-        self.origins.answer(origin, allow);
+    /// "Allow" lets it in now and adds it to the settings' allowed sites;
+    /// "deny" refuses it until the engine restarts.
+    pub async fn answer_api_request(&self, origin: &str, allow: bool) -> anyhow::Result<()> {
+        let origin = origin.to_string();
+        self.call(|reply| Command::AnswerApiRequest {
+            origin,
+            allow,
+            reply,
+        })
+        .await
     }
 
-    /// Replaces the web sites allowed to use the JSON API (e.g. one was
-    /// removed in the settings). Connected clients of removed sites are
-    /// disconnected.
-    pub fn set_api_origins(&self, origins: Vec<String>) {
-        self.origins.set_allowed(origins);
+    /// The stored YouTube login changed (someone logged in or out): YouTube
+    /// sources that are switched on restart with it.
+    pub async fn youtube_login_changed(&self) -> anyhow::Result<()> {
+        self.call(Command::YouTubeLoginChanged).await
     }
 
     /// The live status. A `watch` receiver always holds the latest value;
@@ -254,7 +195,7 @@ pub struct Engine {
 
 impl Engine {
     pub async fn start(config: EngineConfig) -> anyhow::Result<Self> {
-        let factory = Production::new(config.youtube.clone());
+        let factory = Production::new(config.settings.youtube.clone());
         Self::start_with(config, factory).await
     }
 
@@ -263,15 +204,50 @@ impl Engine {
         config: EngineConfig,
         factory: F,
     ) -> anyhow::Result<Self> {
-        // Bind first: if the port is taken, fail before anything else runs.
-        let listener = TcpListener::bind(config.bind)
+        let server = &config.settings.server;
+        // Localhost only: nothing else on the network can reach it. Bound
+        // first: if the port is taken, fail before anything else runs.
+        let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, server.port));
+        let listener = TcpListener::bind(bind)
             .await
-            .with_context(|| format!("can't listen on {}", config.bind))?;
+            .with_context(|| format!("can't listen on {bind}"))?;
         let addr = listener.local_addr()?;
 
-        let hub = Arc::new(Hub::new(config.history));
+        let hub = Arc::new(Hub::new(server.history));
         let shutdown = CancellationToken::new();
         let mut tasks = JoinSet::new();
+
+        // The server reads these; the actor changes them (`Controls`).
+        let (theme_tx, theme_rx) =
+            watch::channel(server.theme_source(config.themes_dir.as_deref()));
+        let (stagger_tx, stagger_rx) = watch::channel(server.stagger());
+        let (api_tx, api_rx) = watch::channel(server.api);
+        let (newest_tx, newest_rx) = watch::channel(server.newest);
+        let origins = Arc::new(ApiOrigins::new(
+            server.api_origins.clone(),
+            config.ask_api_origins,
+        ));
+        let connections = Arc::new(Connections::default());
+        let state = ServerState {
+            hub: hub.clone(),
+            theme: theme_rx,
+            shutdown: shutdown.clone(),
+            stagger: stagger_rx,
+            api: api_rx,
+            newest: newest_rx,
+            themes_dir: config.themes_dir.clone(),
+            connections: connections.clone(),
+            origins: origins.clone(),
+        };
+        let controls = Arc::new(Controls {
+            hub: hub.clone(),
+            theme: theme_tx,
+            stagger: stagger_tx,
+            api: api_tx,
+            newest: newest_tx,
+            origins,
+            themes_dir: config.themes_dir,
+        });
 
         let (status_tx, status_rx) = watch::channel(Status {
             overlay_url: format!("http://{addr}/"),
@@ -280,33 +256,16 @@ impl Engine {
             api_requests: Vec::new(),
             sources: Vec::new(),
         });
-        let connections = Arc::new(Connections::default());
-        let origins = Arc::new(ApiOrigins::new(config.api_origins, config.ask_api_origins));
+        let (settings_tx, settings_rx) = watch::channel(config.settings);
         let (commands_tx, commands_rx) = mpsc::channel(32);
         let actor = Actor::new(
             factory,
-            hub.clone(),
+            settings_tx,
+            controls.clone(),
             status_tx,
-            connections.clone(),
-            origins.requests(),
+            connections,
         );
         tasks.spawn(actor.run(commands_rx, shutdown.clone()));
-
-        let (theme_tx, theme_rx) = watch::channel(config.theme);
-        let (stagger_tx, stagger_rx) = watch::channel(config.stagger);
-        let (api_tx, api_rx) = watch::channel(config.api);
-        let (newest_tx, newest_rx) = watch::channel(config.newest);
-        let state = ServerState {
-            hub: hub.clone(),
-            theme: theme_rx,
-            shutdown: shutdown.clone(),
-            stagger: stagger_rx,
-            api: api_rx,
-            newest: newest_rx,
-            themes_dir: config.themes_dir,
-            connections,
-            origins: origins.clone(),
-        };
         tasks.spawn(async move {
             if let Err(e) = chat_server::serve(listener, state).await {
                 error!("overlay server failed: {e}");
@@ -316,12 +275,8 @@ impl Engine {
         let handle = EngineHandle {
             commands: commands_tx,
             status: status_rx,
-            theme: Arc::new(theme_tx),
-            stagger: Arc::new(stagger_tx),
-            api: Arc::new(api_tx),
-            newest: Arc::new(newest_tx),
-            hub: hub.clone(),
-            origins,
+            settings: settings_rx,
+            controls,
         };
         for source in config.sources {
             handle.add_source(source).await?;
@@ -369,8 +324,12 @@ mod tests {
 
     const WAIT: Duration = Duration::from_secs(5);
 
-    fn local() -> SocketAddr {
-        (Ipv4Addr::LOCALHOST, 0).into()
+    /// Default settings on a free port: the OS picks one, so tests can run
+    /// in parallel.
+    fn local() -> Settings {
+        let mut settings = Settings::default();
+        settings.server.port = 0;
+        settings
     }
 
     // ---- with the real sources ----
@@ -378,7 +337,7 @@ mod tests {
     async fn start_demo() -> Engine {
         Engine::start(EngineConfig {
             sources: vec![SourceConfig::Demo],
-            bind: local(),
+            settings: local(),
             ..EngineConfig::default()
         })
         .await
@@ -426,9 +385,10 @@ mod tests {
     #[tokio::test]
     async fn sites_waiting_for_an_answer_show_in_the_status() {
         const GAME: &str = "https://game.example";
+        let mut settings = local();
+        settings.server.api = true;
         let engine = Engine::start(EngineConfig {
-            bind: local(),
-            api: true,
+            settings,
             ask_api_origins: true,
             ..EngineConfig::default()
         })
@@ -452,18 +412,24 @@ mod tests {
 
         let handle = engine.handle();
         wait_for(&handle, |s| s.api_requests == [GAME]).await;
-        handle.answer_api_request(GAME, true);
+        handle.answer_api_request(GAME, true).await.unwrap();
         let status = timeout(WAIT, connecting).await.unwrap().unwrap();
         assert_eq!(status, reqwest::StatusCode::SWITCHING_PROTOCOLS);
         wait_for(&handle, |s| s.api_requests.is_empty()).await;
+        // Allowed for good: it's in the settings now (once, however often
+        // it's allowed).
+        handle.answer_api_request(GAME, true).await.unwrap();
+        assert_eq!(handle.settings().borrow().server.api_origins, [GAME]);
         engine.shutdown().await;
     }
 
     #[tokio::test]
     async fn taken_port_is_an_error() {
         let engine = start_demo().await;
+        let mut settings = Settings::default();
+        settings.server.port = engine.addr().port();
         let second = Engine::start(EngineConfig {
-            bind: engine.addr(),
+            settings,
             ..EngineConfig::default()
         })
         .await;
@@ -475,7 +441,7 @@ mod tests {
     async fn youtube_without_settings_needs_attention() {
         let engine = Engine::start(EngineConfig {
             sources: vec![SourceConfig::YouTube { video_id: None }],
-            bind: local(),
+            settings: local(),
             ..EngineConfig::default()
         })
         .await
@@ -599,7 +565,7 @@ mod tests {
         let engine = Engine::start_with(
             EngineConfig {
                 sources: sources.iter().map(|s| script(s)).collect(),
-                bind: local(),
+                settings: local(),
                 ..EngineConfig::default()
             },
             factory.clone(),
@@ -754,8 +720,10 @@ mod tests {
         engine.shutdown().await;
     }
 
+    /// A change reaches the running parts, and `settings()` has it as soon
+    /// as `edit_settings` returns.
     #[tokio::test]
-    async fn history_and_stagger_change_at_runtime() {
+    async fn settings_changes_reach_the_running_parts() {
         let (engine, _) = start_scripted(&[]).await;
         let handle = engine.handle();
         for i in 0..3 {
@@ -763,28 +731,44 @@ mod tests {
             msg.id = format!("m{i}");
             engine.hub().publish(ChatEvent::Message(msg));
         }
-        handle.set_history(1);
+        handle
+            .edit_settings(|s| {
+                s.server.history = 1;
+                s.server.newest = Newest::Top;
+                s.server.theme = Some("minimal".into());
+            })
+            .await
+            .unwrap();
+        assert_eq!(handle.settings().borrow().server.history, 1);
         let (history, _) = engine.hub().subscribe();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, "m2", "the newest one stays");
 
-        handle.set_stagger(Stagger::off());
-        assert!(handle.stagger().is_off());
+        // The direction lands in the overlay page, the theme in its CSS.
+        let get = |path: &str| {
+            let url = format!("http://{}{path}", engine.addr());
+            async move { reqwest::get(url).await.unwrap().text().await.unwrap() }
+        };
+        assert!(get("/").await.contains(r#"data-newest="top""#));
+        assert_eq!(get("/theme/overlay.css").await, Builtin::Minimal.css());
+        engine.shutdown().await;
+    }
 
-        assert!(!handle.api_enabled(), "off by default");
-        handle.set_api_enabled(true);
-        assert!(handle.api_enabled());
-
-        // The default direction lands in the overlay page.
-        assert_eq!(handle.newest(), Newest::Bottom);
-        handle.set_newest(Newest::Top);
-        let page = reqwest::get(format!("http://{}/", engine.addr()))
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert!(page.contains(r#"data-newest="top""#));
+    /// Two windows changing different settings at the same moment: both
+    /// changes stick, since each runs on the settings the other one left.
+    #[tokio::test(start_paused = true)]
+    async fn changes_from_different_places_both_stick() {
+        let (engine, _) = start_scripted(&[]).await;
+        let (a, b) = (engine.handle(), engine.handle());
+        let (first, second) = tokio::join!(
+            a.edit_settings(|s| s.server.history = 5),
+            b.edit_settings(|s| s.server.newest = Newest::Top),
+        );
+        first.unwrap();
+        second.unwrap();
+        let settings = a.settings().borrow().clone();
+        assert_eq!(settings.server.history, 5);
+        assert_eq!(settings.server.newest, Newest::Top);
         engine.shutdown().await;
     }
 
@@ -815,7 +799,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn new_youtube_settings_restart_only_running_youtube_sources() {
+    async fn new_youtube_settings_or_login_restart_running_youtube_sources() {
         let factory = Arc::new(Scripted::default());
         let engine = Engine::start_with(
             EngineConfig {
@@ -826,7 +810,7 @@ mod tests {
                     },
                     script("emit:0"),
                 ],
-                bind: local(),
+                settings: local(),
                 ..EngineConfig::default()
             },
             factory.clone(),
@@ -838,17 +822,26 @@ mod tests {
         handle.stop_source(s.sources[1].id).await.unwrap();
 
         handle
-            .update_youtube(YouTubeSettings::default())
+            .edit_settings(|s| s.youtube.api_key = Some("key".into()))
             .await
             .unwrap();
         wait_for(&handle, |_| factory.builds("youtube") == 3).await;
+        // Settings that don't concern YouTube leave it alone.
+        handle
+            .edit_settings(|s| s.server.history = 5)
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(
             factory.builds("youtube"),
             3,
-            "the stopped one stays stopped"
+            "the stopped one stays stopped, the others restart once"
         );
         assert_eq!(factory.builds("emit:0"), 1, "other sources aren't touched");
+
+        // A login made (or removed) restarts them too.
+        handle.youtube_login_changed().await.unwrap();
+        wait_for(&handle, |_| factory.builds("youtube") == 4).await;
         engine.shutdown().await;
     }
 

@@ -83,7 +83,8 @@ fn start(config_path: PathBuf, settings_dir: &Path) -> Result<Started, StartupEr
 
     // The engine starts without sources: `AppConfig` adds them one by one
     // to learn the id the engine gives each.
-    let mut engine_config = file.clone().into_engine_config(settings_dir);
+    let sources = file.sources.clone();
+    let mut engine_config = file.into_engine_config(settings_dir);
     engine_config.sources.clear();
     // Unlike headless mode, the app can ask the streamer about web sites
     // that want to use the JSON API (`AppView` shows the question).
@@ -91,9 +92,9 @@ fn start(config_path: PathBuf, settings_dir: &Path) -> Result<Started, StartupEr
     let engine = runtime
         .block_on(Engine::start(engine_config))
         .map_err(StartupError::at(Stage::Server))?;
-    let mut config = AppConfig::new(file, config_path);
+    let mut config = AppConfig::new(config_path, engine.handle().settings());
     runtime
-        .block_on(config.start_all(&engine.handle()))
+        .block_on(config.start_all(&engine.handle(), sources))
         .map_err(StartupError::at(Stage::Other))?;
     Ok(Started {
         runtime,
@@ -165,7 +166,7 @@ fn run(started: Started) {
                 .open_window(options, |window, cx| {
                     // The look chosen in the settings (by default: follow
                     // the system's light/dark mode, now and later).
-                    appearance::apply(config.app().appearance, Some(window), cx);
+                    appearance::apply(config.settings().app.appearance, Some(window), cx);
                     // Shared with the settings window from here on.
                     let config = cx.new(|_| config);
                     let view = cx.new(|cx| AppView::new(handle, config, tokio, window, cx));

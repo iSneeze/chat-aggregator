@@ -37,7 +37,8 @@ themes/
 
 The folder name is the theme's name. Every file is optional: anything a
 theme doesn't have comes from the built-in theme. Most themes only need
-`overlay.css`.
+`overlay.css`. (A theme folder somewhere else works too: put its full path
+in `config.toml`, e.g. `theme = "/home/me/obs/my-theme"`.)
 
 ## Making a theme
 

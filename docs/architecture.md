@@ -282,8 +282,8 @@ every field is an `Arc` or a small handle around one).
   direction) are `tokio::sync::watch` channels: one value, readable any
   time, plus a notification when it changes. A theme change makes every
   overlay stream send a `reload` event; switching the API off closes the
-  connected clients. These bypass the engine's actor because they're server
-  settings, not source state.
+  connected clients. The engine sets them when the settings change (see
+  [Settings](#settings)).
 - **Chat direction**: the default (`newest` = bottom or top) is written into
   the page as `data-newest` when it loads; `?newest=` in the overlay URL
   overrides it, so each OBS scene can have its own. The page flips the list
@@ -332,6 +332,29 @@ EngineHandle ──Command + oneshot reply──→ actor task ──→ watch<S
   change. A `watch` always holds the latest value, so a slow reader just
   sees the newest state instead of a backlog.
 
+### Settings
+
+The engine owns the settings (`Settings`: everything in `config.toml`
+except the sources). `EngineHandle::settings()` is a `watch` of them, so
+every window reads the current ones instead of keeping a copy.
+
+- **A change is a closure**: `edit_settings(|s| s.server.newest = Top)`.
+  The actor runs it on the current settings, so two windows changing
+  different things at the same moment both get their change in. Sending
+  whole new settings instead would let a window undo another one's change
+  with an older copy.
+- **One place decides what a change means** (`Controls::apply` in
+  `settings.rs`): a new replay history goes to the hub, pacing, the JSON API
+  switch, the chat direction and the theme go to the server's `watch`
+  channels (a new direction or theme makes the overlays reload once), the
+  allowed sites to the API's gate, new YouTube settings restart the
+  YouTube sources, and a new port waits for the next start.
+- Each closure is its own type, so the actor's command holds it as a
+  `Box<dyn FnOnce(&mut Settings) + Send>`: a trait object, because here
+  (unlike the sources) the set of types isn't known in advance.
+- Saving is the app's job for now: after each change it writes the
+  engine's settings to `config.toml`. Headless mode never writes the file.
+
 ### Restarts and health
 
 - A source that fails is restarted with **exponential backoff**: 2 s,
@@ -366,8 +389,11 @@ Linux) with `[server]`, `[youtube]`, `[app]` and `[[sources]]`:
   when off).
 - **Written with mode 0600** (only your user can read it): it contains the
   OAuth client secret. Secrets are redacted in debug output.
-- The engine only *reads* the file; the app writes it. Saving rewrites the
-  file without comments (a known limitation).
+- The engine only *reads* the file; the app writes it (the engine's
+  settings, after each change). Saving rewrites the file without comments
+  (a known limitation).
+- **`theme`** is a built-in theme's name, a folder name in `themes/`, or
+  the full path of a theme folder anywhere.
 
 ## The desktop app (`chat-app`)
 
@@ -389,11 +415,14 @@ awaited from GPUI.
 - **Windows**: the main window (status, theme row, sources, YouTube section,
   add form), the test messages window and the settings window. The side
   windows open once; clicking again brings them to the front.
-- **`Entity<AppConfig>`**: the app's view of `config.toml`, shared by all
+- **`Entity<AppConfig>`**: the app's side of `config.toml`, shared by all
   windows. A GPUI entity is shared, reference-counted state (like
-  `Rc<RefCell<…>>`, but GPUI hands out access and tracks changes), so no
-  window works on a stale copy. `AppConfig` itself is plain Rust, tested
-  without GPUI, and changes are saved right after the engine confirms them.
+  `Rc<RefCell<…>>`, but GPUI hands out access and tracks changes). It keeps
+  no copy of the settings: it reads the engine's (`settings()`), so no
+  window works on a stale one. Windows change settings with
+  `app_config::edit_settings`, which hands the change to the engine, saves
+  the file once the engine has applied it, and notifies the windows that
+  observe the config, so they redraw.
 - **The test window's source** lives exactly as long as the window: it's
   added when the window opens and removed when the view is released (window
   closed). The window holds a sender; dropping it ends the source.
@@ -488,7 +517,9 @@ happened to another overlay: CVE-2024-7971).
   alive.
 - **Generics over trait objects** where the set of types is known (the
   source factory, `SourceSpec`): static dispatch, no allocation, no
-  object-safety limits.
+  object-safety limits. And a **trait object** where it isn't: a settings
+  change is a `Box<dyn FnOnce(&mut Settings) + Send>`, since every closure
+  has its own type.
 - **`Arc`** where several owners share read-mostly data across threads
   (the hub, the server state).
 - **`LazyLock`** for values computed once on first use (the overlay's CSP

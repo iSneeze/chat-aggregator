@@ -1,7 +1,9 @@
-//! The engine's control plane as an "actor": one task owns all source state,
-//! everyone else sends it messages (see `EngineHandle`). Since only this task
-//! ever changes the state, it needs no locks, and commands can't interfere
-//! with each other: they're handled one after another.
+//! The engine's control plane as an "actor": one task owns all source state
+//! and the settings, everyone else sends it messages (see `EngineHandle`).
+//! Since only this task ever changes the state, it needs no locks, and
+//! commands can't interfere with each other: they're handled one after
+//! another. (Two windows changing settings at the same moment both get their
+//! change in: each runs on the settings the other one left.)
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,8 +20,10 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{info, warn};
 
-use crate::config::{SourceConfig, YouTubeSettings};
+use crate::config::SourceConfig;
+use crate::config_file::Settings;
 use crate::factory::{SourceFactory, is_login_required, needs_attention};
+use crate::settings::Controls;
 use crate::status::{SourceId, SourceState, SourceStatus, Status, label};
 
 /// First retry after 2 s, doubling up to this.
@@ -41,8 +45,24 @@ pub(crate) enum Command {
     Stop(SourceId, Reply<()>),
     Update(SourceId, SourceConfig, Reply<()>),
     AddManual(Reply<(SourceId, ManualInput)>),
-    UpdateYouTube(YouTubeSettings, Reply<()>),
+    /// Runs the change on the current settings and applies what changed.
+    EditSettings(SettingsChange, Reply<()>),
+    /// The streamer's answer about a site waiting to use the JSON API.
+    AnswerApiRequest {
+        origin: String,
+        allow: bool,
+        reply: Reply<()>,
+    },
+    /// The stored YouTube login changed: someone logged in or out.
+    YouTubeLoginChanged(Reply<()>),
 }
+
+/// A settings change: a closure that edits them. Every closure has a type
+/// of its own, made up by the compiler and without a name, so an enum
+/// variant can't hold "any closure" directly. Boxed as a trait object
+/// (`dyn FnOnce`) it can. Here `dyn` is the right tool: unlike the sources
+/// (`SourceSpec`), the set of types isn't known in advance.
+pub(crate) type SettingsChange = Box<dyn FnOnce(&mut Settings) + Send>;
 
 /// Messages from the actor's own helper tasks back to it.
 enum Internal {
@@ -62,7 +82,10 @@ enum Internal {
 
 pub(crate) struct Actor<F> {
     factory: Arc<F>,
-    hub: Arc<Hub>,
+    /// The current settings: changed only here, watched by everyone else.
+    settings: watch::Sender<Settings>,
+    /// What the settings steer (overlays, the JSON API, the hub).
+    controls: Arc<Controls>,
     // A BTreeMap keeps sources ordered by id, i.e. in the order they were
     // added, so status lists don't jump around.
     slots: BTreeMap<SourceId, Slot>,
@@ -177,15 +200,17 @@ impl Stats {
 impl<F: SourceFactory> Actor<F> {
     pub(crate) fn new(
         factory: F,
-        hub: Arc<Hub>,
+        settings: watch::Sender<Settings>,
+        controls: Arc<Controls>,
         status: watch::Sender<Status>,
         connections: Arc<Connections>,
-        api_requests: watch::Receiver<Vec<String>>,
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
+        let api_requests = controls.origins.requests();
         Self {
             factory: Arc::new(factory),
-            hub,
+            settings,
+            controls,
             slots: BTreeMap::new(),
             next_id: 1,
             internal_tx,
@@ -285,32 +310,31 @@ impl<F: SourceFactory> Actor<F> {
                 };
                 let _ = reply.send(result);
             }
-            Command::UpdateYouTube(settings, reply) => {
-                self.factory.set_youtube(settings);
-                // A login made or removed in the meantime, or a different
-                // client: the cached one is no longer the right one.
-                self.factory.forget_login();
-                // Restart every YouTube source that is meant to run, so a red
-                // "login required" becomes green without restarting the app.
-                let youtube: Vec<SourceId> = self
-                    .slots
-                    .iter()
-                    .filter(|(_, slot)| {
-                        matches!(
-                            slot.source,
-                            SlotSource::Configured(SourceConfig::YouTube { .. })
-                        ) && slot.state != SourceState::Stopped
-                    })
-                    .map(|(id, _)| *id)
-                    .collect();
-                for id in youtube {
-                    if let Some(slot) = self.slots.get_mut(&id) {
-                        stop(slot);
-                        slot.attempt = 0;
-                    }
-                    self.start(id);
+            Command::EditSettings(change, reply) => {
+                self.edit_settings(change);
+                let _ = reply.send(Ok(()));
+            }
+            Command::AnswerApiRequest {
+                origin,
+                allow,
+                reply,
+            } => {
+                self.controls.origins.answer(&origin, allow);
+                // "Allow" is for good: it goes into the settings. ("Deny"
+                // only lasts until the engine restarts.)
+                if allow {
+                    self.edit_settings(Box::new(move |settings| {
+                        let allowed = &mut settings.server.api_origins;
+                        if !allowed.contains(&origin) {
+                            allowed.push(origin);
+                        }
+                    }));
                 }
-                info!("YouTube settings updated");
+                let _ = reply.send(Ok(()));
+            }
+            Command::YouTubeLoginChanged(reply) => {
+                info!("YouTube login changed");
+                self.restart_youtube();
                 let _ = reply.send(Ok(()));
             }
             Command::Update(id, config, reply) => {
@@ -338,6 +362,54 @@ impl<F: SourceFactory> Actor<F> {
         }
     }
 
+    /// Runs `change` on the current settings, hands what changed to the
+    /// running parts and publishes the new settings.
+    fn edit_settings(&mut self, change: SettingsChange) {
+        let old = self.settings.borrow().clone();
+        let mut new = old.clone();
+        change(&mut new);
+        if new == old {
+            return;
+        }
+        let youtube_changed = self.controls.apply(&old, &new);
+        if youtube_changed {
+            self.factory.set_youtube(new.youtube.clone());
+        }
+        // Published before the caller gets its answer: whoever awaited the
+        // change finds it in `settings()` right away.
+        self.settings.send_replace(new);
+        if youtube_changed {
+            info!("YouTube settings changed");
+            self.restart_youtube();
+        }
+    }
+
+    /// Restarts every YouTube source that is meant to run, with a fresh
+    /// login: after new settings (a different client, API key or emoji) or
+    /// a login made or removed, the cached one is no longer the right one.
+    /// So a red "login required" turns green without restarting the app.
+    fn restart_youtube(&mut self) {
+        self.factory.forget_login();
+        let youtube: Vec<SourceId> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| {
+                matches!(
+                    slot.source,
+                    SlotSource::Configured(SourceConfig::YouTube { .. })
+                ) && slot.state != SourceState::Stopped
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in youtube {
+            if let Some(slot) = self.slots.get_mut(&id) {
+                stop(slot);
+                slot.attempt = 0;
+            }
+            self.start(id);
+        }
+    }
+
     /// Builds and runs a slot's source in a new task.
     fn start(&mut self, id: SourceId) {
         let Some(slot) = self.slots.get_mut(&id) else {
@@ -351,7 +423,7 @@ impl<F: SourceFactory> Actor<F> {
         slot.state = SourceState::Running;
 
         let factory = self.factory.clone();
-        let hub = self.hub.clone();
+        let hub = self.controls.hub.clone();
         let stats = slot.stats.clone();
         let source = slot.source.clone();
         let internal = self.internal_tx.clone();
