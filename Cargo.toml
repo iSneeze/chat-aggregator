@@ -8,6 +8,7 @@ members = ["crates/*"]
 default-members = [
     "crates/chat-core",
     "crates/chat-engine",
+    "crates/chat-picarto",
     "crates/chat-render",
     "crates/chat-rplay",
     "crates/chat-server",
@@ -47,7 +48,7 @@ sha2 = "0.10"
 base64 = "0.22"
 # Pinned exactly: the app is written against this version's API (GPUI
 # changes a lot between releases).
-gpui-kit = "=0.6.6"
+gpui-kit = "=0.7.3"
 
 [profile.release]
 # Optimise across crate boundaries ("thin" is most of fat LTO's gain at a

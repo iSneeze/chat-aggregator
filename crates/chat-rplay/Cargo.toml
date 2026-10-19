@@ -5,3 +5,18 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+# The raw_rplay example. RPlay's HTTP API gzips its answers even unasked.
+tokio.workspace = true
+anyhow.workspace = true
+reqwest = { workspace = true, features = ["gzip"] }
+serde_json.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+# The chat itself is an Amazon IVS WebSocket (wss://). Same version as
+# chat-server's tests; rustls, webpki-roots and the aws-lc-rs backend are
+# already in the build through reqwest and tonic.
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+webpki-roots = "1"

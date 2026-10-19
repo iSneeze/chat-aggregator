@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use chat_core::Hub;
-use chat_server::{ApiOrigins, Connections, ServerState};
+use chat_server::{ApiOrigins, Avatars, Connections, ServerState};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -264,6 +264,7 @@ impl Engine {
             themes_dir: config.themes_dir.clone(),
             connections: connections.clone(),
             origins: origins.clone(),
+            avatars: Arc::new(Avatars::new()),
         };
         let controls = Arc::new(Controls {
             hub: hub.clone(),

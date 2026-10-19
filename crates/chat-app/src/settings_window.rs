@@ -17,7 +17,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::component::{ActiveTheme, IconName, Root, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -481,12 +481,7 @@ macro_rules! number_type {
 number_type!(u16, u64, usize);
 
 impl Render for SettingsWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // `Root` keeps dialogs and notifications but doesn't draw them: the
-        // window's view has to (see `AppView`'s `render`). Without this,
-        // `report` would show nothing here.
-        let dialogs = Root::render_dialog_layer(window, cx);
-        let notifications = Root::render_notification_layer(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .bg(cx.theme().background)
@@ -496,8 +491,6 @@ impl Render for SettingsWindow {
                     .sidebar_width(px(170.))
                     .pages(self.pages(cx)),
             )
-            .children(dialogs)
-            .children(notifications)
     }
 }
 
@@ -716,7 +709,7 @@ mod tests {
     }
 
     /// Regression test: errors reported in this window must reach the
-    /// screen (gpui-kit only draws notifications the view renders).
+    /// screen (`Root` draws them only when `gpui_kit::init` ran first).
     #[gpui_kit::test]
     fn reported_errors_are_shown(cx: &mut TestAppContext) {
         use gpui_kit::test::TestWindowExt;

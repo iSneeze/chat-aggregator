@@ -8,6 +8,7 @@
 //! | `/theme/…`     | other files of the theme folder (images, fonts)          |
 //! | `/themes/<name>/…` | the same for a named theme (`/?theme=<name>`)        |
 //! | `/events`      | SSE: replay history, then live chat as rendered HTML     |
+//! | `/avatar/<key>` | a chatter's profile picture, downloaded once (`avatars`) |
 //! | `/api/v1/ws`   | WebSocket: live events as JSON (see `api`, docs/api.md)  |
 
 use std::convert::Infallible;
@@ -37,6 +38,7 @@ use tracing::{error, warn};
 
 mod api;
 mod approvals;
+mod avatars;
 mod connections;
 mod local;
 mod stagger;
@@ -44,6 +46,7 @@ mod stagger;
 // Part of this crate's API (`ServerState::theme`), so users of the server
 // don't need chat-render as a dependency of their own just to name them.
 pub use approvals::{ANSWER_TIMEOUT, ApiOrigins};
+pub use avatars::Avatars;
 pub use chat_render::{Builtin, ThemeSource};
 pub use connections::Connections;
 pub use stagger::Stagger;
@@ -142,6 +145,8 @@ pub struct ServerState {
     /// Which web sites may use the JSON API, and the questions about new
     /// ones waiting for the streamer's answer.
     pub origins: Arc<ApiOrigins>,
+    /// Profile pictures for the overlay, downloaded once for all overlays.
+    pub avatars: Arc<Avatars>,
 }
 
 /// The query of an overlay URL (`/?theme=cozy`), passed on to `/events` by
@@ -233,6 +238,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/theme/{*path}", get(theme_file))
         .route("/themes/{name}/{*path}", get(named_theme_file))
         .route("/events", get(events))
+        .route("/avatar/{key}", get(avatars::avatar))
         .route("/api/v1/ws", get(api::ws))
         .with_state(state)
         // Runs before every route: requests for another host never reach
@@ -451,9 +457,10 @@ async fn events(
     let reload = WatchStream::from_changes(theme_changes)
         .map(|_| Event::default().event("reload").data("theme changed"));
 
+    let avatars = state.avatars.clone();
     let events = replay
         .chain(live)
-        .filter_map(move |event| std::future::ready(to_sse(&theme, &event)));
+        .filter_map(move |event| std::future::ready(to_sse(&theme, &avatars, &event)));
     // `select` merges both streams: whichever has something next goes first.
     let stream = stream::select(events, reload)
         .map(Ok)
@@ -474,11 +481,11 @@ async fn events(
 }
 
 /// One named SSE event per chat event; the overlay script listens by name.
-/// Messages are sent as rendered HTML, moderation events as the same JSON
-/// the API uses.
-fn to_sse(theme: &Theme, event: &ChatEvent) -> Option<Event> {
+/// Messages are sent as rendered HTML (with local avatar URLs), moderation
+/// events as the same JSON the API uses.
+fn to_sse(theme: &Theme, avatars: &Avatars, event: &ChatEvent) -> Option<Event> {
     let (name, data) = match event {
-        ChatEvent::Message(msg) => match theme.render(msg) {
+        ChatEvent::Message(msg) => match theme.render(&avatars.for_overlay(msg)) {
             Ok(html) => ("chat", html),
             Err(e) => {
                 error!(id = %msg.id, "failed to render message: {e:#}");
@@ -513,6 +520,7 @@ mod tests {
         pub(crate) newest: watch::Sender<Newest>,
         pub(crate) connections: Arc<Connections>,
         pub(crate) origins: Arc<ApiOrigins>,
+        pub(crate) avatars: Arc<Avatars>,
     }
 
     pub(crate) async fn start(theme_dir: Option<PathBuf>) -> TestServer {
@@ -545,6 +553,7 @@ mod tests {
         // On in tests: most of them are about the API.
         let (api_tx, api_rx) = watch::channel(true);
         let (newest_tx, newest_rx) = watch::channel(Newest::default());
+        let avatars = Arc::new(Avatars::for_tests());
         let state = ServerState {
             hub: hub.clone(),
             theme: theme_rx,
@@ -555,6 +564,7 @@ mod tests {
             themes_dir,
             connections: connections.clone(),
             origins: origins.clone(),
+            avatars: avatars.clone(),
         };
         let task = tokio::spawn(serve(listener, state));
         TestServer {
@@ -568,6 +578,7 @@ mod tests {
             newest: newest_tx,
             connections,
             origins,
+            avatars,
         }
     }
 

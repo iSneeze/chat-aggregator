@@ -10,6 +10,8 @@ chat-render = { path = "../chat-render" }
 axum.workspace = true
 base64.workspace = true
 futures-util.workspace = true
+# Downloads avatars for the overlay (see `avatars`).
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -23,7 +25,6 @@ tracing.workspace = true
 # test builds only.
 tokio = { workspace = true, features = ["test-util"] }
 chrono.workspace = true
-reqwest.workspace = true
 # Same version axum uses internally, so it isn't compiled twice.
 tokio-tungstenite = "0.29"
 # The schema test (tests/api_schema.rs) needs the JSON Schema derives, which

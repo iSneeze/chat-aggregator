@@ -11,7 +11,7 @@ use chat_engine::{EngineHandle, ManualInput, SourceId};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
-use gpui_kit::component::{ActiveTheme, Disableable, Root, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::app_view::report;
@@ -324,12 +324,7 @@ impl ManualWindow {
 }
 
 impl Render for ManualWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // `Root` keeps dialogs and notifications but doesn't draw them: the
-        // window's view has to (see `AppView`'s `render`). Without this,
-        // `report` would show nothing here.
-        let dialogs = Root::render_dialog_layer(window, cx);
-        let notifications = Root::render_notification_layer(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let platforms = RadioGroup::horizontal("manual-platform")
             .selected_index(Some(match self.platform {
                 ChatPlatform::YouTube => 1,
@@ -434,8 +429,6 @@ impl Render for ManualWindow {
                             .child(format!("{} sent", self.sent)),
                     ),
             )
-            .children(dialogs)
-            .children(notifications)
     }
 }
 
@@ -699,7 +692,7 @@ mod tests {
     }
 
     /// Regression test: errors reported in this window must reach the
-    /// screen (gpui-kit only draws notifications the view renders).
+    /// screen (`Root` draws them only when `gpui_kit::init` ran first).
     #[gpui_kit::test]
     fn reported_errors_are_shown(cx: &mut TestAppContext) {
         let ui = open(cx);

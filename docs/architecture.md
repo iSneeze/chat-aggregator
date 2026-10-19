@@ -53,6 +53,7 @@ chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ─�
 | `chat-engine`  | owns everything at runtime: the control-plane actor, source restarts, status, config file |
 | `chat-app`     | the desktop app (GPUI): windows, settings, login, test messages |
 | `chat-rplay`   | placeholder for a future source |
+| `chat-picarto` | a future source; so far its emote handling |
 
 Why so many crates? Each one has one job and only knows what it must.
 `chat-server` never sees Twitch or YouTube, only `ChatEvent`s; the platform
@@ -268,6 +269,7 @@ every field is an `Arc` or a small handle around one).
 | `/theme/overlay.css`, `/theme/…` | the theme's CSS and files (images, fonts) |
 | `/themes/<name>/…` | the same for a theme picked in the overlay URL (`/?theme=<name>`) |
 | `/events` | Server-Sent Events: history, then live chat as rendered HTML |
+| `/avatar/<key>` | a chatter's profile picture, downloaded once for all overlays |
 | `/api/v1/ws` | WebSocket: live events as JSON (off by default) |
 
 - **SSE for the overlay, WebSocket for the API.** SSE is one-way, built into
@@ -302,6 +304,17 @@ every field is an `Arc` or a small handle around one).
   theme names of existing folders count (so no `..`); anything else gets
   the app's theme, logged. The server knows the themes folder from
   startup; it's the only piece of the config it needs for this.
+- **Avatars go through the server** (`avatars.rs`). YouTube's image
+  server rate-limits per IP address, and with every browser source loading
+  every avatar straight from Google, a busy chat got `429`s. So before a
+  message is rendered for the overlay, a Google avatar URL is registered
+  and replaced by `avatar/<key>` (a hash of the URL); the server downloads
+  each one once and keeps it in memory (bounded in number and age). One
+  `tokio::sync::OnceCell` per avatar makes simultaneous requests share one
+  download, and a `429` pauses all downloads for a while. Only URLs that
+  came in through chat and point at Google's image hosts are ever
+  registered, so the route can't be used to make the server fetch other
+  addresses. The JSON API keeps the platform's own URL.
 - **Counting connections** uses guards: each connection holds a value whose
   `Drop` counts down again, so the count is right however the connection
   ends (see Rust idioms).
@@ -492,9 +505,14 @@ happened to another overlay: CVE-2024-7971).
    when its last waiting connection is gone. Headless mode doesn't ask.
    The API is also **off by default** and closes its clients when switched
    off.
-4. **No reading outside the theme.** `/theme/…` accepts only plain path
+4. **The server fetches only what chat brought.** `/avatar/<key>` looks
+   the key up; it never downloads an address from the request. Registered
+   are only `https` URLs on Google's image hosts from chat events; no
+   redirects are followed, only raster images (no SVG) up to 1 MB are
+   passed on, with `nosniff` and `script-src 'none'`.
+5. **No reading outside the theme.** `/theme/…` accepts only plain path
    segments, so `../config.toml` (with the client secret) can't be fetched.
-5. **Secrets**: the refresh token in the OS keyring, the config file 0600,
+6. **Secrets**: the refresh token in the OS keyring, the config file 0600,
    written atomically (`chat_core::fs::write_private`: temp file, sync,
    rename, so a crash never leaves it half-written), redacted debug output,
    API keys sent as headers (never in URLs, which end up in logs).

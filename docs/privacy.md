@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy policy
 
-_Effective 2026-09-27._
+_Effective 2026-10-19._
 
 chat-aggregator is a program that runs **on your own computer**. It has no
 servers, no user accounts and no analytics. The developers never receive
@@ -61,6 +61,9 @@ without any login.
 - **Chat messages are not saved.** They're kept in memory while the program
   runs (the most recent ones, 20 by default, so a reloaded overlay isn't
   empty) and are gone when you close it.
+- **Profile pictures** of YouTube chatters shown in the overlay are kept in
+  memory only: for at most 24 hours, and never written to disk. They're
+  gone when you close the program.
 
 ## What is shared, and with whom
 
@@ -76,9 +79,11 @@ without any login.
   YouTube broadcasts, if you read those, and a site you allow can tell from
   it which channel is yours.
 - The program connects only to the platforms themselves: Google/YouTube (for
-  login and chat) and Twitch (for chat). Emote and profile images in the
-  overlay are loaded from Twitch's and YouTube's image servers by your
-  streaming software.
+  login, chat and chatters' profile pictures) and Twitch (for chat). It
+  downloads each YouTube profile picture shown in the overlay once from
+  YouTube's image server and hands it to your streaming software itself.
+  Emote and gift images in the overlay are loaded from Twitch's and
+  YouTube's image servers by your streaming software.
 - Your YouTube API usage is recorded by Google in **your own** Google Cloud
   project.
 

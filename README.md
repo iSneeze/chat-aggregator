@@ -23,6 +23,7 @@ moderation: deletes, bans, clears). How the pieces fit together, and why:
 | `chat-twitch`  | Twitch IRC (anonymous read)                 |
 | `chat-youtube` | YouTube gRPC live chat (`streamList`)       |
 | `chat-rplay`   | rplay — research in progress                |
+| `chat-picarto` | picarto — research in progress              |
 | `chat-render`  | templates + CSS, emote replacement          |
 | `chat-server`  | HTTP: overlay page, SSE stream, JSON API    |
 | `chat-engine`  | runs sources, hub and server together       |

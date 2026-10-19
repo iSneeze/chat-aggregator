@@ -899,13 +899,7 @@ impl AppView {
 }
 
 impl Render for AppView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // `Root` keeps open dialogs and notifications, but doesn't draw them:
-        // the window's view has to (without this, `open_alert_dialog` and
-        // `push_notification` change nothing on screen). Each layer places
-        // itself over the whole window, wherever it sits in the tree.
-        let dialogs = Root::render_dialog_layer(window, cx);
-        let notifications = Root::render_notification_layer(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .p_4()
@@ -917,8 +911,6 @@ impl Render for AppView {
             .child(self.render_sources(cx))
             .child(self.youtube.clone())
             .child(self.render_add_form(cx))
-            .children(dialogs)
-            .children(notifications)
     }
 }
 
