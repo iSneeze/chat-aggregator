@@ -1,0 +1,28 @@
+[package]
+name = "chat-picarto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chat-core = { path = "../chat-core" }
+anyhow.workspace = true
+# `gzip`: the website's script with the emote tables is 4.9 MB, about a
+# third of that compressed.
+reqwest = { workspace = true, features = ["gzip"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The raw_picarto example.
+tokio.workspace = true
+chrono.workspace = true
+# `sink`: the example writes to the socket too (keepalive pings).
+futures-util = { workspace = true, features = ["sink"] }
+# Reading the chat token's claims (a JWT).
+base64.workspace = true
+# The chat is a plain WebSocket (wss://). Same versions as chat-rplay.
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+webpki-roots = "1"
