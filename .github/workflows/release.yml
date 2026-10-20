@@ -1,0 +1,148 @@
+# Builds the desktop app for Windows and Linux.
+#
+# - Started by hand (GitHub → Actions → "Release" → "Run workflow"): a test
+#   build. The archives are attached to the run as artifacts (downloading
+#   them needs a GitHub login).
+# - Pushing a tag like v0.1.0: the same builds, plus a *draft* GitHub
+#   Release with the archives and their SHA-256 sums. Nothing is public
+#   until the draft is published by hand, after checking it.
+#
+# Why Windows builds on Windows instead of cross-compiling from Linux: GPUI
+# compiles its DirectX shaders with the Windows SDK's fxc.exe in its build
+# script, which only runs when the *build machine* is Windows.
+#
+# Third-party actions are pinned to a commit, not a tag: a tag can be moved
+# to other code later, a commit can't. The comment says which version it
+# is; update both together.
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# The build jobs only read the repository; only the release job below gets
+# to write (it creates the draft release).
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      # One platform failing shouldn't cancel the other: its log is useful.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x86_64
+            binary: chat-aggregator.exe
+          # The oldest Ubuntu GitHub still offers: a binary only runs on
+          # systems with at least the glibc it was built against (2.35
+          # here, so most distros from 2022 on).
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            binary: chat-aggregator
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        # Git Bash on Windows: one script for both platforms.
+        shell: bash
+    steps:
+      # Windows runners convert line endings to CRLF on checkout by default;
+      # build from the same bytes as everywhere else.
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # A release tag must match the version the app was built as.
+      - name: Check the tag against Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match the version in Cargo.toml ($version)"
+            exit 1
+          fi
+
+      # The code needs no nightly features: the latest stable is enough.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+
+      # chat-youtube compiles its gRPC schema with protoc at build time.
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # GPUI's Linux libraries (the same as `guiLibs` in flake.nix).
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libfontconfig1-dev libfreetype6-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libvulkan-dev libx11-dev \
+            libx11-xcb-dev libxcb1-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      # Keeps compiled dependencies between runs: later builds only
+      # recompile what changed.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - run: cargo build --release --locked -p chat-app
+
+      # chat-aggregator-<tag or commit>-<platform>.zip / .tar.gz, with the
+      # license and the README next to the program.
+      - name: Package
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version=$GITHUB_REF_NAME
+          else
+            version=${GITHUB_SHA::7}
+          fi
+          name=chat-aggregator-$version-${{ matrix.platform }}
+          mkdir -p "dist/$name"
+          cp "target/release/${{ matrix.binary }}" LICENSE README.md "dist/$name/"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$name.zip" "$name"
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS
+
+      # A draft: check it on GitHub (Releases), then publish it there.
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

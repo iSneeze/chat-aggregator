@@ -129,17 +129,25 @@ YOUTUBE_API_KEY=... cargo run -p chat-youtube --example listen_youtube -- <video
 # optional: YOUTUBE_EMOJIS=export.json (from scripts/yt-emoji-export.user.js)
 ```
 
-## Windows test build
+## Builds and releases
 
-Until there are installers, a Windows build of the desktop app comes from
-GitHub Actions: on the GitHub repository, **Actions → Windows build → Run
-workflow**. The finished run has `chat-aggregator.exe` attached (as a zip;
-downloading needs a GitHub login). It's built on Windows because GPUI
-compiles its DirectX shaders with the Windows SDK, so cross-compiling from
-Linux doesn't work. One file, no installer, no Visual C++ runtime needed;
-Windows 10 or newer.
+Windows and Linux builds of the desktop app come from GitHub Actions
+(`.github/workflows/release.yml`), on the GitHub repository:
 
-For testers:
+- **Test build:** **Actions → Release → Run workflow**. The finished run
+  has a zip (Windows) and a tar.gz (Linux) attached; downloading them needs
+  a GitHub login.
+- **Release:** set `version` in `Cargo.toml`, commit, then push a matching
+  tag (`git tag v0.1.0 && git push origin v0.1.0` to the GitHub
+  repository). The same builds become a *draft* release with
+  `SHA256SUMS`; check it under Releases, then publish it.
+
+Windows is built on Windows because GPUI compiles its DirectX shaders with
+the Windows SDK, so cross-compiling from Linux doesn't work. Linux is built
+on Ubuntu 22.04, so the binary runs on distributions from about 2022 on (it
+needs glibc 2.35 or newer). Both are a single program, no installer.
+
+For testers on Windows (10 or newer):
 
 - Windows SmartScreen warns about the unsigned file ("Windows protected
   your PC"): **More info → Run anyway**.
@@ -151,6 +159,18 @@ For testers:
   `chat-aggregator.old.log` if the app was restarted after the problem).
 - The YouTube login is stored in the Windows Credential Manager.
 - In OBS, add `http://127.0.0.1:7878/` as a Browser Source.
+
+For testers on Linux:
+
+- Unpack and run `./chat-aggregator`. It needs a graphics driver with
+  Vulkan (Mesa or the GPU vendor's), Wayland or X11, and libxkbcommon,
+  which desktop installs normally have.
+- Settings, themes and the log file are in `~/.config/chat-aggregator/`.
+- The YouTube login is stored in the desktop's keyring (GNOME Keyring,
+  KWallet, ...) through the Secret Service; without one, in a file in the
+  settings folder that only your user can read.
+- NixOS: the binary doesn't run as is (no `/usr/lib`); use the dev shell
+  (`cargo run -p chat-app`) for now.
 
 ## Status
 

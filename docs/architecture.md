@@ -157,7 +157,9 @@ used as a trait object anyway; an enum is simpler and costs nothing at
 runtime.
 
 **Twitch** uses the `twitch-irc` crate with an anonymous login: public chat
-needs no account. Gift subs sent to many viewers at once arrive as one
+needs no account. It connects over rustls like everything else, so the app
+links no OpenSSL; rustls's default crypto backend is chosen at the start of
+`TwitchSource::run`, since twitch-irc relies on one being set. Gift subs sent to many viewers at once arrive as one
 summary plus one notice per recipient; the per-recipient ones are skipped so
 the total isn't counted twice.
 

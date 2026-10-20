@@ -32,6 +32,12 @@ impl ChatSource for TwitchSource {
     // compiler can prove the future is Send; it checks this for us.
     async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
         activity.set(Activity::Connecting);
+        // twitch-irc builds its TLS setup with rustls's process-wide default
+        // crypto backend. With both backends compiled in (`ring` from
+        // chat-youtube's gRPC, `aws-lc-rs` from reqwest) there is none, and
+        // connecting would panic. Pick aws-lc-rs, which reqwest uses anyway;
+        // `Err` only means one was chosen already, which is just as good.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let config = ClientConfig::new_simple(StaticLoginCredentials::anonymous());
         let (mut incoming_messages, client) =
             TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
