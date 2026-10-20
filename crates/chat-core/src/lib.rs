@@ -102,6 +102,7 @@ pub enum ChatPlatform {
     Twitch,
     YouTube,
     Rplay,
+    Picarto,
 }
 
 impl ChatPlatform {
@@ -111,6 +112,7 @@ impl ChatPlatform {
             ChatPlatform::Twitch => "twitch",
             ChatPlatform::YouTube => "youtube",
             ChatPlatform::Rplay => "rplay",
+            ChatPlatform::Picarto => "picarto",
         }
     }
 }
@@ -118,15 +120,16 @@ impl ChatPlatform {
 #[derive(Debug, Clone, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Author {
-    /// Platform-specific user id (Twitch user id, YouTube channel id).
+    /// Platform-specific user id (Twitch user id, YouTube channel id,
+    /// Picarto user id).
     pub id: String,
     /// Display name.
     pub name: String,
-    /// Name color chosen by the user, as `#rrggbb` (Twitch only).
+    /// Name color chosen by the user, as `#rrggbb` (Twitch and Picarto).
     pub color: Option<String>,
     /// Badge names, e.g. `moderator`, `subscriber`, `member`, `vip`.
     pub badges: Vec<String>,
-    /// Profile picture URL (YouTube only).
+    /// Profile picture URL (YouTube and Picarto).
     pub avatar_url: Option<String>,
 }
 
@@ -405,6 +408,12 @@ mod json_contract {
                 platform: ChatPlatform::Rplay,
             }),
             json!({ "type": "clear_all", "platform": "rplay" })
+        );
+        assert_eq!(
+            to_json(&ChatEvent::ClearAll {
+                platform: ChatPlatform::Picarto,
+            }),
+            json!({ "type": "clear_all", "platform": "picarto" })
         );
     }
 }

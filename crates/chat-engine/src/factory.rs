@@ -2,13 +2,15 @@
 //!
 //! The actor is generic over a [`SourceFactory`], so tests can hand it
 //! scripted sources ("fails twice, then runs") while production builds the
-//! real Twitch/YouTube/demo sources. This is static dispatch (generics), not
+//! real Twitch/YouTube/Picarto/demo sources. This is static dispatch (generics), not
 //! a trait object: the compiler generates one actor per factory type.
 
 use std::future::Future;
+use std::path::PathBuf;
 
 use chat_core::demo::DemoSource;
 use chat_core::{ChatEvent, ChatSource, Reporter};
+use chat_picarto::{ChannelNotFound, PicartoSource};
 use chat_twitch::TwitchSource;
 use chat_youtube::oauth::{LoginRequired, TokenProvider};
 use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
@@ -20,7 +22,8 @@ pub(crate) trait SourceFactory: Send + Sync + 'static {
     type Source: ChatSource + Send + 'static;
 
     /// Builds a source. Errors that only the user can fix should be (or
-    /// wrap) a `SetupError` or `LoginRequired`, see [`needs_attention`].
+    /// wrap) a `SetupError`, `LoginRequired` or `ChannelNotFound`, see
+    /// [`needs_attention`].
     fn build(
         &self,
         config: &SourceConfig,
@@ -39,7 +42,7 @@ pub(crate) fn needs_attention(err: &anyhow::Error) -> bool {
     // `chain()` walks the error and everything it wraps, so this also finds
     // a `LoginRequired` that got extra context attached on the way up.
     err.chain()
-        .any(|e| e.is::<SetupError>() || e.is::<LoginRequired>())
+        .any(|e| e.is::<SetupError>() || e.is::<LoginRequired>() || e.is::<ChannelNotFound>())
 }
 
 pub(crate) fn is_login_required(err: &anyhow::Error) -> bool {
@@ -50,6 +53,7 @@ pub(crate) fn is_login_required(err: &anyhow::Error) -> bool {
 pub(crate) enum SourceSpec {
     Twitch(TwitchSource),
     YouTube(YouTubeSource),
+    Picarto(PicartoSource),
     Demo(DemoSource),
 }
 
@@ -61,6 +65,7 @@ impl ChatSource for SourceSpec {
         match self {
             SourceSpec::Twitch(s) => s.run(tx, activity).await,
             SourceSpec::YouTube(s) => s.run(tx, activity).await,
+            SourceSpec::Picarto(s) => s.run(tx, activity).await,
             SourceSpec::Demo(s) => s.run(tx, activity).await,
         }
     }
@@ -73,13 +78,16 @@ pub(crate) struct Production {
     /// One login shared by all YouTube sources: one cached access token,
     /// refreshed once, instead of one per source.
     login: tokio::sync::Mutex<Option<TokenProvider>>,
+    /// See `EngineConfig::emoji_cache_dir`.
+    emoji_cache: Option<PathBuf>,
 }
 
 impl Production {
-    pub(crate) fn new(youtube: YouTubeSettings) -> Self {
+    pub(crate) fn new(youtube: YouTubeSettings, emoji_cache: Option<PathBuf>) -> Self {
         Self {
             youtube: std::sync::Mutex::new(youtube),
             login: tokio::sync::Mutex::new(None),
+            emoji_cache,
         }
     }
 
@@ -109,6 +117,9 @@ impl SourceFactory for Production {
             SourceConfig::Twitch { channel } => SourceSpec::Twitch(TwitchSource {
                 channel: chat_twitch::normalize_channel(channel).map_err(SetupError)?,
             }),
+            SourceConfig::Picarto { channel } => SourceSpec::Picarto(PicartoSource {
+                channel: chat_picarto::normalize_channel(channel).map_err(SetupError)?,
+            }),
             SourceConfig::Demo => SourceSpec::Demo(DemoSource::default()),
             SourceConfig::YouTube { video_id } => {
                 let settings = self.youtube();
@@ -136,6 +147,8 @@ impl SourceFactory for Production {
                     target,
                     auth,
                     emojis,
+                    emoji_cache: self.emoji_cache.clone(),
+                    learn_emojis: settings.learn_emojis,
                 })
             }
         })
@@ -154,5 +167,19 @@ impl SourceFactory for Production {
             .youtube
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = settings;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_picarto_channel_waits_for_the_user() {
+        // Found behind added context too, as the actor sees errors.
+        let missing =
+            anyhow::Error::new(ChannelNotFound("your_channel".into())).context("Picarto chat");
+        assert!(needs_attention(&missing));
+        assert!(!needs_attention(&anyhow::anyhow!("connection reset")));
     }
 }

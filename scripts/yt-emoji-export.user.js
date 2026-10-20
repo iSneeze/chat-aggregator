@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Emoji Picker Exporter
 // @namespace    chat-aggregator
-// @version      1.7
+// @version      1.8
 // @license      MIT
 // @homepageURL  https://isneeze.github.io/chat-aggregator/youtube-emoji
 // @downloadURL  https://github.com/iSneeze/chat-aggregator/raw/master/scripts/yt-emoji-export.user.js
@@ -18,7 +18,7 @@
   try {
     console.log('[emoji-exporter] injected:', location.href);
 
-    // Only the top frame shows UI; every frame still captures.
+    // Only the top frame registers menu commands; every frame still captures.
     let isTop = false;
     try { isTop = window.top === window; } catch (_) {}
 
@@ -31,7 +31,6 @@
 
     const seen = new Map();
     const keptCategories = new Set();
-    let countEl = null; // set only in the top frame
 
     function chatDocs() {
       const docs = [document];
@@ -79,7 +78,9 @@
           }
         }
 
-        // Export control inside the picker's category toolbar.
+        // The only on-page control: an export button inside the picker's
+        // category toolbar. It sweeps first, so one click captures every
+        // emoji, including the ones the picker hasn't scrolled into view yet.
         const bar = doc.querySelector('#category-buttons');
         if (bar && !bar.querySelector('.ytee-export')) {
           const b = doc.createElement('button');
@@ -87,11 +88,15 @@
           b.textContent = '⤓';
           b.title = 'Export captured emoji as JSON';
           b.style.cssText = 'cursor:pointer;margin-left:6px;font-size:16px';
-          b.addEventListener('click', e => { e.stopPropagation(); e.preventDefault(); download(); });
+          b.addEventListener('click', async e => {
+            e.stopPropagation(); e.preventDefault();
+            if (b.disabled) return;
+            b.disabled = true;
+            try { await sweep(); download(); } finally { b.disabled = false; }
+          });
           bar.appendChild(b);
         }
       }
-      if (countEl) countEl.textContent = String(seen.size);
     }
 
     async function sweep() {
@@ -148,46 +153,8 @@
       else navigator.clipboard.writeText(s);
     }
 
-    // ---- UI: top frame only ----
+    // ---- Menu commands (userscript manager menu): top frame only ----
     if (isTop) {
-      const panel = document.createElement('div');
-      panel.id = 'ytee-panel';
-      panel.style.cssText =
-        'position:fixed;z-index:2147483647;left:12px;top:12px;background:#111;color:#eee;' +
-        'font:12px/1.5 ui-monospace,monospace;padding:8px 10px;border-radius:8px;' +
-        'border:1px solid #e33;opacity:.95;user-select:none';
-
-      // DOM APIs only: YouTube enforces Trusted Types, so innerHTML throws.
-      const line = document.createElement('div');
-      line.append('emoji: ');
-      countEl = document.createElement('b');
-      countEl.textContent = '0';
-      line.appendChild(countEl);
-      panel.appendChild(line);
-
-      for (const [label, fn] of [['Sweep', sweep], ['Download', download], ['Copy', copy]]) {
-        const b = document.createElement('button');
-        b.textContent = label;
-        b.style.cssText = 'margin:6px 6px 0 0';
-        b.addEventListener('click', fn);
-        panel.appendChild(b);
-      }
-
-      let drag = false, ox = 0, oy = 0;
-      panel.addEventListener('mousedown', e => {
-        if (e.target.tagName === 'BUTTON') return;
-        drag = true; ox = e.clientX - panel.offsetLeft; oy = e.clientY - panel.offsetTop;
-      });
-      addEventListener('mousemove', e => {
-        if (!drag) return;
-        panel.style.left = (e.clientX - ox) + 'px';
-        panel.style.top  = (e.clientY - oy) + 'px';
-      });
-      addEventListener('mouseup', () => { drag = false; });
-
-      document.documentElement.appendChild(panel);
-      console.log('[emoji-exporter] panel added to', location.href);
-
       const reg = typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand
         : (typeof GM !== 'undefined' && GM.registerMenuCommand) ? GM.registerMenuCommand.bind(GM) : null;
       if (reg) {

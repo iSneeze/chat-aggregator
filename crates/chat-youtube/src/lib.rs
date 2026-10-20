@@ -21,6 +21,7 @@
 
 pub use crate::emoji::EmojiMap;
 pub use crate::resolver::{Auth, channel_title, rest_client};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -33,12 +34,15 @@ use tracing::{debug, info, warn};
 
 mod convert;
 mod emoji;
+mod emoji_cache;
 pub mod oauth;
 mod pb;
 mod quota;
 mod resolver;
+pub mod web_chat;
 
 use convert::BoundedIdSet;
+use emoji_cache::{BroadcastEmojis, EmojiCache};
 use pb::LiveChatMessageListRequest;
 use pb::v3_data_live_chat_message_service_client::V3DataLiveChatMessageServiceClient;
 use quota::Exhaustion;
@@ -118,6 +122,12 @@ pub struct YouTubeSource {
     pub auth: Auth,
     /// Custom emoji from the browser export; `EmojiMap::default()` for none.
     pub emojis: EmojiMap,
+    /// The folder of the per-channel emoji caches (see `emoji_cache`);
+    /// `None`: no cache.
+    pub emoji_cache: Option<PathBuf>,
+    /// Learn custom emoji from YouTube's web chat while reading a
+    /// broadcast (see `web_chat`).
+    pub learn_emojis: bool,
 }
 
 impl ChatSource for YouTubeSource {
@@ -191,6 +201,13 @@ impl ChatSource for YouTubeSource {
                 continue 'outer;
             };
 
+            // Dropped when this broadcast's chat is left, for whatever
+            // reason: that stops its web chat reader and saves its cache.
+            let reader = self
+                .learn_emojis
+                .then(|| web_chat::Reader::start(http.clone(), stream.video_id.clone()));
+            let mut emojis = self.broadcast_emojis(stream.channel_id.as_deref(), reader);
+
             // --- Attach phase: per-broadcast reconnect state ---
             // Reset per outer iteration: a page_token or dedupe set from
             // a finished broadcast must not leak into the next one.
@@ -221,7 +238,7 @@ impl ChatSource for YouTubeSource {
                     request,
                     &mut page_token,
                     &mut dedupe,
-                    &self.emojis,
+                    &mut emojis,
                     &tx,
                     &activity,
                     STALL_TIMEOUT,
@@ -319,16 +336,9 @@ impl YouTubeSource {
         first_scan: &mut bool,
     ) -> anyhow::Result<Option<ResolvedStream>> {
         match &self.target {
-            YouTubeTarget::Video(video_id) => {
-                let live_chat_id =
-                    resolver::resolve_live_chat_id(http, &self.auth, video_id).await?;
-                Ok(Some(ResolvedStream {
-                    video_id: video_id.clone(),
-                    live_chat_id: Some(live_chat_id),
-                    is_live: true,
-                    scheduled_start_time: None,
-                }))
-            }
+            YouTubeTarget::Video(video_id) => Ok(Some(
+                resolver::resolve_video(http, &self.auth, video_id).await?,
+            )),
             YouTubeTarget::OwnBroadcast => {
                 let resolved =
                     resolver::resolve_own_broadcast(http, &self.auth, *first_scan).await?;
@@ -336,6 +346,27 @@ impl YouTubeSource {
                 Ok(resolved)
             }
         }
+    }
+
+    /// The emoji for a broadcast on `channel_id`: the imported ones plus
+    /// what that channel's cache has learned, and later what `reader`
+    /// learns. The cache wins where both know a code: it's newer than the
+    /// export.
+    fn broadcast_emojis(
+        &self,
+        channel_id: Option<&str>,
+        reader: Option<web_chat::Reader>,
+    ) -> BroadcastEmojis {
+        let cache = self
+            .emoji_cache
+            .as_deref()
+            .zip(channel_id)
+            .and_then(|(folder, channel)| EmojiCache::open(folder, channel));
+        let map = match &cache {
+            Some(cache) => self.emojis.merged(cache.emojis()),
+            None => self.emojis.clone(),
+        };
+        BroadcastEmojis::new(map, cache, reader)
     }
 }
 
@@ -448,7 +479,7 @@ async fn consume_stream(
     request: Request<LiveChatMessageListRequest>,
     page_token: &mut Option<String>,
     dedupe: &mut BoundedIdSet,
-    emojis: &EmojiMap,
+    emojis: &mut BroadcastEmojis,
     tx: &mpsc::Sender<ChatEvent>,
     activity: &Reporter,
     stall_after: Duration,
@@ -481,8 +512,9 @@ async fn consume_stream(
         if let Some(token) = response.next_page_token {
             *page_token = Some(token);
         }
+        emojis.take_learned();
         for item in response.items {
-            let Some(event) = convert::convert(item, dedupe, emojis) else {
+            let Some(event) = convert::convert(item, dedupe, emojis.map()) else {
                 continue;
             };
             count += 1;
@@ -549,6 +581,59 @@ mod tests {
     }
 
     #[test]
+    fn a_broadcast_gets_the_import_plus_its_channels_cache() {
+        let folder =
+            std::env::temp_dir().join(format!("chat-youtube-emojis-for-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("UC1.json"),
+            r#"{ "version": 1, "entries": [
+                { "code": ":_hype:", "url": "https://yt3.ggpht.com/hype-v2" },
+                { "code": ":_wave:", "url": "https://yt3.ggpht.com/wave" }
+            ] }"#,
+        )
+        .unwrap();
+        let source = YouTubeSource {
+            target: YouTubeTarget::OwnBroadcast,
+            auth: Auth::ApiKey(String::new()),
+            emojis: EmojiMap::from_json(
+                r#"{ "version": 1, "entries": [
+                    { "code": ":_hype:", "url": "https://yt3.ggpht.com/hype" },
+                    { "code": ":yt:", "url": "https://yt3.ggpht.com/yt" }
+                ] }"#,
+            )
+            .unwrap(),
+            emoji_cache: Some(folder.clone()),
+            learn_emojis: false,
+        };
+        let urls = |map: &EmojiMap| -> Vec<String> {
+            map.find(":_hype: :_wave: :yt:")
+                .emotes
+                .into_iter()
+                .map(|e| e.url)
+                .collect()
+        };
+
+        let emojis = source.broadcast_emojis(Some("UC1"), None);
+        assert_eq!(
+            urls(emojis.map()),
+            [
+                "https://yt3.ggpht.com/hype-v2", // the cache is newer
+                "https://yt3.ggpht.com/wave",
+                "https://yt3.ggpht.com/yt",
+            ]
+        );
+        // Another channel, or none known: just the import.
+        assert_eq!(
+            urls(source.broadcast_emojis(Some("UC2"), None).map()).len(),
+            2
+        );
+        assert_eq!(urls(source.broadcast_emojis(None, None).map()).len(), 2);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
     fn start_times_name_the_day_unless_it_is_today() {
         use chrono::TimeZone as _;
         let zone = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
@@ -572,13 +657,16 @@ mod tests {
         // them until it's awaited below, so they must outlive this
         // statement (inline temporaries would be dropped at its `;`).
         let (mut page_token, mut dedupe) = (None, BoundedIdSet::new(16));
-        let (emojis, activity) = (EmojiMap::default(), Reporter::detached());
+        let (mut emojis, activity) = (
+            BroadcastEmojis::fixed(EmojiMap::default()),
+            Reporter::detached(),
+        );
         let consume = consume_stream(
             &mut client,
             Request::new(LiveChatMessageListRequest::default()),
             &mut page_token,
             &mut dedupe,
-            &emojis,
+            &mut emojis,
             &tx,
             &activity,
             Duration::from_millis(300),

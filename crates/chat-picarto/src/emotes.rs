@@ -244,7 +244,7 @@ fn channel_url(emote: &ChannelEmote) -> String {
 
 /// A Picarto image path as a full URL. Paths are usually relative to
 /// `images.picarto.tv`, sometimes already full URLs.
-fn image_url(path: &str) -> String {
+pub(crate) fn image_url(path: &str) -> String {
     if path.starts_with("https://") || path.starts_with("http://") {
         path.to_owned()
     } else {

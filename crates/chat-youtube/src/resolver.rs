@@ -43,13 +43,22 @@ fn http_error(api: &str, status: reqwest::StatusCode, body: String) -> anyhow::E
 
 #[derive(serde::Deserialize)]
 struct VideosResponse {
+    // With `fields`, Google leaves out an empty list altogether (`{}`).
+    #[serde(default)]
     items: Vec<VideoItem>,
 }
 
 #[derive(serde::Deserialize)]
 struct VideoItem {
+    snippet: Option<VideoSnippet>,
     #[serde(rename = "liveStreamingDetails")]
     live_streaming_details: Option<LiveStreamingDetails>,
+}
+
+#[derive(serde::Deserialize)]
+struct VideoSnippet {
+    #[serde(rename = "channelId")]
+    channel_id: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -58,16 +67,27 @@ struct LiveStreamingDetails {
     active_live_chat_id: Option<String>,
 }
 
-pub async fn resolve_live_chat_id(
+/// The live chat of a given video. Costs 1 quota unit.
+pub async fn resolve_video(
     http: &reqwest::Client,
     auth: &Auth,
     video_id: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<ResolvedStream> {
     // parse_with_params percent-encodes the values, so a malformed id
-    // can't inject extra query parameters.
+    // can't inject extra query parameters. `snippet` (for the channel id)
+    // costs nothing extra: a call is 1 unit whatever parts it asks for.
+    // `fields` trims the answer to what we read (title, description,
+    // thumbnails and tags would be most of it).
     let url = reqwest::Url::parse_with_params(
         "https://www.googleapis.com/youtube/v3/videos",
-        [("part", "liveStreamingDetails"), ("id", video_id)],
+        [
+            ("part", "snippet,liveStreamingDetails"),
+            ("id", video_id),
+            (
+                "fields",
+                "items(snippet/channelId,liveStreamingDetails/activeLiveChatId)",
+            ),
+        ],
     )?;
     let response = auth
         .apply(http.get(url))
@@ -88,14 +108,24 @@ pub async fn resolve_live_chat_id(
         .await
         .context("videos.list returned invalid JSON")?;
 
-    resp.items
-        .into_iter()
-        .next()
+    let video = resp.items.into_iter().next();
+    let channel_id = video
+        .as_ref()
+        .and_then(|v| v.snippet.as_ref())
+        .and_then(|s| s.channel_id.clone());
+    let live_chat_id = video
         .and_then(|v| v.live_streaming_details)
         .and_then(|d| d.active_live_chat_id)
         .ok_or_else(|| {
             anyhow::anyhow!("video {video_id} has no active live chat (offline, or not visible to these credentials?)")
-        })
+        })?;
+    Ok(ResolvedStream {
+        video_id: video_id.to_string(),
+        channel_id,
+        live_chat_id: Some(live_chat_id),
+        is_live: true,
+        scheduled_start_time: None,
+    })
 }
 
 /// How to authenticate a YouTube Data API call.
@@ -148,7 +178,8 @@ pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Resul
         title: String,
     }
 
-    let url = "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true";
+    let url = "https://www.googleapis.com/youtube/v3/channels\
+               ?part=snippet&mine=true&fields=items/snippet/title";
     let response = auth
         .apply(http.get(url))
         .await?
@@ -180,6 +211,9 @@ pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Resul
 ///   approaches.
 pub struct ResolvedStream {
     pub video_id: String,
+    /// The channel the broadcast belongs to (its custom emoji are cached
+    /// per channel). Google always sends it; `None` only if it ever doesn't.
+    pub channel_id: Option<String>,
     pub live_chat_id: Option<String>,
     pub is_live: bool,
     pub scheduled_start_time: Option<chrono::DateTime<chrono::Utc>>,
@@ -200,6 +234,8 @@ pub(crate) const STALE_AFTER: chrono::Duration = chrono::Duration::hours(3);
 
 #[derive(serde::Deserialize)]
 struct BroadcastsResponse {
+    // With `fields`, Google leaves out an empty list altogether (`{}`).
+    #[serde(default)]
     items: Vec<BroadcastItem>,
 }
 
@@ -212,6 +248,8 @@ struct BroadcastItem {
 
 #[derive(serde::Deserialize)]
 struct BroadcastSnippet {
+    #[serde(rename = "channelId")]
+    channel_id: Option<String>,
     #[serde(rename = "liveChatId")]
     live_chat_id: Option<String>,
     #[serde(rename = "scheduledStartTime")]
@@ -261,9 +299,13 @@ pub async fn resolve_own_broadcast(
     // (the API rejects combinations), so fetch everything we own and
     // classify lifeCycleStatus locally. 50 is the most one page holds, and
     // costs the same 1 unit as 10: fewer old broadcasts can push the live
-    // one off the page.
+    // one off the page. This call repeats every few minutes while nothing
+    // is live, so `fields` keeps only what we read: each broadcast's title,
+    // description and thumbnails would otherwise be most of the answer.
+    // (A misspelt field name fails the whole call with HTTP 400.)
     let url = "https://www.googleapis.com/youtube/v3/liveBroadcasts\
-               ?part=id,snippet,status&mine=true&broadcastType=all&maxResults=50";
+               ?part=id,snippet,status&mine=true&broadcastType=all&maxResults=50\
+               &fields=items(id,snippet(channelId,liveChatId,scheduledStartTime),status/lifeCycleStatus)";
 
     let response = auth
         .apply(http.get(url))
@@ -312,6 +354,7 @@ fn pick_broadcast(
     {
         return Some(ResolvedStream {
             video_id: item.id.clone(),
+            channel_id: item.snippet.as_ref().and_then(|s| s.channel_id.clone()),
             live_chat_id: item.snippet.as_ref().and_then(|s| s.live_chat_id.clone()),
             is_live: true,
             scheduled_start_time: None,
@@ -334,6 +377,9 @@ fn pick_broadcast(
         .min_by_key(|(start, _)| *start)
         .map(|(start, item)| ResolvedStream {
             video_id: item.id,
+            // Fields are evaluated in the order written: this borrows the
+            // snippet before the next line moves it out of `item`.
+            channel_id: item.snippet.as_ref().and_then(|s| s.channel_id.clone()),
             live_chat_id: item.snippet.and_then(|s| s.live_chat_id),
             is_live: false,
             scheduled_start_time: Some(start),
@@ -367,7 +413,11 @@ mod tests {
     fn broadcast(id: &str, status: &str, start: Option<&str>) -> serde_json::Value {
         serde_json::json!({
             "id": id,
-            "snippet": { "liveChatId": format!("chat-{id}"), "scheduledStartTime": start },
+            "snippet": {
+                "channelId": "UC_own",
+                "liveChatId": format!("chat-{id}"),
+                "scheduledStartTime": start,
+            },
             "status": { "lifeCycleStatus": status },
         })
     }
@@ -381,6 +431,15 @@ mod tests {
     const NOW: &str = "2026-10-07T18:00:00Z";
 
     #[test]
+    fn an_answer_without_items_is_an_empty_list() {
+        // What `fields` turns "no broadcasts" / "no such video" into.
+        let broadcasts: BroadcastsResponse = serde_json::from_str("{}").unwrap();
+        assert!(pick_broadcast(broadcasts.items, NOW.parse().unwrap()).is_none());
+        let videos: VideosResponse = serde_json::from_str("{}").unwrap();
+        assert!(videos.items.is_empty());
+    }
+
+    #[test]
     fn a_live_broadcast_wins() {
         let picked = pick(
             vec![
@@ -391,6 +450,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(picked.video_id, "on-air");
+        assert_eq!(picked.channel_id.as_deref(), Some("UC_own"));
         assert!(picked.is_live);
         assert_eq!(picked.live_chat_id.as_deref(), Some("chat-on-air"));
     }

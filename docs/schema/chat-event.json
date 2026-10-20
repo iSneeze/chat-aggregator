@@ -4,7 +4,7 @@
     "Author": {
       "properties": {
         "avatar_url": {
-          "description": "Profile picture URL (YouTube only).",
+          "description": "Profile picture URL (YouTube and Picarto).",
           "type": [
             "string",
             "null"
@@ -18,14 +18,14 @@
           "type": "array"
         },
         "color": {
-          "description": "Name color chosen by the user, as `#rrggbb` (Twitch only).",
+          "description": "Name color chosen by the user, as `#rrggbb` (Twitch and Picarto).",
           "type": [
             "string",
             "null"
           ]
         },
         "id": {
-          "description": "Platform-specific user id (Twitch user id, YouTube channel id).",
+          "description": "Platform-specific user id (Twitch user id, YouTube channel id,\nPicarto user id).",
           "type": "string"
         },
         "name": {
@@ -89,7 +89,8 @@
       "enum": [
         "twitch",
         "youtube",
-        "rplay"
+        "rplay",
+        "picarto"
       ],
       "type": "string"
     },

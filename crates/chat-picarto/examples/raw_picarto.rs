@@ -6,7 +6,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chat_picarto::{ChannelEmote, SiteEmotes};
 use futures_util::{SinkExt, StreamExt};
-use reqwest::Url;
 use serde_json::{Map, Value, json};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
@@ -42,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
             "usage: cargo run -p chat-picarto --example raw_picarto -- <channel name or picarto.tv link>"
         );
     };
-    let channel = channel_name(&input)?;
+    let channel = chat_picarto::normalize_channel(&input).map_err(anyhow::Error::msg)?;
     let http = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(15))
@@ -301,40 +300,6 @@ fn token_claims(token: &str) -> String {
         }
         None => "not a readable JWT".to_owned(),
     }
-}
-
-/// The channel name from a bare name or a picarto.tv link: the stream page
-/// (`/<name>`) or the pop-out chat (`/chatpopout/<name>/public`).
-fn channel_name(input: &str) -> anyhow::Result<String> {
-    let input = input.trim();
-    let name = if input.contains("picarto.tv") {
-        let link = if input.contains("://") {
-            input.to_owned()
-        } else {
-            format!("https://{input}")
-        };
-        let url = Url::parse(&link).with_context(|| format!("not a link: {input:?}"))?;
-        let segments: Vec<&str> = url
-            .path_segments()
-            .map(|segments| segments.filter(|s| !s.is_empty()).collect())
-            .unwrap_or_default();
-        match segments.as_slice() {
-            ["chatpopout", name, ..] => name.to_string(),
-            [name, ..] => name.to_string(),
-            [] => bail!("the link has no channel name in it: {input:?}"),
-        }
-    } else {
-        input.to_owned()
-    };
-    // Also keeps the name safe to put into a URL path as it is.
-    let valid = !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    if !valid {
-        bail!("expected a Picarto channel name or a picarto.tv link, got {input:?}");
-    }
-    Ok(name)
 }
 
 async fn get_json(http: &reqwest::Client, url: &str) -> anyhow::Result<Value> {

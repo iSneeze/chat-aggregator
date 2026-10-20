@@ -14,6 +14,7 @@ display.
 ```text
  Twitch (IRC) ──┐
  YouTube (gRPC)─┤                          ┌─ SSE /events ──────→ overlay page in OBS
+ Picarto (WS) ──┤                          │
  Demo ──────────┼─→ forwarder ─→  Hub  ────┤
  Test window ───┘   (counts)     (fan-out  └─ WebSocket /api/v1/ws → games, bots
                                   + history)
@@ -40,7 +41,8 @@ the overlay and the API are served on `127.0.0.1` only.
 ```text
 chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ──→ chat-core
                          ├─→ chat-twitch ─────────────────→ chat-core
-                         └─→ chat-youtube ────────────────→ chat-core
+                         ├─→ chat-youtube ────────────────→ chat-core
+                         └─→ chat-picarto ────────────────→ chat-core
 ```
 
 | crate          | responsibility |
@@ -53,7 +55,7 @@ chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ─�
 | `chat-engine`  | owns everything at runtime: the control-plane actor, source restarts, status, config file |
 | `chat-app`     | the desktop app (GPUI): windows, settings, login, test messages |
 | `chat-rplay`   | placeholder for a future source |
-| `chat-picarto` | a future source; so far its emote handling |
+| `chat-picarto` | Picarto chat over the website's WebSocket (anonymous, read-only), its emotes, converted to `ChatEvent`s |
 
 Why so many crates? Each one has one job and only knows what it must.
 `chat-server` never sees Twitch or YouTube, only `ChatEvent`s; the platform
@@ -198,9 +200,37 @@ the total isn't counted twice.
   settings, runs the login on its own tokio runtime and restarts the
   YouTube sources afterwards. Cancelling a login is dropping it
   (`YouTubeLogin`), which stops the local server.
-- **Custom emoji**: the API only sends `:codes:`. A userscript exports the
-  channel's codes and image URLs from YouTube's emoji picker; the source
-  maps codes to images with it.
+- **Custom emoji**: the API only sends `:codes:`. While a broadcast's
+  chat is read, a second task (`web_chat.rs`) follows the same chat on
+  YouTube's web chat page, logged out, and picks the emoji (codes and
+  picture) out of every message there; the messages themselves still come
+  from the API. Unofficial, so best effort: its failures are logged and
+  retried slowly, never shown as a source problem. It sends what it finds
+  over a channel; the run loop takes it in before converting each batch
+  of messages (`BroadcastEmojis` in `emoji_cache.rs`, the only owner of
+  the map, so no lock) and saves it to the channel's cache
+  (`youtube-emojis/<channel id>.json`; codes are only unique within a
+  channel) at most every 30 s, and when the broadcast's state is dropped:
+  that also happens when the source is switched off mid-`await`. A
+  userscript export of the whole emoji picker can be loaded on top
+  (learned emoji win: newer).
+
+**Picarto** has no public chat API, so the source does what Picarto's
+website does for a logged-out visitor (details in PICARTO.md): look the
+channel up in the public API (a wrong name is a `ChannelNotFound`, which
+waits for the user like a setup error), get an anonymous token from the
+site's GraphQL API, open the chat WebSocket. Frames are compact JSON and
+read loosely (`serde_json::Value`): the format is undocumented, so a
+message missing what we need is skipped instead of failing the connection.
+Unlike the other sources it reconnects by itself rather than letting the
+engine restart it: a restart builds a new source, and each one downloads
+the site's 1.4 MB script once for the emote tables (Picarto's own emotes
+are `data:` images in it, emoji names map to unicode). It pings every 30 s
+as the site does; 75 s without any frame counts as a dead connection. In a
+multistream the channels share one chat, and all of it is shown, as on
+Picarto; only the configured channel's own streamer gets the
+`broadcaster` badge. Tips, subscriptions and raids aren't converted yet:
+none has been captured.
 
 **Demo** sends sample messages of every kind, for styling themes without a
 live chat. **Manual** is fed by the app's test window; it exists exactly as

@@ -211,8 +211,8 @@ impl ConfigFile {
         settings_dir.join("themes")
     }
 
-    /// `settings_dir` is the folder the config file is in: themes are
-    /// looked up next to it.
+    /// `settings_dir` is the folder the config file is in: themes and the
+    /// emoji caches are kept next to it.
     pub fn into_engine_config(self, settings_dir: &Path) -> EngineConfig {
         EngineConfig {
             settings: Settings {
@@ -222,6 +222,9 @@ impl ConfigFile {
             },
             sources: self.sources,
             themes_dir: Some(Self::themes_dir(settings_dir)),
+            // Unlike `config.toml`, written in headless mode too: it's
+            // data the sources collect, not a file you edit.
+            emoji_cache_dir: Some(settings_dir.join("youtube-emojis")),
             // Headless mode has nobody to ask, and leaves the file alone;
             // the app switches both on.
             ask_api_origins: false,
@@ -310,6 +313,10 @@ mod tests {
             engine.themes_dir.as_deref(),
             Some(Path::new("/settings/themes"))
         );
+        assert_eq!(
+            engine.emoji_cache_dir.as_deref(),
+            Some(Path::new("/settings/youtube-emojis"))
+        );
     }
 
     #[test]
@@ -394,6 +401,15 @@ mod tests {
         assert_eq!(file.sources, [SourceConfig::Demo.into()]);
         assert_eq!(file.app, AppSettings::default());
         assert_eq!(file.server, ServerSettings::default());
+        assert_eq!(file.youtube, YouTubeSettings::default());
+    }
+
+    #[test]
+    fn emoji_learning_is_on_unless_switched_off() {
+        let without = ConfigFile::parse("[youtube]\nclient_id = \"id\"").unwrap();
+        assert!(without.youtube.learn_emojis, "older files: on");
+        let off = ConfigFile::parse("[youtube]\nlearn_emojis = false").unwrap();
+        assert!(!off.youtube.learn_emojis);
     }
 
     #[test]

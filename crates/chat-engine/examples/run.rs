@@ -14,13 +14,14 @@
 //!   --config <file>       use this config file
 //!   --init-config [file]  write a commented config file (default location) and exit
 //!
-//! Flags (combine freely; --twitch and --youtube may repeat):
+//! Flags (combine freely; --twitch, --youtube and --picarto may repeat):
 //!   --demo                sample messages of every kind, including deletions
 //!   --twitch <channel>
 //!   --youtube-own         your own current/next broadcast (the streamer path);
 //!                         needs a login, see below
 //!   --youtube <video_id>  a specific public video (testing path); uses
 //!                         YOUTUBE_API_KEY if set, otherwise the login
+//!   --picarto <channel>   a Picarto channel (its name or a picarto.tv link)
 //!   --theme <name|dir>    overlay theme: "minimal" (built in), a folder name in
 //!                         "themes" next to the config file, or a path to any
 //!                         theme folder (like `theme` in the config file)
@@ -187,6 +188,9 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
                 video_id: Some(next_value(&mut args, "--youtube")?),
             }),
             "--youtube-own" => flag_sources.push(SourceConfig::YouTube { video_id: None }),
+            "--picarto" => flag_sources.push(SourceConfig::Picarto {
+                channel: next_value(&mut args, "--picarto")?,
+            }),
             // A theme name, or a path to any theme folder.
             "--theme" => {
                 let theme = next_value(&mut args, "--theme")?;

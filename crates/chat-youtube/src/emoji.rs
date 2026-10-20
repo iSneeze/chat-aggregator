@@ -19,14 +19,15 @@ pub struct EmojiMap {
     by_code: HashMap<String, String>,
 }
 
-/// The fields of the export file we use; serde ignores the rest.
-#[derive(serde::Deserialize)]
+/// The fields of the export file we use; serde ignores the rest. The
+/// emoji cache writes the same format, so `load` reads both.
+#[derive(serde::Deserialize, serde::Serialize)]
 struct ExportFile {
     version: u32,
     entries: Vec<ExportEntry>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct ExportEntry {
     code: String,
     url: String,
@@ -57,6 +58,42 @@ impl EmojiMap {
         );
         let by_code = file.entries.into_iter().map(|e| (e.code, e.url)).collect();
         Ok(Self { by_code })
+    }
+
+    /// As export JSON, sorted by code so that a file saved twice with the
+    /// same emoji is the same file (a `HashMap` has no fixed order).
+    pub(crate) fn to_json(&self) -> String {
+        let mut entries: Vec<_> = self
+            .by_code
+            .iter()
+            .map(|(code, url)| ExportEntry {
+                code: code.clone(),
+                url: url.clone(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.code.cmp(&b.code));
+        let file = ExportFile {
+            version: 1,
+            entries,
+        };
+        serde_json::to_string_pretty(&file).expect("strings always serialize")
+    }
+
+    /// Adds or updates one emoji. `true` if that changed anything.
+    pub(crate) fn insert(&mut self, code: String, url: String) -> bool {
+        if self.by_code.get(&code) == Some(&url) {
+            return false;
+        }
+        self.by_code.insert(code, url);
+        true
+    }
+
+    /// This map with `other`'s emoji added; where both know a code,
+    /// `other`'s URL wins.
+    pub(crate) fn merged(&self, other: &EmojiMap) -> EmojiMap {
+        let mut by_code = self.by_code.clone();
+        by_code.extend(other.by_code.iter().map(|(c, u)| (c.clone(), u.clone())));
+        EmojiMap { by_code }
     }
 
     pub fn len(&self) -> usize {
@@ -176,6 +213,34 @@ mod tests {
         assert!(map().find(" :yt::_hype:  :yt: ").emote_only);
         assert!(!map().find("").emote_only);
         assert!(!map().find("plain text").emote_only);
+    }
+
+    #[test]
+    fn saved_json_loads_again_and_is_stable() {
+        let json = map().to_json();
+        let again = EmojiMap::from_json(&json).unwrap();
+        assert_eq!(again.by_code, map().by_code);
+        assert_eq!(again.to_json(), json, "same emoji, same file");
+    }
+
+    #[test]
+    fn insert_reports_only_changes() {
+        let mut m = map();
+        assert!(!m.insert(":yt:".into(), "https://yt3.ggpht.com/yt".into()));
+        assert!(m.insert(":yt:".into(), "https://yt3.ggpht.com/yt-new".into()));
+        assert!(m.insert(":_wave:".into(), "https://yt3.ggpht.com/wave".into()));
+        assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn merged_prefers_the_other_map() {
+        let mut newer = EmojiMap::default();
+        newer.insert(":_hype:".into(), "https://yt3.ggpht.com/hype-v2".into());
+        newer.insert(":_wave:".into(), "https://yt3.ggpht.com/wave".into());
+        let both = map().merged(&newer);
+        assert_eq!(both.len(), 3);
+        assert_eq!(both.by_code[":_hype:"], "https://yt3.ggpht.com/hype-v2");
+        assert_eq!(both.by_code[":yt:"], "https://yt3.ggpht.com/yt");
     }
 
     #[test]

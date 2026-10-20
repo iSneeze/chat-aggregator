@@ -1,6 +1,6 @@
 //! The settings window (⚙): the app's look, the overlay's replay history
 //! and burst pacing, the port, the JSON API and the web sites allowed to use
-//! it, the YouTube API key, the settings folder.
+//! it, the YouTube API key and emoji learning, the settings folder.
 //!
 //! gpui-kit's settings fields report every keystroke. Applying each one
 //! would go wrong: typing "25" over "20" passes through "2", which would
@@ -48,6 +48,7 @@ struct Draft {
     port: u16,
     api: bool,
     api_key: String,
+    learn_emojis: bool,
 }
 
 // The engine's settings by their full name: `Settings` alone is gpui-kit's
@@ -62,6 +63,7 @@ impl Draft {
             port: server.port,
             api: server.api,
             api_key: settings.youtube.api_key.clone().unwrap_or_default(),
+            learn_emojis: settings.youtube.learn_emojis,
         }
     }
 
@@ -74,6 +76,7 @@ impl Draft {
         server.port = self.port;
         server.api = self.api;
         settings.youtube.api_key = Some(self.api_key).filter(|key| !key.is_empty());
+        settings.youtube.learn_emojis = self.learn_emojis;
     }
 }
 
@@ -170,11 +173,18 @@ impl SettingsWindow {
         );
     }
 
-    /// Switches the JSON API on or off right away (a switch has no
-    /// half-typed states to wait out). Edits still waiting for the pause go
-    /// along with it.
     fn set_api(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.draft.api = on;
+        self.apply_now(|draft| draft.api = on, cx);
+    }
+
+    fn set_learn_emojis(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.apply_now(|draft| draft.learn_emojis = on, cx);
+    }
+
+    /// For switches: applies right away (a switch has no half-typed states
+    /// to wait out). Edits still waiting for the pause go along with it.
+    fn apply_now(&mut self, edit: impl FnOnce(&mut Draft), cx: &mut Context<Self>) {
+        edit(&mut self.draft);
         // Dropping the pending timer cancels it; `apply` does its work now.
         self.pending = None;
         self.apply(cx);
@@ -275,6 +285,20 @@ impl SettingsWindow {
                 move |on, cx| {
                     if let Some(view) = write.upgrade() {
                         view.update(cx, |this, cx| this.set_api(on, cx));
+                    }
+                },
+            )
+        };
+        let learn_emojis = {
+            let (read, write) = (view.clone(), view.clone());
+            SettingField::switch(
+                move |cx| {
+                    read.upgrade()
+                        .is_some_and(|view| view.read(cx).draft.learn_emojis)
+                },
+                move |on, cx| {
+                    if let Some(view) = write.upgrade() {
+                        view.update(cx, |this, cx| this.set_learn_emojis(on, cx));
                     }
                 },
             )
@@ -415,6 +439,12 @@ impl SettingsWindow {
                         "Optional: reads a video's chat (\"YouTube (a video)\") \
                      without the login.",
                     ),
+                    SettingItem::new("Learn YouTube emoji", learn_emojis.default_value(true))
+                        .description(
+                            "Shows channel emoji as pictures once someone uses them, \
+                             read from YouTube's own chat page (no login). Remembered \
+                             per channel in the settings folder.",
+                        ),
                 ]),
             ),
         ]
@@ -671,6 +701,16 @@ mod tests {
         ui.view().update(cx, |this, cx| this.set_api(false, cx));
         run_until(cx, || ui.saved().is_some_and(|f| !f.server.api));
         assert!(!ui.engines().server.api);
+    }
+
+    #[gpui_kit::test]
+    fn emoji_learning_switches_at_once_and_is_saved(cx: &mut TestAppContext) {
+        let ui = open(cx, "learn-emojis");
+        assert!(ui.engines().youtube.learn_emojis, "on by default");
+        ui.view()
+            .update(cx, |this, cx| this.set_learn_emojis(false, cx));
+        run_until(cx, || ui.saved().is_some_and(|f| !f.youtube.learn_emojis));
+        assert!(!ui.engines().youtube.learn_emojis);
     }
 
     #[gpui_kit::test]

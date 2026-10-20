@@ -1,6 +1,6 @@
 # Chat events API
 
-Live chat from Twitch and YouTube, merged into one stream of JSON events,
+Live chat from Twitch, YouTube and Picarto, merged into one stream of JSON events,
 for programs that want to react to chat: games, bots, sound boards, custom
 overlays.
 
@@ -71,8 +71,8 @@ A chat message or a platform event (donation, sub, raid, ...).
 | field       | meaning |
 |-------------|---------|
 | `id`        | platform message id; `delete` events refer to it |
-| `platform`  | `"twitch"`, `"youtube"` (later `"rplay"`) |
-| `author`    | `id` (platform user id), `name`, `color` (`#rrggbb`, Twitch only, else `null`), `badges` (e.g. `moderator`, `subscriber`, `member`, `vip`), `avatar_url` (YouTube only, else `null`) |
+| `platform`  | `"twitch"`, `"youtube"`, `"picarto"` (later `"rplay"`) |
+| `author`    | `id` (platform user id), `name`, `color` (`#rrggbb`, Twitch and Picarto, else `null`), `badges` (e.g. `broadcaster`, `moderator`, `subscriber`, `member`, `vip`), `avatar_url` (YouTube and Picarto, else `null`) |
 | `text`      | what the user typed; **may be empty** (e.g. a raid). Event descriptions are in `kind` |
 | `emotes`    | emotes used in `text`, each listed once; in `text` they appear exactly as `code` |
 | `timestamp` | when it was sent, RFC 3339 in UTC |

@@ -37,7 +37,11 @@ newest = "bottom"
 # client_secret = "GOCSPX-…"
 # Only needed to read a video's chat by id without logging in:
 # api_key = "…"
-# Custom channel emoji, exported with scripts/yt-emoji-export.user.js:
+# Channel emoji are learned from YouTube's web chat as they're used (kept
+# in youtube-emojis/ next to this file); false switches that off:
+learn_emojis = true
+# All of a channel's emoji at once, exported with
+# scripts/yt-emoji-export.user.js (optional):
 # emojis = "/path/to/youtube-emojis.json"
 
 [app]
@@ -60,6 +64,11 @@ appearance = "system"
 # [[sources]]
 # type = "youtube"
 # video_id = "VIDEO_ID"   # the part after watch?v= in the URL
+
+# A Picarto channel (its name, or the link to it):
+# [[sources]]
+# type = "picarto"
+# channel = "your_channel"
 
 # Sample messages of every kind, for trying out themes:
 [[sources]]

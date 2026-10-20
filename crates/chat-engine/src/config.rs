@@ -29,6 +29,10 @@ pub enum SourceConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         video_id: Option<String>,
     },
+    /// Any channel's chat, read anonymously like a logged-out visitor.
+    Picarto {
+        channel: String,
+    },
     /// Sample messages of every kind, for styling and testing.
     Demo,
 }
@@ -43,6 +47,7 @@ impl SourceConfig {
             SourceConfig::YouTube { video_id: Some(id) } if id.trim().is_empty() => {
                 Err("the video id is empty".into())
             }
+            SourceConfig::Picarto { channel } => chat_picarto::normalize_channel(channel).map(drop),
             SourceConfig::YouTube { .. } | SourceConfig::Demo => Ok(()),
         }
     }
@@ -53,6 +58,7 @@ impl SourceConfig {
             SourceConfig::Twitch { channel } => format!("Twitch: {channel}"),
             SourceConfig::YouTube { video_id: None } => "YouTube: your channel".into(),
             SourceConfig::YouTube { video_id: Some(id) } => format!("YouTube: video {id}"),
+            SourceConfig::Picarto { channel } => format!("Picarto: {channel}"),
             SourceConfig::Demo => "Demo".into(),
         }
     }
@@ -60,8 +66,9 @@ impl SourceConfig {
 
 /// YouTube settings shared by all YouTube sources: the streamer's own
 /// Google project (see docs/youtube-setup.md).
-#[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+// `default`: a missing setting takes its value from `Default` below.
+#[serde(default, deny_unknown_fields)]
 pub struct YouTubeSettings {
     /// OAuth client of type "Desktop app".
     pub client_id: Option<String>,
@@ -71,6 +78,24 @@ pub struct YouTubeSettings {
     pub api_key: Option<String>,
     /// Custom emoji export (scripts/yt-emoji-export.user.js).
     pub emojis: Option<PathBuf>,
+    /// Learn custom emoji from YouTube's web chat while reading a chat
+    /// (docs/youtube-emoji.md). On by default: it's what makes channel
+    /// emoji show up without the export.
+    pub learn_emojis: bool,
+}
+
+// Written by hand for `learn_emojis`: a derived `Default` would make it
+// `false`, since that's `bool`'s default.
+impl Default for YouTubeSettings {
+    fn default() -> Self {
+        Self {
+            client_id: None,
+            client_secret: None,
+            api_key: None,
+            emojis: None,
+            learn_emojis: true,
+        }
+    }
 }
 
 impl YouTubeSettings {
@@ -97,6 +122,7 @@ impl fmt::Debug for YouTubeSettings {
             .field("client_secret", &hidden(&self.client_secret))
             .field("api_key", &hidden(&self.api_key))
             .field("emojis", &self.emojis)
+            .field("learn_emojis", &self.learn_emojis)
             .finish()
     }
 }
@@ -130,6 +156,7 @@ mod tests {
                 { "type": "twitch", "channel": "your_channel" },
                 { "type": "youtube" },
                 { "type": "youtube", "video_id": "abc123" },
+                { "type": "picarto", "channel": "your_channel" },
                 { "type": "demo" }
             ]
         }))
@@ -143,6 +170,9 @@ mod tests {
                 SourceConfig::YouTube { video_id: None },
                 SourceConfig::YouTube {
                     video_id: Some("abc123".into())
+                },
+                SourceConfig::Picarto {
+                    channel: "your_channel".into()
                 },
                 SourceConfig::Demo,
             ]
@@ -173,6 +203,20 @@ mod tests {
             .is_err()
         );
         assert!(SourceConfig::YouTube { video_id: None }.validate().is_ok());
+        assert!(
+            SourceConfig::Picarto {
+                channel: "picarto.tv/your_channel".into()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            SourceConfig::Picarto {
+                channel: "not valid!".into()
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
@@ -181,7 +225,7 @@ mod tests {
             client_id: Some("id".into()),
             client_secret: Some("GOCSPX-secret".into()),
             api_key: Some("AIza-key".into()),
-            emojis: None,
+            ..Default::default()
         };
         let printed = format!("{settings:?}");
         assert!(

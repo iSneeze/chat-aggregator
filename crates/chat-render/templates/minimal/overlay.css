@@ -3,7 +3,7 @@
  * outlined so it reads over any game. The markup is documented at the top
  * of message.html; every message is a <div class="msg"> with modifier
  * classes:
- *   .msg--twitch / .msg--youtube                    platform
+ *   .msg--twitch / .msg--youtube / .msg--picarto    platform
  *   .msg--role-viewer / -member / -moderator / -owner
  *   .msg--text / --emote-only / --donation / --special
  *   .msg--membership / --gift / --notice            kind
@@ -25,6 +25,7 @@
   /* the mark at the start of a line */
   --twitch: #9146ff;
   --youtube: #ff0033;
+  --picarto: #35a775;
 
   /* names by role (YouTube's chat colours) */
   --name-viewer: #ffffff;
@@ -112,6 +113,7 @@ body {
 }
 .msg--twitch .msg__platform  { background: var(--twitch); }
 .msg--youtube .msg__platform { background: var(--youtube); }
+.msg--picarto .msg__platform { background: var(--picarto); }
 
 .msg__author,
 .msg__colon {

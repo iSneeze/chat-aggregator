@@ -38,14 +38,16 @@ enum NewSource {
     Twitch,
     YouTubeOwn,
     YouTubeVideo,
+    Picarto,
     Demo,
 }
 
 impl NewSource {
-    const ALL: [NewSource; 4] = [
+    const ALL: [NewSource; 5] = [
         NewSource::Twitch,
         NewSource::YouTubeOwn,
         NewSource::YouTubeVideo,
+        NewSource::Picarto,
         NewSource::Demo,
     ];
 
@@ -54,6 +56,7 @@ impl NewSource {
             NewSource::Twitch => "Twitch",
             NewSource::YouTubeOwn => "YouTube (your broadcasts)",
             NewSource::YouTubeVideo => "YouTube (a video)",
+            NewSource::Picarto => "Picarto",
             NewSource::Demo => "Demo",
         }
     }
@@ -63,6 +66,7 @@ impl NewSource {
         match self {
             NewSource::Twitch => Some("channel name"),
             NewSource::YouTubeVideo => Some("video id (the part after watch?v=)"),
+            NewSource::Picarto => Some("channel name or picarto.tv link"),
             NewSource::YouTubeOwn | NewSource::Demo => None,
         }
     }
@@ -75,6 +79,7 @@ impl NewSource {
             NewSource::YouTubeVideo => SourceConfig::YouTube {
                 video_id: Some(text),
             },
+            NewSource::Picarto => SourceConfig::Picarto { channel: text },
             NewSource::Demo => SourceConfig::Demo,
         }
     }
@@ -1080,10 +1085,14 @@ mod tests {
             // Twitch (selected at start) needs a channel name...
             assert!(window.try_find("new-source-text").is_some());
             // ...Demo needs nothing...
-            window.click(("kind", 3usize), cx);
+            window.click(("kind", 4usize), cx);
             assert!(window.try_find("new-source-text").is_none());
-            // ...and a YouTube video needs its id.
+            // ...a YouTube video needs its id...
             window.click(("kind", 2usize), cx);
+            assert!(window.try_find("new-source-text").is_some());
+            // ...and Picarto a channel.
+            window.click(("kind", 4usize), cx);
+            window.click(("kind", 3usize), cx);
             assert!(window.try_find("new-source-text").is_some());
         })
         .unwrap();
@@ -1209,7 +1218,7 @@ mod tests {
                 .unwrap_or_default()
         };
         cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click(("kind", 3usize), cx); // Demo
+            window.click(("kind", 4usize), cx); // Demo
             window.click("add", cx);
         })
         .unwrap();

@@ -58,6 +58,9 @@ async fn main() -> anyhow::Result<()> {
             target,
             auth,
             emojis,
+            // A quick look at a chat: learned emoji aren't kept.
+            emoji_cache: None,
+            learn_emojis: true,
         }
         .run(tx, Reporter::detached()),
     );

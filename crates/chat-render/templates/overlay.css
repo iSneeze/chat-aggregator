@@ -4,7 +4,7 @@
  * Most restyling only needs the variables below. The markup is documented
  * at the top of message.html; every message is an <article class="msg">
  * with modifier classes:
- *   .msg--twitch / .msg--youtube                    platform
+ *   .msg--twitch / .msg--youtube / .msg--picarto    platform
  *   .msg--text / --emote-only / --donation / --special
  *   .msg--membership / --gift / --notice            kind
  *   .msg--paid                                      donation or special
@@ -30,6 +30,7 @@
   /* colors */
   --twitch: #9146ff;
   --youtube: #ff0033;
+  --picarto: #35a775;
   --paid: #f5b700;
   --membership: #2cb67d;
   --notice: #3da9fc;
@@ -85,6 +86,7 @@ body {
 
 .msg--twitch  { --platform-color: var(--twitch); }
 .msg--youtube { --platform-color: var(--youtube); }
+.msg--picarto { --platform-color: var(--picarto); }
 
 /* New messages slide in from below; with the newest at the top
    (?newest=top), from above. */

@@ -67,6 +67,10 @@ pub struct EngineConfig {
     /// the question, see `Status::api_requests`) or are refused right away
     /// (headless mode: nobody to ask).
     pub ask_api_origins: bool,
+    /// Where YouTube sources keep the custom emoji they've learned, a file
+    /// per channel (`youtube-emojis/` next to `config.toml`). `None`: no
+    /// cache (tests).
+    pub emoji_cache_dir: Option<PathBuf>,
     /// Where the engine saves the settings and sources after each change
     /// (`config.toml`). `None`: never written (headless mode, which leaves
     /// your file and its comments alone, and tests).
@@ -221,7 +225,10 @@ pub struct Engine {
 
 impl Engine {
     pub async fn start(config: EngineConfig) -> anyhow::Result<Self> {
-        let factory = Production::new(config.settings.youtube.clone());
+        let factory = Production::new(
+            config.settings.youtube.clone(),
+            config.emoji_cache_dir.clone(),
+        );
         Self::start_with(config, factory).await
     }
 

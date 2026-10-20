@@ -4,7 +4,7 @@
 
 Website and docs: <https://isneeze.github.io/chat-aggregator/>
 
-Aggregates live chat from Twitch, YouTube, and Rplay (soon™️) into a single unified
+Aggregates live chat from Twitch, YouTube, Picarto, and Rplay (soon™️) into a single unified
 message stream, exposed as a stylable HTML overlay for OBS/browser sources.
 
 ## How it works
@@ -23,7 +23,7 @@ moderation: deletes, bans, clears). How the pieces fit together, and why:
 | `chat-twitch`  | Twitch IRC (anonymous read)                 |
 | `chat-youtube` | YouTube gRPC live chat (`streamList`)       |
 | `chat-rplay`   | rplay — research in progress                |
-| `chat-picarto` | picarto — research in progress              |
+| `chat-picarto` | Picarto chat WebSocket (anonymous read)     |
 | `chat-render`  | templates + CSS, emote replacement          |
 | `chat-server`  | HTTP: overlay page, SSE stream, JSON API    |
 | `chat-engine`  | runs sources, hub and server together       |
@@ -158,6 +158,7 @@ Details, design decisions and next steps: [ROADMAP.md](ROADMAP.md).
 
 - [x] Twitch IRC source
 - [x] YouTube gRPC source (OAuth login or API key; quota handling)
+- [x] Picarto source (chat, emotes, moderation)
 - [ ] rplay source
 - [x] hub (broadcast + replay history)
 - [x] HTML overlay + themes (SSE)

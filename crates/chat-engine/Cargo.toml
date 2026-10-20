@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 chat-core = { path = "../chat-core" }
+chat-picarto = { path = "../chat-picarto" }
 chat-server = { path = "../chat-server" }
 chat-twitch = { path = "../chat-twitch" }
 chat-youtube = { path = "../chat-youtube" }

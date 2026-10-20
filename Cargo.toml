@@ -25,7 +25,9 @@ license = "MIT"
 tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-reqwest = { version = "0.13", features = ["json"] }
+# `gzip`: asks servers to compress their answers (YouTube's chat page and API
+# answers shrink 3-4x) and unpacks them transparently.
+reqwest = { version = "0.13", features = ["json", "gzip"] }
 anyhow = "1"
 serde_json = "1"
 minijinja = "2"

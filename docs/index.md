@@ -4,10 +4,10 @@ title: chat-aggregator
 
 # chat-aggregator
 
-**Twitch and YouTube live chat in one overlay for your stream.**
+**Twitch, YouTube and Picarto live chat in one overlay for your stream.**
 
 chat-aggregator runs on your own computer while you stream. It reads the
-live chat of your channels on Twitch and YouTube, merges it into a single
+live chat of your channels on Twitch, YouTube and Picarto, merges it into a single
 chat, and shows it as a styled overlay you add to OBS (or any streaming
 software) as a browser source. Other programs on your computer, like games
 or bots, can receive the same chat as a live JSON feed.
@@ -30,7 +30,8 @@ or bots, can receive the same chat as a live JSON feed.
 - [Connecting YouTube](youtube-setup.md): the one-time setup of your own
   Google Cloud project and login.
 - [Overlay themes](themes.md): making the chat look the way you want.
-- [YouTube channel emoji](youtube-emoji.md): showing custom emoji as images.
+- [YouTube channel emoji](youtube-emoji.md): how channel emoji become
+  pictures, and loading them all at once.
 - [Chat events API](api.md): the JSON WebSocket feed for your own programs
   ([AsyncAPI spec](asyncapi.yaml)).
 - [Architecture](architecture.md): for developers, how the program is

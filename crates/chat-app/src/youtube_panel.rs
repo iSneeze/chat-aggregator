@@ -504,9 +504,15 @@ impl YouTubePanel {
 
 impl YouTubePanel {
     fn render_emoji(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        // Learned ones need no file: say so, rather than "none".
+        let none = if self.settings(cx).learn_emojis {
+            "none imported (learned from chat)"
+        } else {
+            "none loaded"
+        };
         let theme = cx.theme();
         let (text, color) = match &self.emoji {
-            Emoji::None => ("none loaded".to_string(), theme.muted_foreground),
+            Emoji::None => (none.to_string(), theme.muted_foreground),
             Emoji::Loaded(count) => (format!("{count} loaded"), theme.foreground),
             Emoji::Problem(e) => (e.clone(), theme.danger),
             Emoji::Importing => ("loading…".to_string(), theme.muted_foreground),

@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy policy
 
-_Effective 2026-10-19._
+_Effective 2026-10-20._
 
 chat-aggregator is a program that runs **on your own computer**. It has no
 servers, no user accounts and no analytics. The developers never receive
@@ -37,8 +37,22 @@ From YouTube, with your permission:
   id, profile picture link and badges, plus the details of Super Chats,
   Super Stickers, memberships and gifts.
 
+From YouTube's own chat page, the one anyone can open in a browser, without
+logging in and without cookies (only while **Learn YouTube emoji** is on, as
+it is unless you switch it off): the codes and picture links of the
+channel emoji used in a chat you read. The page also contains that chat's
+recent messages; chat-aggregator reads past them and keeps only the emoji.
+
 From Twitch: the public chat of the channels you enter, read anonymously
 without any login.
+
+From Picarto, without any login, the way Picarto's website does for a
+logged-out visitor: the public info of the channels you enter (whether
+they're live, their id), an anonymous chat token for them, and their public
+chat, with each message's author name, user id, name colour, profile
+picture link and badges. To show Picarto's own emotes and emoji names, the
+program also downloads the script of Picarto's website once each time a
+Picarto chat starts, and reads the emote lists from it.
 
 ## What is stored, where, and for how long
 
@@ -51,6 +65,10 @@ without any login.
   secret, an optional API key, channel names, overlay theme, a copy of your
   custom emoji list) are stored in chat-aggregator's settings folder on your
   computer.
+- **Learned emoji** (codes like `:_hypeWave:` and their picture links) are
+  stored per channel in the `youtube-emojis` folder in the settings folder,
+  so they work right away next time. They stay until you delete that
+  folder.
 - **A log file** (`chat-aggregator.log`, and the one from the previous
   start as `chat-aggregator.old.log`) in the settings folder records what
   the program did: which sources started, connection problems, errors. It
@@ -79,11 +97,14 @@ without any login.
   YouTube broadcasts, if you read those, and a site you allow can tell from
   it which channel is yours.
 - The program connects only to the platforms themselves: Google/YouTube (for
-  login, chat and chatters' profile pictures) and Twitch (for chat). It
+  login, chat, chatters' profile pictures and, through YouTube's chat page,
+  channel emoji), Twitch (for chat) and Picarto (for chat, channel info and
+  the emote lists in its website's script). It
   downloads each YouTube profile picture shown in the overlay once from
   YouTube's image server and hands it to your streaming software itself.
-  Emote and gift images in the overlay are loaded from Twitch's and
-  YouTube's image servers by your streaming software.
+  Emote and gift images in the overlay are loaded from Twitch's,
+  YouTube's and Picarto's image servers by your streaming software, and so
+  are Picarto chatters' profile pictures.
 - Your YouTube API usage is recorded by Google in **your own** Google Cloud
   project.
 
