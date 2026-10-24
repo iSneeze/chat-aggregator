@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Third-party licenses</title>
+  <style>
+    body { max-width: 50em; margin: 2em auto; padding: 0 1em; font-family: system-ui, sans-serif; line-height: 1.5; }
+    h2 { margin-top: 2.5em; }
+    .crates { padding-left: 1.2em; }
+    pre { white-space: pre-wrap; background: #f4f4f5; padding: 1em; border-radius: 6px; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <h1>Third-party licenses</h1>
+  <p>chat-aggregator is built from the open-source projects below. Each
+    license is listed once, with the projects that use it.</p>
+
+  <h2>Overview</h2>
+  <ul>
+    {{#each overview}}
+    <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+    {{/each}}
+  </ul>
+
+  {{#each licenses}}
+  <h2 id="{{id}}">{{name}}</h2>
+  <p>Used by:</p>
+  <ul class="crates">
+    {{#each used_by}}
+    <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+    {{/each}}
+  </ul>
+  <pre>{{text}}</pre>
+  {{/each}}
+</body>
+</html>
