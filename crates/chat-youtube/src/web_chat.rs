@@ -5,7 +5,7 @@
 //! new messages (`youtubei/v1/live_chat/get_live_chat`) carry every
 //! message's emoji with its codes and image. This reads them the way the
 //! page does, without a login, and keeps only the emoji: the messages
-//! themselves still come from the API. (Measured 2026-10-20, see ROADMAP.)
+//! themselves still come from the API. (Measured 2026-10-20.)
 //!
 //! Unofficial: YouTube can change any of it at any time. So everything here
 //! is best effort: problems are logged and retried slowly, and never touch

@@ -1,7 +1,8 @@
 //! Picarto chat source: reads any channel's chat anonymously, through the
 //! same WebSocket the website uses for logged-out visitors. What's known
-//! about it is in PICARTO.md at the repository root;
-//! `examples/raw_picarto.rs` captures raw chat traffic.
+//! about it is in PICARTO.md, the maintainer's research notes (kept
+//! outside the public repository); `examples/raw_picarto.rs` captures raw
+//! chat traffic.
 //!
 //! Shows chat messages with their emotes, and deletions and cleared chats.
 //! Tips, subscriptions and raids aren't handled yet: none has been seen in

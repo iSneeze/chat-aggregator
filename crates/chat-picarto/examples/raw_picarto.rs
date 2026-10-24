@@ -15,7 +15,8 @@ use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// Prints everything Picarto's chat sends for a channel as raw JSON frames,
 /// before anything is decoded or filtered. For collecting real messages and
-/// events to build the Picarto source from (see PICARTO.md):
+/// events to build the Picarto source from (see PICARTO.md, the maintainer's
+/// research notes, kept outside the public repository):
 ///
 ///   cargo run -p chat-picarto --example raw_picarto -- <channel> | tee /tmp/picarto-raw.log
 ///

@@ -93,8 +93,16 @@ jobs:
 
       - run: cargo build --release --locked -p chat-app
 
+      # The license texts of everything the app is built from, which have
+      # to travel with it (configured in about.toml). Fails on a license
+      # not accepted there.
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-about
+      - run: cargo about generate -m crates/chat-app/Cargo.toml about.hbs -o THIRD-PARTY-LICENSES.html
+
       # chat-aggregator-<tag or commit>-<platform>.zip / .tar.gz, with the
-      # license and the README next to the program.
+      # licenses and the README next to the program.
       - name: Package
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -104,7 +112,7 @@ jobs:
           fi
           name=chat-aggregator-$version-${{ matrix.platform }}
           mkdir -p "dist/$name"
-          cp "target/release/${{ matrix.binary }}" LICENSE README.md "dist/$name/"
+          cp "target/release/${{ matrix.binary }}" LICENSE THIRD-PARTY-LICENSES.html README.md "dist/$name/"
           cd dist
           if [ "$RUNNER_OS" = Windows ]; then
             7z a "$name.zip" "$name"

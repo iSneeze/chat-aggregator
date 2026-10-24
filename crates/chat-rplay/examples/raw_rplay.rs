@@ -15,7 +15,8 @@ use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// Prints everything RPlay's chat sends for a channel as raw JSON frames,
 /// before anything is decoded or filtered. For collecting real messages and
-/// events to build the RPlay source from (see RPLAY.md):
+/// events to build the RPlay source from (see RPLAY.md, the maintainer's
+/// research notes, kept outside the public repository):
 ///
 ///   cargo run -p chat-rplay --example raw_rplay -- <channel> | tee /tmp/rplay-raw.log
 ///

@@ -1,8 +1,7 @@
 # Architecture
 
 How chat-aggregator is put together, and why it's built this way. For
-building and running, see the [README](https://github.com/iSneeze/chat-aggregator#readme);
-for the current state and next steps, [ROADMAP.md](https://github.com/iSneeze/chat-aggregator/blob/master/ROADMAP.md).
+building and running, see the [README](https://github.com/iSneeze/chat-aggregator#readme).
 
 ## The big picture
 
@@ -218,7 +217,7 @@ the total isn't counted twice.
   (learned emoji win: newer).
 
 **Picarto** has no public chat API, so the source does what Picarto's
-website does for a logged-out visitor (details in PICARTO.md): look the
+website does for a logged-out visitor: look the
 channel up in the public API (a wrong name is a `ChannelNotFound`, which
 waits for the user like a setup error), get an anonymous token from the
 site's GraphQL API, open the chat WebSocket. Frames are compact JSON and
@@ -562,8 +561,8 @@ happened to another overlay: CVE-2024-7971).
 - **Contract tests** pin the JSON format and the generated schema.
 - **Mutation checks**: for important tests, the guarded code was
   deliberately broken once to confirm the test fails.
-- What can't be tested offline (real platforms, real OBS) is tracked as
-  "pending live verification" in the ROADMAP.
+- What can't be tested offline (real platforms, real OBS) is kept on a
+  list of live checks, done by hand on real streams.
 
 ## Rust idioms you'll meet in the code
 
