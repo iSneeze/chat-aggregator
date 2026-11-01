@@ -57,7 +57,7 @@ const ENDPOINT: &str = "https://youtube.googleapis.com:443";
 /// 1 unit each, unlike an idle gRPC stream).
 const POLL_NEAR: Duration = Duration::from_secs(30);
 const POLL_FAR: Duration = Duration::from_secs(5 * 60);
-const NEAR_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
+const NEAR_WINDOW: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
 
 /// How often to check while nothing is live or coming up: that's also the
 /// longest chat takes to appear after going live without scheduling (just
@@ -175,8 +175,8 @@ impl ChatSource for YouTubeSource {
                     .scheduled_start_time
                     .context("a scheduled broadcast without a start time")?;
                 let wait = scan_interval(start);
-                let now = chrono::Local::now();
-                let when = start_label(start.with_timezone(&chrono::Local), now.date_naive());
+                let now = jiff::Zoned::now();
+                let when = start_label(&start.to_zoned(now.time_zone().clone()), now.date());
                 activity.set(Activity::Idle(format!(
                     "waiting for your broadcast to start (scheduled for {when})"
                 )));
@@ -374,8 +374,8 @@ impl YouTubeSource {
 /// short when its start time is near (or already past but the chat has not
 /// come up), long otherwise. (Stale ones never get here, see
 /// `resolver::STALE_AFTER`.)
-fn scan_interval(start: chrono::DateTime<chrono::Utc>) -> Duration {
-    if start - chrono::Utc::now() <= NEAR_WINDOW {
+fn scan_interval(start: jiff::Timestamp) -> Duration {
+    if start.duration_since(jiff::Timestamp::now()) <= NEAR_WINDOW {
         POLL_NEAR
     } else {
         POLL_FAR
@@ -384,19 +384,13 @@ fn scan_interval(start: chrono::DateTime<chrono::Utc>) -> Duration {
 
 /// A scheduled start for the status line: just the time if it's `today`,
 /// otherwise with the day ("Thu 8 Oct 20:00"), so a stream tomorrow isn't
-/// mistaken for one today. Generic over the time zone so tests can use a
-/// fixed one; the app passes local time.
-fn start_label<Tz: chrono::TimeZone>(
-    start: chrono::DateTime<Tz>,
-    today: chrono::NaiveDate,
-) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    if start.date_naive() == today {
-        start.format("%H:%M").to_string()
+/// mistaken for one today. `start` carries its time zone (the app passes
+/// local time, tests a fixed offset); `today` is a date in that same zone.
+fn start_label(start: &jiff::Zoned, today: jiff::civil::Date) -> String {
+    if start.date() == today {
+        start.strftime("%H:%M").to_string()
     } else {
-        start.format("%a %-d %b %H:%M").to_string()
+        start.strftime("%a %-d %b %H:%M").to_string()
     }
 }
 
@@ -635,12 +629,17 @@ mod tests {
 
     #[test]
     fn start_times_name_the_day_unless_it_is_today() {
-        use chrono::TimeZone as _;
-        let zone = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
-        let at = |d, h| zone.with_ymd_and_hms(2026, 10, d, h, 0, 0).unwrap();
-        assert_eq!(start_label(at(7, 20), today), "20:00");
-        assert_eq!(start_label(at(8, 20), today), "Thu 8 Oct 20:00");
+        use jiff::civil::date;
+        let zone = jiff::tz::TimeZone::fixed(jiff::tz::offset(2));
+        let today = date(2026, 10, 7);
+        let at = |d, h| {
+            date(2026, 10, d)
+                .at(h, 0, 0, 0)
+                .to_zoned(zone.clone())
+                .unwrap()
+        };
+        assert_eq!(start_label(&at(7, 20), today), "20:00");
+        assert_eq!(start_label(&at(8, 20), today), "Thu 8 Oct 20:00");
     }
 
     /// Runs `consume_stream` against `addr` with a short stall limit, and

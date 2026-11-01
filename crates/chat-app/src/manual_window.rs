@@ -231,7 +231,7 @@ impl ManualWindow {
                 text
             },
             emotes: Vec::new(),
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             kind,
         })
     }

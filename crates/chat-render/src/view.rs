@@ -57,11 +57,11 @@ impl<'a> MessageView<'a> {
                 badges: &msg.author.badges,
                 avatar_url: msg.author.avatar_url.as_deref(),
             },
-            timestamp: msg.timestamp.to_rfc3339(),
+            timestamp: msg.timestamp.to_string(),
             time: msg
                 .timestamp
-                .with_timezone(&chrono::Local)
-                .format("%H:%M")
+                .to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%H:%M")
                 .to_string(),
             body: split_body(&msg.text, &msg.emotes),
             amount: None,

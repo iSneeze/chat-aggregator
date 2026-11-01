@@ -24,7 +24,7 @@ tracing.workspace = true
 # Paused, fast-forwarding clock for exact timing tests (`start_paused`);
 # test builds only.
 tokio = { workspace = true, features = ["test-util"] }
-chrono.workspace = true
+jiff.workspace = true
 # Same version axum uses internally, so it isn't compiled twice.
 tokio-tungstenite = "0.29"
 # The schema test (tests/api_schema.rs) needs the JSON Schema derives, which

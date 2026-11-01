@@ -168,8 +168,8 @@ fn message(m: &Value, cx: &Context) -> Option<ChatMessage> {
         timestamp: m
             .get("d")
             .and_then(Value::as_i64)
-            .and_then(chrono::DateTime::from_timestamp_millis)
-            .unwrap_or_else(chrono::Utc::now),
+            .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+            .unwrap_or_else(jiff::Timestamp::now),
         kind: if body.emote_only {
             MessageKind::EmoteOnly
         } else {
@@ -238,7 +238,7 @@ mod tests {
         assert!(m.author.badges.is_empty());
         assert_eq!(m.text, "hello everyone");
         assert!(m.emotes.is_empty());
-        assert_eq!(m.timestamp.timestamp_millis(), 1791800000000);
+        assert_eq!(m.timestamp.as_millisecond(), 1791800000000);
         assert!(matches!(m.kind, MessageKind::Text));
     }
 

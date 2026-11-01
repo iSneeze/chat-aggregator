@@ -419,7 +419,7 @@ mod tests {
             },
             text: "hi".into(),
             emotes: vec![],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             kind: MessageKind::Text,
         }
     }

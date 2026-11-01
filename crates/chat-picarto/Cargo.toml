@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 chat-core = { path = "../chat-core" }
 anyhow.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 # `sink`: the source writes to the socket too (keepalive pings).
 futures-util = { workspace = true, features = ["sink"] }
 # `gzip`: the website's script with the emote tables is 4.9 MB, about a

@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
         };
         println!(
             "{} [{label}] {}",
-            chrono::Local::now().format("%H:%M:%S%.3f"),
+            jiff::Zoned::now().strftime("%H:%M:%S%.3f"),
             raw.as_raw_irc()
         );
     }

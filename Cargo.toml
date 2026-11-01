@@ -23,7 +23,10 @@ license = "MIT"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
-chrono = { version = "0.4", features = ["serde"] }
+# `static`: `jiff::tz::get!` builds a time zone's rules into the binary at
+# compile time (the YouTube quota resets at midnight in Los Angeles), so the
+# lookup can't fail at runtime.
+jiff = { version = "0.2", features = ["serde", "static"] }
 serde = { version = "1", features = ["derive"] }
 # `gzip`: asks servers to compress their answers (YouTube's chat page and API
 # answers shrink 3-4x) and unpacks them transparently.
@@ -37,12 +40,11 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-schemars = { version = "1", features = ["chrono04"] }
+schemars = { version = "1", features = ["jiff02"] }
 oauth2 = { version = "5", default-features = false }
 keyring = "4"
 webbrowser = "1"
 directories = "6"
-chrono-tz = "0.10"
 toml = "1"
 # The overlay's Content-Security-Policy hash. Same versions the OAuth crate
 # already brings in, so nothing is compiled twice.
@@ -50,7 +52,7 @@ sha2 = "0.10"
 base64 = "0.22"
 # Pinned exactly: the app is written against this version's API (GPUI
 # changes a lot between releases).
-gpui-kit = "=0.7.3"
+gpui-kit = "=0.8.1"
 
 [profile.release]
 # Optimise across crate boundaries ("thin" is most of fat LTO's gain at a

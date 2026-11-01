@@ -112,7 +112,7 @@ components:
               avatar_url: null
             text: Cheer100 take my bits
             emotes: []
-            timestamp: '2026-09-25T18:41:02.000Z'
+            timestamp: '2026-09-25T18:41:02Z'
             kind:
               type: donation
               amount: 100 bits

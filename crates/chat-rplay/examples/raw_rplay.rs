@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::StreamExt;
+use jiff::{SignedDuration, Timestamp};
 use reqwest::Url;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde_json::{Map, Value, json};
@@ -337,7 +337,7 @@ struct ToolSession {
     refresh_token: String,
     /// The creator id of the channel the toolkey belongs to.
     channel: String,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
 }
 
 impl ToolSession {
@@ -358,7 +358,7 @@ impl ToolSession {
     /// Renews the token when it has less than 30 minutes left, as RPlay's
     /// site does.
     async fn renew_if_needed(&mut self, http: &reqwest::Client) -> anyhow::Result<()> {
-        if self.expires_at - Utc::now() > TimeDelta::minutes(30) {
+        if self.expires_at.duration_since(Timestamp::now()) > SignedDuration::from_mins(30) {
             return Ok(());
         }
         let body = json!({ "requestorOid": self.channel, "loginType": "live-tool" });
@@ -579,7 +579,7 @@ fn string(json: &Value, field: &str) -> anyhow::Result<String> {
 fn line(label: &str, text: &str) {
     println!(
         "{} [{label}] {text}",
-        chrono::Local::now().format("%H:%M:%S%.3f")
+        jiff::Zoned::now().strftime("%H:%M:%S%.3f")
     );
 }
 

@@ -11,7 +11,7 @@ chat-server = { path = "../chat-server" }
 chat-twitch = { path = "../chat-twitch" }
 chat-youtube = { path = "../chat-youtube" }
 anyhow.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 serde.workspace = true
 toml.workspace = true
 directories.workspace = true

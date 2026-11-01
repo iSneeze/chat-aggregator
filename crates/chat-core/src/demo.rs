@@ -50,7 +50,7 @@ fn youtube(name: &str, badges: &[&str]) -> Author {
 /// the returned list; `round` is mixed into them so repeated calls (demo
 /// mode cycling) don't produce duplicate ids.
 pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     let msg = |n: usize, platform, author, text: &str, emotes, kind| ChatMessage {
         id: format!("demo-{round}-{n}"),
         platform,

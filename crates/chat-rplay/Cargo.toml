@@ -12,7 +12,7 @@ tokio.workspace = true
 anyhow.workspace = true
 reqwest = { workspace = true, features = ["gzip"] }
 serde_json.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 futures-util.workspace = true
 # The chat itself is an Amazon IVS WebSocket (wss://). Same version as
 # chat-server's tests; rustls, webpki-roots and the aws-lc-rs backend are

@@ -11,16 +11,21 @@ use std::fmt;
 use std::time::Duration;
 
 use chat_core::{Activity, Reporter};
-use chrono::{DateTime, TimeZone, Utc};
-use chrono_tz::America::Los_Angeles;
+use jiff::tz::{self, TimeZone};
+use jiff::{SignedDuration, Timestamp};
 use tonic::{Code, Status};
+
+/// Where the quota day starts and ends. `get!` builds the zone's rules into
+/// the binary at compile time, so it can't be missing on the user's machine
+/// (Windows has no time zone database jiff could read at runtime anyway).
+static LOS_ANGELES: TimeZone = tz::get!("America/Los_Angeles");
 
 /// After the computed reset, give Google a minute to actually reset.
 const RESET_GRACE: Duration = Duration::from_secs(60);
 
 /// If the quota is still exhausted this soon after a reset, the reset hasn't
 /// reached us yet: check again after `RECHECK` instead of waiting a day.
-const JUST_RESET: chrono::Duration = chrono::Duration::minutes(30);
+const JUST_RESET: SignedDuration = SignedDuration::from_mins(30);
 const RECHECK: Duration = Duration::from_secs(10 * 60);
 
 /// The daily quota of the Google project is used up. Returned inside
@@ -74,40 +79,43 @@ pub(crate) fn is_quota_body(body: &str) -> bool {
 
 /// When the daily quota resets next: midnight in Los Angeles, which is 08:00
 /// UTC in winter and 07:00 UTC in summer (daylight saving time).
-pub(crate) fn next_reset(now: DateTime<Utc>) -> DateTime<Utc> {
-    let tomorrow = now
-        .with_timezone(&Los_Angeles)
-        .date_naive()
-        .succ_opt()
-        .expect("not the end of time");
-    let midnight = tomorrow.and_hms_opt(0, 0, 0).expect("00:00:00 is valid");
-    Los_Angeles
-        // `earliest`: a local time can be ambiguous or missing around DST
-        // switches. Los Angeles switches at 02:00, so midnight always
-        // exists exactly once, but the API makes us say what we'd want.
-        .from_local_datetime(&midnight)
-        .earliest()
-        .expect("midnight exists in Los Angeles")
-        .with_timezone(&Utc)
+pub(crate) fn next_reset(now: Timestamp) -> Timestamp {
+    // `start_of_day` is the first moment of that day. Los Angeles switches
+    // DST at 02:00, so midnight always exists exactly once; in a zone where
+    // it didn't, jiff would pick the first time that does exist.
+    now.to_zoned(LOS_ANGELES.clone())
+        .tomorrow()
+        .and_then(|day| day.start_of_day())
+        .expect("not the end of time")
+        .timestamp()
 }
 
 /// How long to wait before trying again after the quota ran out.
-pub(crate) fn wait_duration(now: DateTime<Utc>) -> Duration {
+pub(crate) fn wait_duration(now: Timestamp) -> Duration {
     let reset = next_reset(now);
-    let previous_reset = reset - chrono::Duration::days(1);
-    if now - previous_reset < JUST_RESET {
+    // Midnight today in Los Angeles. Not `reset` minus 24 h: the days of
+    // the DST switches are 23 and 25 hours long.
+    let previous_reset = now
+        .to_zoned(LOS_ANGELES.clone())
+        .start_of_day()
+        .expect("not the end of time")
+        .timestamp();
+    if now.duration_since(previous_reset) < JUST_RESET {
         return RECHECK;
     }
-    (reset - now).to_std().unwrap_or_default() + RESET_GRACE
+    // `try_from` fails only for a negative wait, which `next_reset` (always
+    // in the future) doesn't produce.
+    Duration::try_from(reset.duration_since(now)).unwrap_or_default() + RESET_GRACE
 }
 
 /// Reports and logs a clear message, then sleeps until the quota should be
 /// back.
 pub(crate) async fn wait_for_reset(detail: &str, activity: &Reporter) {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let wait = wait_duration(now);
-    let resume = now + chrono::Duration::from_std(wait).unwrap_or_default();
-    let resume = resume.with_timezone(&chrono::Local).format("%H:%M");
+    // The user's own clock time; `wait` is at most a day, far from overflow.
+    let resume = (now + wait).to_zoned(TimeZone::system());
+    let resume = resume.strftime("%H:%M");
     activity.set(Activity::Blocked(format!(
         "YouTube quota used up for today; resuming at {resume}"
     )));
@@ -124,7 +132,7 @@ pub(crate) async fn wait_for_reset(detail: &str, activity: &Reporter) {
 mod tests {
     use super::*;
 
-    fn utc(s: &str) -> DateTime<Utc> {
+    fn utc(s: &str) -> Timestamp {
         s.parse().unwrap()
     }
 
@@ -164,6 +172,21 @@ mod tests {
         // 10 minutes after the reset, still exhausted: Google hasn't caught
         // up yet. Don't wait a whole day.
         assert_eq!(wait_duration(utc("2026-07-15T07:10:00Z")), RECHECK);
+    }
+
+    #[test]
+    fn the_previous_reset_follows_dst_switch_days() {
+        // 8 March 2026 has 23 hours in Los Angeles: its midnight (08:00 UTC,
+        // still PST) was 23 h before the next one, not 24. 20 minutes after
+        // it, only recheck soon.
+        assert_eq!(wait_duration(utc("2026-03-08T08:20:00Z")), RECHECK);
+        // 1 November 2026 has 25 hours: its midnight was 07:00 UTC (still
+        // PDT). 70 minutes later the reset is long done; wait for the next
+        // one (08:00 UTC tomorrow, now PST) instead of rechecking.
+        assert_eq!(
+            wait_duration(utc("2026-11-01T08:10:00Z")),
+            Duration::from_secs(23 * 3600 + 50 * 60) + RESET_GRACE
+        );
     }
 
     #[test]

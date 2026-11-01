@@ -332,7 +332,7 @@ fn pick(json: &Value, fields: &[&str]) -> Map<String, Value> {
 fn line(label: &str, text: &str) {
     println!(
         "{} [{label}] {text}",
-        chrono::Local::now().format("%H:%M:%S%.3f")
+        jiff::Zoned::now().strftime("%H:%M:%S%.3f")
     );
 }
 

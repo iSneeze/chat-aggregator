@@ -219,7 +219,7 @@ mod tests {
             },
             text: text.into(),
             emotes: vec![],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             kind,
         }
     }
@@ -281,7 +281,7 @@ mod tests {
                 code: value.into(),
                 url: value.into(),
             }],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             kind,
         }
     }

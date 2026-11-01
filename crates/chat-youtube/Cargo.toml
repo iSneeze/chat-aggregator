@@ -11,9 +11,7 @@ prost = "0.13"
 prost-types = "0.13"
 serde.workspace = true
 reqwest.workspace = true
-chrono.workspace = true
-# Midnight in Los Angeles (incl. daylight saving) = when YouTube quota resets.
-chrono-tz.workspace = true
+jiff.workspace = true
 tokio.workspace = true
 # Stops the web chat reader when its broadcast's chat is left.
 tokio-util.workspace = true

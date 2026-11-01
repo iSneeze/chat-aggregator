@@ -595,7 +595,7 @@ mod tests {
             },
             text: format!("text of {id}"),
             emotes: vec![],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             kind: MessageKind::Text,
         })
     }

@@ -78,7 +78,7 @@ pub struct ChatMessage {
     /// written exactly as `code`.
     pub emotes: Vec<EmoteRef>,
     /// When the message was sent (RFC 3339, UTC).
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub timestamp: jiff::Timestamp,
     pub kind: MessageKind,
 }
 
@@ -224,7 +224,7 @@ mod tests {
                     },
                     text: format!("mock message number {i}"),
                     emotes: vec![],
-                    timestamp: chrono::Utc::now(),
+                    timestamp: jiff::Timestamp::now(),
                     kind: MessageKind::Text,
                 };
                 // If this errors, the receiver was dropped: nobody is
@@ -330,7 +330,9 @@ mod json_contract {
                 },
                 "text": "hi :yt:",
                 "emotes": [{ "code": ":yt:", "url": "https://img/yt" }],
-                "timestamp": "2026-09-25T18:40:44.500Z",
+                // RFC 3339 in UTC, with only as many fractional digits as
+                // needed (jiff's format): `.5`, not `.500`.
+                "timestamp": "2026-09-25T18:40:44.5Z",
                 "kind": { "type": "text" }
             })
         );

@@ -155,9 +155,17 @@ fn convert_privmsg(p: PrivmsgMessage) -> ChatMessage {
         },
         emotes: unique_emotes(&p.emotes),
         text: p.message_text,
-        timestamp: p.server_timestamp,
+        timestamp: timestamp(p.server_timestamp.timestamp_millis()),
         kind,
     }
+}
+
+/// twitch-irc turns the `tmi-sent-ts` tag (milliseconds since 1970) into a
+/// chrono time; chat-core uses jiff. Going through the milliseconds loses
+/// nothing, since that's all the tag carries. Only a time beyond the year
+/// 9999 could fail; "now" is a fine stand-in for such nonsense.
+fn timestamp(millis: i64) -> jiff::Timestamp {
+    jiff::Timestamp::from_millisecond(millis).unwrap_or_else(|_| jiff::Timestamp::now())
 }
 
 /// Individual `subgift` notices that belong to a community gift carry this
@@ -231,7 +239,7 @@ fn convert_user_notice(un: UserNoticeMessage) -> Option<ChatMessage> {
         emotes: unique_emotes(&un.emotes),
         // Only what the user typed; the system description is in `kind`.
         text: un.message_text.unwrap_or_default(),
-        timestamp: un.server_timestamp,
+        timestamp: timestamp(un.server_timestamp.timestamp_millis()),
         kind,
     })
 }

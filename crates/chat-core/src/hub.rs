@@ -125,7 +125,7 @@ mod tests {
             },
             text: String::new(),
             emotes: vec![],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             kind: MessageKind::Text,
         })
     }

@@ -15,7 +15,7 @@ use anyhow::anyhow;
 use chat_core::{Activity, ChatEvent, ChatSource, Hub, Reporter};
 use chat_server::Connections;
 use chat_youtube::oauth::OAuthApp;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -196,14 +196,14 @@ impl Stats {
         if matches!(event, ChatEvent::Message(_)) {
             self.messages.fetch_add(1, Ordering::Relaxed);
             self.last_message_ms
-                .store(Utc::now().timestamp_millis(), Ordering::Relaxed);
+                .store(Timestamp::now().as_millisecond(), Ordering::Relaxed);
         }
     }
 
-    fn last_message(&self) -> Option<DateTime<Utc>> {
+    fn last_message(&self) -> Option<Timestamp> {
         match self.last_message_ms.load(Ordering::Relaxed) {
             0 => None,
-            ms => DateTime::from_timestamp_millis(ms),
+            ms => Timestamp::from_millisecond(ms).ok(),
         }
     }
 }
@@ -617,8 +617,9 @@ impl<F: SourceFactory> Actor<F> {
                         warn!(source = %label, attempt = slot.attempt, ?delay, "failed, retrying: {e:#}");
                         slot.state = SourceState::Retrying {
                             attempt: slot.attempt,
-                            next_try: Utc::now()
-                                + chrono::Duration::from_std(delay).unwrap_or_default(),
+                            // jiff adds a `std::time::Duration` directly;
+                            // the backoff is capped, far from overflowing.
+                            next_try: Timestamp::now() + delay,
                             error: format!("{e:#}"),
                         };
                         let internal = self.internal_tx.clone();

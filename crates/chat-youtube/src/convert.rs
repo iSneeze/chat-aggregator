@@ -197,9 +197,8 @@ pub fn convert(
         emotes: found.emotes,
         timestamp: snippet
             .published_at
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
-            .map(|t| t.with_timezone(&chrono::Utc))
-            .unwrap_or_else(chrono::Utc::now),
+            .and_then(|t| t.parse::<jiff::Timestamp>().ok())
+            .unwrap_or_else(jiff::Timestamp::now),
         kind,
     }))
 }

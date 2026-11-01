@@ -8,5 +8,5 @@ license.workspace = true
 chat-core = { path = "../chat-core" }
 minijinja.workspace = true
 serde.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 anyhow.workspace = true

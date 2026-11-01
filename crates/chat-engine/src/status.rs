@@ -5,7 +5,7 @@
 use std::fmt;
 
 use chat_core::Activity;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::config::SourceConfig;
 
@@ -36,7 +36,7 @@ pub enum SourceState {
     /// Failed; starts again automatically at `next_try`.
     Retrying {
         attempt: u32,
-        next_try: DateTime<Utc>,
+        next_try: Timestamp,
         error: String,
     },
     /// Failed in a way only you can fix (login, missing setting): not
@@ -71,7 +71,7 @@ pub struct SourceStatus {
     pub activity: Option<Activity>,
     /// Chat messages received since the engine started.
     pub messages: u64,
-    pub last_message: Option<DateTime<Utc>>,
+    pub last_message: Option<Timestamp>,
 }
 
 impl SourceStatus {
@@ -103,7 +103,7 @@ impl SourceStatus {
             SourceState::Retrying {
                 next_try, error, ..
             } => {
-                let secs = (*next_try - Utc::now()).num_seconds().max(0);
+                let secs = next_try.duration_since(Timestamp::now()).as_secs().max(0);
                 format!("retrying in {secs} s: {error}")
             }
             SourceState::Running => match &self.activity {
@@ -185,7 +185,7 @@ mod tests {
 
         let retrying = SourceState::Retrying {
             attempt: 1,
-            next_try: Utc::now(),
+            next_try: Timestamp::now(),
             error: "x".into(),
         };
         assert_eq!(status(retrying, None).health(), Health::Warning);

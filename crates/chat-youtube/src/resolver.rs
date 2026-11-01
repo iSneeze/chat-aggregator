@@ -216,12 +216,11 @@ pub struct ResolvedStream {
     pub channel_id: Option<String>,
     pub live_chat_id: Option<String>,
     pub is_live: bool,
-    pub scheduled_start_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub scheduled_start_time: Option<jiff::Timestamp>,
 }
 
-fn parse_time(raw: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
-    raw.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|t| t.with_timezone(&chrono::Utc))
+fn parse_time(raw: Option<&str>) -> Option<jiff::Timestamp> {
+    raw.and_then(|s| s.parse().ok())
 }
 
 /// How late a scheduled broadcast may be and still count as "about to
@@ -230,7 +229,7 @@ fn parse_time(raw: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
 /// forgotten draft. Stale broadcasts are not waited for: one of them would
 /// otherwise look like "starting any minute" forever, and be checked every
 /// 30 s around the clock (2,880 quota units a day).
-pub(crate) const STALE_AFTER: chrono::Duration = chrono::Duration::hours(3);
+pub(crate) const STALE_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_hours(3);
 
 #[derive(serde::Deserialize)]
 struct BroadcastsResponse {
@@ -269,7 +268,7 @@ impl BroadcastItem {
             .and_then(|s| s.life_cycle_status.as_deref())
     }
 
-    fn scheduled_start(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+    fn scheduled_start(&self) -> Option<jiff::Timestamp> {
         parse_time(
             self.snippet
                 .as_ref()
@@ -338,15 +337,12 @@ pub async fn resolve_own_broadcast(
         }
     }
 
-    Ok(pick_broadcast(resp.items, chrono::Utc::now()))
+    Ok(pick_broadcast(resp.items, jiff::Timestamp::now()))
 }
 
 /// What to follow among your broadcasts at `now`: the live one, otherwise
 /// the next upcoming one (the earliest start that isn't stale).
-fn pick_broadcast(
-    items: Vec<BroadcastItem>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Option<ResolvedStream> {
+fn pick_broadcast(items: Vec<BroadcastItem>, now: jiff::Timestamp) -> Option<ResolvedStream> {
     // 1. Live now (or transitioning into live)? Attach immediately.
     if let Some(item) = items
         .iter()
