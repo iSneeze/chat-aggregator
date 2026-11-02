@@ -4,6 +4,17 @@
 //! The view only draws and forwards clicks. Engine calls run as GPUI tasks
 //! (`cx.spawn`) that await the engine's answer and then update the view;
 //! the list of sources itself comes from the engine's status channel.
+//!
+//! Buttons follow one rule in every window, so anything clickable looks
+//! clickable:
+//! - `.primary()` (filled): the one main action of a section (Add, Save).
+//! - default (bordered): every other action with text.
+//! - `.link()`: only what opens a web page; it looks like a link because it
+//!   leaves the app.
+//! - `.ghost()`: only icon-only buttons (settings, remove), with a tooltip,
+//!   and the unchosen items of a [`segmented`] choice (its track marks them
+//!   as choices). Anywhere else a ghost button with text has no border
+//!   until hovered and reads as a label.
 
 use std::time::Duration;
 
@@ -573,6 +584,28 @@ impl AppView {
             Health::Error => "Something needs your attention",
             Health::Off => "Nothing running",
         };
+
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(light(overall, cx))
+            .child(div().flex_1().text_lg().font_semibold().child(headline))
+            .child(
+                Button::new("open-settings")
+                    .icon(IconName::Settings)
+                    .small()
+                    .ghost()
+                    .tooltip("Settings")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_settings_window(window, cx)),
+                    ),
+            )
+    }
+
+    /// The overlay's card: its address, how many are connected, and the
+    /// theme it shows.
+    fn render_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
         let url = self.status.overlay_url.clone();
         let overlays = self.status.overlays_connected;
         let obs = match overlays {
@@ -581,60 +614,41 @@ impl AppView {
             n => format!("{n} overlays connected"),
         };
 
-        v_flex()
+        let heading = h_flex()
+            .justify_between()
+            .items_center()
+            .child(div().font_semibold().child("Overlay"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(if overlays > 0 {
+                        cx.theme().success
+                    } else {
+                        muted
+                    })
+                    .child(obs),
+            );
+        let address = h_flex()
             .gap_2()
+            .items_center()
+            .flex_wrap()
+            .child(div().text_color(muted).child("URL"))
+            .child(div().font_family("monospace").child(url.clone()))
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(light(overall, cx))
-                    .child(div().flex_1().text_lg().font_semibold().child(headline))
-                    .child(
-                        Button::new("open-settings")
-                            .icon(IconName::Settings)
-                            .small()
-                            .ghost()
-                            .tooltip("Settings")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_settings_window(window, cx)
-                            })),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .flex_wrap()
-                    .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Overlay"),
-                    )
-                    .child(div().font_family("monospace").child(url.clone()))
-                    .child(
-                        Button::new("copy-url")
-                            .icon(IconName::Copy)
-                            .label("Copy")
-                            .small()
-                            .ghost()
-                            .on_click(move |_, window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                                window.push_notification(
-                                    Notification::success("Overlay URL copied"),
-                                    cx,
-                                );
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_color(if overlays > 0 {
-                                cx.theme().success
-                            } else {
-                                cx.theme().muted_foreground
-                            })
-                            .child(obs),
-                    ),
-            )
+                Button::new("copy-url")
+                    .icon(IconName::Copy)
+                    .label("Copy")
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                        window.push_notification(Notification::success("Overlay URL copied"), cx);
+                    }),
+            );
+
+        card(cx)
+            .child(heading)
+            .child(address)
+            .child(self.render_themes(cx))
     }
 
     fn render_themes(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -673,7 +687,6 @@ impl AppView {
                     .icon(IconName::Plus)
                     .label("New theme…")
                     .small()
-                    .ghost()
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.new_theme = Some(cx.new(|cx| {
                             InputState::new(window, cx).placeholder("name for the new theme")
@@ -687,7 +700,6 @@ impl AppView {
                     .icon(IconName::ExternalLink)
                     .label("Open themes folder")
                     .small()
-                    .ghost()
                     .on_click(
                         cx.listener(|this, _, window, cx| this.open_themes_folder(window, cx)),
                     ),
@@ -746,16 +758,16 @@ impl AppView {
             self.status
                 .sources
                 .iter()
-                .map(|source| self.render_source(source, cx)),
+                .enumerate()
+                .map(|(i, source)| self.render_source(source, i == 0, cx)),
         );
         // The list takes whatever height is left (`flex_1`) and scrolls
         // within it. `min_h_0` lets it shrink below its content's height;
         // without it, flex items grow to fit their content and push the
         // rest of the window out of view instead of scrolling.
-        v_flex()
+        card(cx)
             .flex_1()
             .min_h_0()
-            .gap_2()
             .child(
                 h_flex()
                     .justify_between()
@@ -765,7 +777,6 @@ impl AppView {
                         Button::new("open-manual")
                             .label("Test messages…")
                             .small()
-                            .ghost()
                             .tooltip("Send chat messages by hand")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_manual_window(window, cx)
@@ -795,6 +806,7 @@ impl AppView {
     fn render_source(
         &self,
         source: &SourceStatus,
+        first: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let id = source.id;
@@ -805,8 +817,11 @@ impl AppView {
             .gap_3()
             .items_center()
             .py_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
+            // Lines only *between* rows: one under the last row would sit
+            // just above the card's own frame and look doubled.
+            .when(!first, |row| {
+                row.border_t_1().border_color(cx.theme().border)
+            })
             .child(light(source.health(), cx))
             .child(
                 v_flex()
@@ -850,29 +865,35 @@ impl AppView {
     }
 
     fn render_add_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let kinds =
-            h_flex()
-                .gap_1()
-                .flex_wrap()
-                .children(NewSource::ALL.into_iter().enumerate().map(|(i, kind)| {
-                    let selected = kind == self.new_source;
-                    Button::new(("kind", i))
-                        .label(kind.label())
-                        .small()
-                        .selected(selected)
-                        // A clearly visible choice, not just a slight tint.
-                        .when(selected, |button| button.primary())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.new_source = kind;
-                            this.form_error = None;
-                            if let Some(placeholder) = kind.needs_text() {
-                                this.input.update(cx, |input, cx| {
-                                    input.set_placeholder(placeholder, window, cx)
-                                });
-                            }
-                            cx.notify();
-                        }))
-                }));
+        let kinds = segmented(
+            cx,
+            NewSource::ALL.into_iter().enumerate().map(|(i, kind)| {
+                let selected = kind == self.new_source;
+                Button::new(("kind", i))
+                    .label(kind.label())
+                    .small()
+                    .selected(selected)
+                    // Filled when chosen: a clearly visible choice, not just
+                    // a slight tint; the others sit flat on the track.
+                    .map(|button| {
+                        if selected {
+                            button.primary()
+                        } else {
+                            button.ghost()
+                        }
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.new_source = kind;
+                        this.form_error = None;
+                        if let Some(placeholder) = kind.needs_text() {
+                            this.input.update(cx, |input, cx| {
+                                input.set_placeholder(placeholder, window, cx)
+                            });
+                        }
+                        cx.notify();
+                    }))
+            }),
+        );
 
         let mut row = h_flex().gap_2().items_center();
         if self.new_source.needs_text().is_some() {
@@ -890,8 +911,7 @@ impl AppView {
                 .on_click(cx.listener(|this, _, window, cx| this.add_source(window, cx))),
         );
 
-        v_flex()
-            .gap_2()
+        card(cx)
             .child(div().font_semibold().child("Add a source"))
             .child(kinds)
             .child(row)
@@ -908,13 +928,15 @@ impl Render for AppView {
         v_flex()
             .size_full()
             .p_4()
-            .gap_5()
+            // Smaller than before the cards: their frames and padding
+            // already set the sections apart.
+            .gap_3()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_header(cx))
-            .child(self.render_themes(cx))
+            .child(self.render_overlay(cx))
             .child(self.render_sources(cx))
-            .child(self.youtube.clone())
+            .child(card(cx).child(self.youtube.clone()))
             .child(self.render_add_form(cx))
     }
 }
@@ -975,6 +997,34 @@ pub(crate) fn light(health: Health, cx: &App) -> impl IntoElement + use<> {
         Health::Off => theme.muted_foreground,
     };
     div().flex_none().size(px(10.)).rounded_full().bg(color)
+}
+
+/// A section of the main window: a thin rounded frame, so the window reads
+/// as a few blocks rather than one long list.
+fn card(cx: &App) -> Div {
+    v_flex()
+        .gap_2()
+        .p_3()
+        .rounded(cx.theme().radius_lg)
+        .border_1()
+        .border_color(cx.theme().border)
+}
+
+/// A choice of one among a few, as a segmented control: one tinted track
+/// with the chosen item filled in. Unlike a row of separate buttons it
+/// reads as "pick one", not as several actions. Built from buttons (not
+/// gpui-kit's `TabBar`) because a tab bar scrolls sideways when it's too
+/// wide, hiding choices, while this track wraps onto a second line.
+fn segmented(cx: &App, choices: impl IntoIterator<Item = Button>) -> Div {
+    h_flex()
+        // As wide as its choices, not the whole row.
+        .self_start()
+        .flex_wrap()
+        .gap(px(2.))
+        .p(px(3.))
+        .rounded(cx.theme().radius)
+        .bg(cx.theme().tab_bar_segmented)
+        .children(choices)
 }
 
 pub(crate) fn report(window: &mut Window, cx: &mut App, message: String) {

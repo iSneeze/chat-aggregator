@@ -416,7 +416,6 @@ impl Render for ManualWindow {
                         Button::new("manual-delete")
                             .label("Delete last")
                             .small()
-                            .ghost()
                             .disabled(self.last_id.is_none())
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.delete_last(window, cx)),

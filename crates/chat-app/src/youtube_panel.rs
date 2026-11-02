@@ -381,7 +381,8 @@ impl YouTubePanel {
                     .label("Open the setup guide")
                     .icon(IconName::ExternalLink)
                     .small()
-                    .ghost()
+                    // A web page: looks like a link (see `app_view`'s button rule).
+                    .link()
                     .on_click(|_, _, cx| cx.open_url(SETUP_GUIDE)),
             )
             .child(
@@ -464,11 +465,13 @@ impl YouTubePanel {
             Login::LoggingIn { .. } => buttons.child(
                 Button::new("youtube-cancel-login")
                     .label("Cancel")
+                    .small()
                     .on_click(cx.listener(|panel, _, _, cx| panel.cancel_login(cx))),
             ),
             Login::Connected { .. } => buttons.child(
                 Button::new("youtube-logout")
                     .label("Log out")
+                    .small()
                     .on_click(cx.listener(|panel, _, window, cx| panel.log_out(window, cx))),
             ),
             Login::Checking => buttons,
@@ -477,7 +480,7 @@ impl YouTubePanel {
             buttons = buttons.child(
                 Button::new("youtube-change-client")
                     .label("Change client")
-                    .ghost()
+                    .small()
                     .on_click(cx.listener(|panel, _, window, cx| panel.edit_client(window, cx))),
             );
         }
@@ -545,7 +548,6 @@ impl YouTubePanel {
                     Button::new("youtube-emoji-remove")
                         .label("Remove")
                         .small()
-                        .ghost()
                         .on_click(
                             cx.listener(|panel, _, window, cx| panel.remove_emoji(window, cx)),
                         ),
@@ -556,7 +558,7 @@ impl YouTubePanel {
                     .label("How do I export them?")
                     .icon(IconName::ExternalLink)
                     .small()
-                    .ghost()
+                    .link()
                     .on_click(|_, _, cx| cx.open_url(EMOJI_GUIDE)),
             )
     }
