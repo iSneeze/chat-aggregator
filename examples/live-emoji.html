@@ -1,0 +1,705 @@
+<!doctype html>
+<!--
+  Live emoji: a JSON API demo for chat-aggregator.
+
+  Every emote and emoji sent in chat floats up from the bottom of the
+  screen and fades away. "hype hype hype" with three emotes sends up three.
+  Emotes in donations (bits, Super Chats, tips) float up twice as big,
+  stickers and gifts three times as big, near the middle.
+
+  Two moods:
+
+    party (default)  for karaoke and hype moments: emotes sway and pop in,
+                     big ones glow and trail sparkles, and the busier chat
+                     gets, the brighter the stage light glowing up from the
+                     bottom and the more light motes drift through it.
+    calm             (?mode=calm) for talking streams: emotes just float
+                     up and fade, a quiet reaction to a story.
+
+  Use it as an OBS browser source ("Local file"), sized like your canvas.
+  The page background is transparent.
+
+  Needs the JSON API switched on (app: ⚙ Settings → Connection → JSON API;
+  headless: `--api`). Everything else is optional, via the URL query:
+
+    ?mode=calm     just the basics (see above)
+    ?demo=1        fake chatters (try it without a stream)
+    ?size=56       emote size in px (donations 2×, stickers 3×)
+    ?life=3        seconds until an emote has faded away
+    ?margin=50     px kept free at the left and right edges
+    ?unicode=0     only platform emotes, no plain emoji like 😂
+    ?glow=0        party mode without the stage light at the bottom
+    ?sticker=🎉    stand-in for stickers without a picture (YouTube's API
+                   sends none for Super Stickers); ?sticker= for nothing
+    ?bg=%23202030  page background (for testing outside OBS)
+    ?ws=ws://127.0.0.1:7878/api/v1/ws   API address (other port)
+
+  Keys for testing: 1 chat emotes, 2 emoji, 3 donation, 4 sticker,
+  H a burst of hype.
+
+  Chat is untrusted: nothing from chat reaches the page as HTML. Emotes
+  are drawn from their image URL (http/https only), emoji with canvas
+  `fillText` (pixels), status text goes through `textContent`.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Emoji</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+  #status {
+    position: fixed;
+    left: 1.2vmin;
+    bottom: 1.2vmin;
+    font: 600 clamp(12px, 1.6vmin, 20px) system-ui, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.6s;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="status"></div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- settings
+
+const params = new URLSearchParams(location.search);
+function num(name, fallback, min, max) {
+  const v = parseFloat(params.get(name));
+  return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+}
+const CONFIG = {
+  wsUrl: params.get("ws") || "ws://127.0.0.1:7878/api/v1/ws",
+  demo: params.get("demo") === "1",
+  party: params.get("mode") !== "calm",
+  size: num("size", 56, 8, 512),
+  life: num("life", 3, 0.5, 20),
+  margin: num("margin", 50, 0, 2000),
+  unicode: params.get("unicode") !== "0",
+  glow: params.get("glow") !== "0",
+  sticker: params.has("sticker") ? params.get("sticker").trim() : "✨",
+};
+const bg = params.get("bg");
+if (bg && CSS.supports("color", bg)) document.body.style.background = bg;
+
+const MAX_PER_MESSAGE = 20; // one chatter pasting 200 emotes sends up 20
+const MAX_ON_SCREEN = 300;  // keeps OBS's frame rate safe in a busy chat
+const STAGGER = 0.08;       // s between the emotes of one message
+const NORMAL = 1, BIG = 2, STICKER = 3; // size multipliers
+
+// ------------------------------------------------------------------ canvas
+
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, dpr = 1;
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+}
+
+// ----------------------------------------------------------------- sprites
+
+// Everything that floats is a "sprite": a picture drawn with drawImage,
+// either an emote image or an emoji pre-drawn onto a small canvas. Drawing
+// a ready picture is much cheaper than fillText or a shadow every frame,
+// which is what keeps hundreds of emotes smooth.
+
+const images = new Map(); // url → sprite
+function imageSprite(url) {
+  // Only real web images: the URL comes from chat data.
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return null;
+  url = sharper(url);
+  let sprite = images.get(url);
+  if (!sprite) {
+    if (images.size > 500) images.clear(); // floating sprites keep their own reference
+    const img = new Image();
+    img.decoding = "async";
+    sprite = { source: img, ready: false, failed: false, aspect: 1 };
+    img.onload = () => {
+      // Wide emotes keep their shape (within reason).
+      const aspect = img.naturalWidth / img.naturalHeight;
+      sprite.aspect = Number.isFinite(aspect) ? Math.min(4, Math.max(0.25, aspect)) : 1;
+      sprite.ready = true;
+    };
+    img.onerror = () => (sprite.failed = true);
+    img.src = url;
+    images.set(url, sprite);
+  }
+  return sprite;
+}
+
+// Twitch's 2.0 images are 56 px: blurry at 2× or on a HiDPI canvas. The
+// 3.0 version (112 px) of the same emote is sharp at every size here.
+function sharper(url) {
+  return url.replace(/^(https:\/\/static-cdn\.jtvnw\.net\/emoticons\/v2\/.+\/)[12]\.0$/, "$13.0");
+}
+
+const GLYPH_PX = 128;
+const EMOJI_FONT = `"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+const glyphs = new Map(); // emoji → sprite
+function glyphSprite(text) {
+  let sprite = glyphs.get(text);
+  if (!sprite) {
+    if (glyphs.size > 300) glyphs.clear();
+    const c = document.createElement("canvas");
+    c.width = c.height = GLYPH_PX;
+    const g = c.getContext("2d");
+    g.font = `${GLYPH_PX * 0.8}px ${EMOJI_FONT}`;
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(text, GLYPH_PX / 2, GLYPH_PX * 0.54);
+    sprite = { source: c, ready: true, failed: false, aspect: 1 };
+    glyphs.set(text, sprite);
+  }
+  return sprite;
+}
+
+/** A soft round light (white core, coloured edge), pre-drawn once per hue. */
+const glowDots = new Map();
+function glowDot(hue) {
+  hue = Math.round(hue / 15) * 15 % 360; // 24 shades are plenty
+  let c = glowDots.get(hue);
+  if (!c) {
+    c = document.createElement("canvas");
+    c.width = c.height = 64;
+    const g = c.getContext("2d");
+    const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grad.addColorStop(0, "rgba(255, 255, 255, 1)");
+    grad.addColorStop(0.25, `hsla(${hue}, 100%, 75%, 0.8)`);
+    grad.addColorStop(1, `hsla(${hue}, 100%, 60%, 0)`);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 64, 64);
+    glowDots.set(hue, c);
+  }
+  return c;
+}
+
+/** A four-pointed twinkle, pre-drawn once per colour. */
+const stars = new Map();
+function starSprite(color) {
+  let c = stars.get(color);
+  if (!c) {
+    c = document.createElement("canvas");
+    c.width = c.height = 32;
+    const g = c.getContext("2d");
+    g.translate(16, 16);
+    g.fillStyle = color;
+    g.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4;
+      const r = i % 2 ? 3 : 15;
+      g.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    g.fill();
+    stars.set(color, c);
+  }
+  return c;
+}
+const SPARKLE_COLORS = ["#ffffff", "#fff3b0", "#ffd54a", "#ffc2e2"];
+
+// ----------------------------------------------------------- chat → emotes
+
+// Same rules as the overlay's renderer (`split_body` in chat-render), so
+// both always agree on what counts as an emote:
+// - YouTube-style `:code:` matches anywhere, even back to back;
+// - word codes (Twitch's `Kappa`) only as whole words: `Kappachino` is text;
+// - the longest code wins (`KappaPride` over `Kappa`).
+// The API lists each emote once; `text` says how often it was used.
+function isTokenCode(code) {
+  return code.length > 2 && code.startsWith(":") && code.endsWith(":");
+}
+function isWholeWord(text, start, end) {
+  return (start === 0 || /\s/.test(text[start - 1])) && (end === text.length || /\s/.test(text[end]));
+}
+
+/** Splits `text` into [{ text }] and [{ emote }] parts, in order. */
+function partsOf(text, emotes) {
+  const known = emotes.filter((e) => typeof e?.code === "string" && e.code && typeof e.url === "string");
+  const parts = [];
+  let plainStart = 0;
+  let i = 0;
+  while (i < text.length) {
+    let best = null;
+    for (const e of known) {
+      if (best && e.code.length <= best.code.length) continue;
+      if (!text.startsWith(e.code, i)) continue;
+      if (isTokenCode(e.code) || isWholeWord(text, i, i + e.code.length)) best = e;
+    }
+    if (best) {
+      if (plainStart < i) parts.push({ text: text.slice(plainStart, i) });
+      parts.push({ emote: best });
+      i += best.code.length;
+      plainStart = i;
+    } else {
+      i++;
+    }
+  }
+  if (plainStart < text.length) parts.push({ text: text.slice(plainStart) });
+  return parts;
+}
+
+// Grapheme clusters keep 👍🏽, 👨‍👩‍👧 and 🇩🇪 in one piece. Only characters
+// that show as an emoji count (Emoji_Presentation, or anything followed by
+// the "show as emoji" marker U+FE0F), so plain ©, ™ or digits don't.
+const graphemes = "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+const EMOJI = /\p{Emoji_Presentation}|️/u;
+function* emojiIn(text) {
+  if (!graphemes) return;
+  for (const { segment } of graphemes.segment(text)) {
+    if (EMOJI.test(segment)) yield segment;
+  }
+}
+
+function onChatEvent(event) {
+  // delete/clear_* need nothing: an emote is gone after a few seconds anyway.
+  if (event?.type !== "message") return;
+  const kind = event.kind?.type;
+  const text = typeof event.text === "string" ? event.text : "";
+  const emotes = Array.isArray(event.emotes) ? event.emotes : [];
+  const paid = kind === "donation" || kind === "special";
+
+  const sprites = [];
+  collect: for (const part of partsOf(text, emotes)) {
+    if (part.emote) {
+      const sprite = imageSprite(part.emote.url);
+      if (sprite) sprites.push(sprite);
+    } else if (CONFIG.unicode) {
+      for (const emoji of emojiIn(part.text)) {
+        if (sprites.length >= MAX_PER_MESSAGE) break collect;
+        sprites.push(glyphSprite(emoji));
+      }
+    }
+    if (sprites.length >= MAX_PER_MESSAGE) break;
+  }
+  sprites.forEach((sprite, i) => spawn(sprite, paid ? BIG : NORMAL, i * STAGGER));
+
+  if (kind === "special") {
+    // A sticker or gift: its picture big and near the middle, after the
+    // message's own emotes.
+    const picture = imageSprite(event.kind.image_url)
+      ?? (CONFIG.sticker ? glyphSprite(CONFIG.sticker) : null);
+    if (picture) spawn(picture, STICKER, sprites.length * STAGGER);
+  }
+
+  if (CONFIG.party) {
+    // Paid and member events lift the mood even without emotes.
+    const tier = Number.isFinite(event.kind?.tier) ? event.kind.tier : 1;
+    if (paid) addHype(4 + tier * 2);
+    else if (kind === "membership" || kind === "gift") addHype(6);
+    if (paid && !sprites.length) fountain(W * (0.2 + Math.random() * 0.6), 24 + tier * 4);
+  }
+}
+
+// --------------------------------------------------------------- floaters
+
+const floaters = [];
+const sparkles = [];
+const motes = [];
+const rings = [];
+
+// Hype: every emote adds to it, and it fades within a few seconds of
+// quiet. In party mode it drives the stage light and the motes.
+let hype = 0;
+// The stage light swings between blue, purple and pink (hue 200…330),
+// faster when chat is busy. The rest of the wheel (greens, olive) looks
+// murky as light over a stream.
+let huePhase = 0;
+let hue = 265;
+function addHype(amount) {
+  hype = Math.min(hype + amount, 300);
+}
+const hypeLevel = () => 1 - Math.exp(-hype / 30); // 0 … 1
+
+function spawn(sprite, scale, delay) {
+  if (sprite.failed || document.hidden) return;
+  const party = CONFIG.party;
+  floaters.push({
+    sprite,
+    scale,
+    size: CONFIG.size * scale,
+    age: -delay, // waits while negative
+    wait: 0,     // how long it has waited for its image to load
+    x: null,     // picked when it appears (its width is known by then)
+    // Each one rises a different distance in the same time, so they end at
+    // different heights. Stickers stop around the middle.
+    rise: scale === STICKER ? 0.45 + Math.random() * 0.2 : 0.4 + Math.random() * 0.5,
+    sway: party ? (0.12 + Math.random() * 0.18) : 0, // × size
+    swaySpeed: 1.5 + Math.random() * 1.5,             // rad/s
+    tilt: party ? (0.1 + Math.random() * 0.2) : 0,    // rad
+    phase: Math.random() * Math.PI * 2,
+    sparkleDue: 0,
+  });
+  // Too many: the oldest (nearly faded) make room.
+  if (floaters.length > MAX_ON_SCREEN) floaters.splice(0, floaters.length - MAX_ON_SCREEN);
+  if (party) addHype(scale === NORMAL ? 1 : scale * 2);
+}
+
+/** Where a floater appears: its edge stays `margin` px from the sides. */
+function pickX(f) {
+  const half = (f.size * f.sprite.aspect) / 2 + f.sway * f.size;
+  const lo = CONFIG.margin + half;
+  const hi = W - CONFIG.margin - half;
+  if (hi <= lo) return W / 2;
+  if (f.scale === STICKER) {
+    // The average of three random numbers clusters around the middle.
+    const t = (Math.random() + Math.random() + Math.random()) / 3;
+    return Math.min(hi, Math.max(lo, W / 2 + (t - 0.5) * W * 0.5));
+  }
+  return lo + Math.random() * (hi - lo);
+}
+
+/** Sparkles thrown out from (x, y). */
+function burst(x, y, count, speed, upward = false) {
+  for (let i = 0; i < count; i++) {
+    const a = upward ? -Math.PI / 2 + (Math.random() - 0.5) * 1.1 : Math.random() * Math.PI * 2;
+    const s = speed * (0.35 + Math.random() * 0.65);
+    sparkles.push({
+      x, y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      age: 0,
+      life: 0.6 + Math.random() * 0.8,
+      size: 6 + Math.random() * 10,
+      spin: (Math.random() - 0.5) * 6,
+      sprite: starSprite(SPARKLE_COLORS[(Math.random() * SPARKLE_COLORS.length) | 0]),
+    });
+  }
+  if (sparkles.length > 500) sparkles.splice(0, sparkles.length - 500);
+}
+
+/** A fountain of sparkles from the bottom edge: a donation without emotes. */
+function fountain(x, count) {
+  burst(x, H + 10, count, H * 0.9, true);
+}
+
+// ----------------------------------------------------------------- update
+
+const easeOut = (u) => 1 - Math.pow(1 - u, 1.8);
+// Overshoots a little before settling at 1: the "pop" when one appears.
+function easeOutBack(u) {
+  const c = 1.9;
+  return 1 + (c + 1) * Math.pow(u - 1, 3) + c * Math.pow(u - 1, 2);
+}
+
+function update(dt) {
+  const life = CONFIG.life;
+  let keep = 0;
+  for (const f of floaters) {
+    if (f.age < 0) {
+      f.age = Math.min(0, f.age + dt);
+    } else if (!f.sprite.ready) {
+      // Not loaded yet (first time this emote is seen): wait a moment
+      // rather than appear halfway up the screen.
+      f.wait += dt;
+      if (f.sprite.failed || f.wait > 3) continue;
+    } else {
+      if (f.x === null) {
+        f.x = pickX(f);
+        if (CONFIG.party && f.scale === STICKER) {
+          rings.push({ x: f.x, y: H - f.size * 0.6, age: 0, life: 0.7, r: f.size });
+          burst(f.x, H - f.size * 0.4, 30, f.size * 4, true);
+        }
+      }
+      f.age += dt;
+      if (f.age >= life) continue;
+      if (CONFIG.party && f.scale !== NORMAL) {
+        // Big ones leave a trail of twinkles.
+        f.sparkleDue += dt * (f.scale === STICKER ? 26 : 14);
+        while (f.sparkleDue >= 1) {
+          f.sparkleDue--;
+          const p = position(f);
+          burst(p.x + (Math.random() - 0.5) * f.size * 0.8, p.y + f.size * 0.3, 1, f.size * 0.6);
+        }
+      }
+    }
+    floaters[keep++] = f;
+  }
+  floaters.length = keep;
+
+  for (const s of sparkles) {
+    s.age += dt;
+    s.vx *= Math.exp(-2 * dt);
+    s.vy = s.vy * Math.exp(-2 * dt) + 40 * dt; // drag, a little gravity
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+  }
+  for (const r of rings) r.age += dt;
+  for (const m of motes) {
+    m.age += dt;
+    m.y -= m.speed * dt;
+    m.x += Math.sin(m.phase + m.age * 0.8) * 12 * dt;
+  }
+  prune(sparkles);
+  prune(rings);
+  prune(motes);
+
+  hype *= Math.exp(-dt / 5.5);
+  const level = hypeLevel();
+  huePhase += dt * (0.12 + level * 0.6);
+  hue = 265 + 65 * Math.sin(huePhase);
+
+  // Light motes drifting up through the stage light once chat gets busy.
+  if (CONFIG.party && level > 0.25 && motes.length < 90 && Math.random() < dt * 30 * (level - 0.25)) {
+    motes.push({
+      x: Math.random() * W,
+      y: H + 20,
+      speed: H * (0.08 + Math.random() * 0.12),
+      size: 6 + Math.random() * 18,
+      hue: hue + (Math.random() - 0.5) * 50,
+      phase: Math.random() * Math.PI * 2,
+      age: 0,
+      life: 4 + Math.random() * 4,
+    });
+  }
+}
+
+function prune(list) {
+  let keep = 0;
+  for (const item of list) if (item.age < item.life) list[keep++] = item;
+  list.length = keep;
+}
+
+/** Where a floater is now, and how it looks. */
+function position(f) {
+  const u = Math.min(1, f.age / CONFIG.life);
+  const start = H + f.size / 2; // starts just below the bottom edge
+  const y = start - (H * f.rise + f.size / 2) * easeOut(u);
+  const wave = f.phase + f.age * f.swaySpeed;
+  const x = f.x + Math.sin(wave) * f.sway * f.size;
+  // Fully visible for the first third, then a smooth fade to nothing.
+  const fade = Math.max(0, (u - 0.35) / 0.65);
+  const alpha = 1 - fade * fade * (3 - 2 * fade);
+  const pop = CONFIG.party ? (f.age < 0.35 ? 0.3 + 0.7 * easeOutBack(f.age / 0.35) : 1) : 1;
+  return { x, y, alpha, scale: pop, angle: Math.sin(wave * 0.8 + 1) * f.tilt };
+}
+
+// ---------------------------------------------------------------- drawing
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.imageSmoothingQuality = "high";
+  const level = hypeLevel();
+
+  // Stage light: a coloured glow rising from the bottom edge.
+  if (CONFIG.party && CONFIG.glow && level > 0.02) {
+    const top = H * (1 - (0.25 + 0.25 * level));
+    const grad = ctx.createLinearGradient(0, H, 0, top);
+    grad.addColorStop(0, `hsla(${hue}, 90%, 60%, ${0.32 * level})`);
+    grad.addColorStop(0.5, `hsla(${hue + 25}, 90%, 60%, ${0.1 * level})`);
+    grad.addColorStop(1, `hsla(${hue + 50}, 90%, 60%, 0)`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, top, W, H - top);
+  }
+
+  for (const m of motes) {
+    const t = m.age / m.life;
+    ctx.globalAlpha = Math.min(1, t * 4, (1 - t) * 2) * 0.55;
+    ctx.drawImage(glowDot(m.hue), m.x - m.size / 2, m.y - m.size / 2, m.size, m.size);
+  }
+
+  for (const r of rings) {
+    const t = r.age / r.life;
+    ctx.globalAlpha = (1 - t) * 0.8;
+    ctx.strokeStyle = `hsl(${hue}, 100%, 80%)`;
+    ctx.lineWidth = r.r * 0.08 * (1 - t);
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.r * (0.3 + t * 1.2), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  for (const f of floaters) {
+    if (f.age < 0 || f.x === null) continue;
+    const p = position(f);
+    const w = f.size * f.sprite.aspect * p.scale;
+    const h = f.size * p.scale;
+
+    // A soft halo behind the big ones (one gradient each: there are few).
+    if (CONFIG.party && f.scale !== NORMAL) {
+      const r = Math.max(w, h) * 0.8;
+      ctx.globalAlpha = p.alpha * 0.35;
+      ctx.drawImage(glowDot(hue + (f.phase - Math.PI) * 8), p.x - r, p.y - r, r * 2, r * 2);
+    }
+
+    ctx.globalAlpha = p.alpha;
+    if (p.angle) {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.angle);
+      ctx.drawImage(f.sprite.source, -w / 2, -h / 2, w, h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(f.sprite.source, p.x - w / 2, p.y - h / 2, w, h);
+    }
+  }
+
+  for (const s of sparkles) {
+    const t = s.age / s.life;
+    ctx.globalAlpha = 1 - t * t;
+    const size = s.size * (1 - t * 0.5);
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.spin * s.age);
+    ctx.drawImage(s.sprite, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ------------------------------------------------------------------- loop
+
+let last = performance.now();
+function frame(now) {
+  // Capped, so a hidden tab (or OBS source) doesn't jump ahead at once.
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// -------------------------------------------------------------- websocket
+
+const statusEl = document.getElementById("status");
+let statusTimer = 0;
+function setStatus(text, stay) {
+  statusEl.textContent = text;
+  statusEl.style.opacity = "0.85";
+  clearTimeout(statusTimer);
+  if (!stay) statusTimer = setTimeout(() => (statusEl.style.opacity = "0"), 3000);
+}
+
+let retryMs = 1000;
+function connect() {
+  let ws;
+  try {
+    ws = new WebSocket(CONFIG.wsUrl);
+  } catch {
+    return setStatus(`✨ not a WebSocket address: ${CONFIG.wsUrl}`, true);
+  }
+  ws.onopen = () => {
+    retryMs = 1000;
+    setStatus("✨ connected to chat", false);
+  };
+  ws.onmessage = (frame) => {
+    try {
+      onChatEvent(JSON.parse(frame.data));
+    } catch (err) {
+      console.warn("ignored an event:", err);
+    }
+  };
+  // Also fires after a failed connect (server not running, API switched
+  // off → HTTP 403), so this is the one place that retries.
+  ws.onclose = () => {
+    setStatus("✨ waiting for chat… (is the JSON API switched on?)", true);
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 1.5, 10000);
+  };
+}
+
+// --------------------------------------------------------------- testing
+
+// Twitch's global emotes, the same the app's demo mode uses.
+const DEMO_EMOTES = [
+  { code: "Kappa", url: "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0" },
+  { code: "HeyGuys", url: "https://static-cdn.jtvnw.net/emoticons/v2/30259/default/dark/2.0" },
+  { code: ":_demoHype:", url: "https://static-cdn.jtvnw.net/emoticons/v2/354/default/dark/2.0" },
+];
+const DEMO_EMOJI = ["😂", "🔥", "❤️", "🎤", "🎶", "👏🏽", "😭", "✨", "🥳", "💜"];
+const pick = (list) => list[(Math.random() * list.length) | 0];
+let demoId = 0;
+
+function demoMessage(kind) {
+  const n = 1 + ((Math.random() * 3) | 0);
+  let text = "";
+  const emotes = [];
+  if (kind === "emoji") {
+    for (let i = 0; i < n; i++) text += pick(DEMO_EMOJI);
+    text = `so good ${text}`;
+  } else if (kind === "sticker") {
+    // A YouTube gift with a picture, or a Super Sticker without one.
+    return onChatEvent({
+      type: "message", platform: "youtube", text: "", emotes: [],
+      author: { id: "demo-gift", name: "Viewer42" },
+      kind: {
+        type: "special",
+        image_url: Math.random() < 0.5 ? "https://static-cdn.jtvnw.net/emoticons/v2/30259/default/dark/3.0" : null,
+        tier: 3,
+      },
+    });
+  } else {
+    const emote = pick(DEMO_EMOTES);
+    emotes.push(emote);
+    text = Array(n).fill(emote.code).join(" ");
+    if (Math.random() < 0.3) text += " " + pick(DEMO_EMOJI);
+  }
+  onChatEvent({
+    type: "message",
+    platform: Math.random() < 0.5 ? "twitch" : "youtube",
+    author: { id: `demo-${demoId++}`, name: "Viewer42" },
+    text,
+    emotes,
+    kind: kind === "donation" ? { type: "donation", amount: "€5.00", tier: 3 } : { type: "text" },
+  });
+}
+
+function hypeBurst() {
+  for (let i = 0; i < 25; i++) {
+    setTimeout(() => demoMessage(Math.random() < 0.5 ? "emotes" : "emoji"), i * 60);
+  }
+}
+
+const KEYS = { 1: "emotes", 2: "emoji", 3: "donation", 4: "sticker" };
+window.addEventListener("keydown", (e) => {
+  if (e.repeat) return;
+  if (e.key === "h" || e.key === "H") return hypeBurst();
+  if (KEYS[e.key]) demoMessage(KEYS[e.key]);
+});
+
+// Like a karaoke song: calm verses, a busy chat in the chorus.
+function startDemo() {
+  let chorusUntil = 0;
+  let nextChorus = performance.now() + 6000;
+  (function next() {
+    const now = performance.now();
+    if (now > nextChorus) {
+      chorusUntil = now + 6000;
+      nextChorus = now + 14000 + Math.random() * 8000;
+    }
+    const chorus = now < chorusUntil;
+    const r = Math.random();
+    demoMessage(r < 0.03 ? "sticker" : r < 0.1 ? "donation" : r < 0.5 ? "emoji" : "emotes");
+    setTimeout(next, chorus ? 80 + Math.random() * 220 : 500 + Math.random() * 1400);
+  })();
+}
+
+// ------------------------------------------------------------------- start
+
+resize();
+window.addEventListener("resize", resize);
+requestAnimationFrame(frame);
+connect();
+if (CONFIG.demo) startDemo();
+</script>
+</body>
+</html>

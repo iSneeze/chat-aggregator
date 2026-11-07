@@ -26,6 +26,11 @@ fn client_with_timeouts(total: Duration, connect: Duration) -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(total)
         .connect_timeout(connect)
+        // YouTube's web pages send ~18 KB of headers (huge report-only
+        // policies), over hyper's 16 KiB HTTP/2 default: the request then
+        // fails with a vague "protocol error". 256 KiB is Chrome's own
+        // limit, so whatever loads in a browser loads here.
+        .http2_max_header_list_size(256 * 1024)
         .build()
         .expect("static reqwest configuration is valid")
 }
