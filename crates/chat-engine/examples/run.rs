@@ -37,6 +37,10 @@
 //!   cargo run -p chat-engine --example run -- --youtube-login
 //!   cargo run -p chat-engine --example run -- --youtube-logout
 //!
+//! OBS WebSocket password for chat reactions (once; kept in the system
+//! keyring, not the config file; an empty answer removes it):
+//!   cargo run -p chat-engine --example run -- --obs-password
+//!
 //! These environment variables override the file's [youtube] settings:
 //!   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET  your OAuth client (docs/youtube-setup.md)
 //!   YOUTUBE_API_KEY                           optional, for --youtube <video_id>
@@ -49,7 +53,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use chat_engine::{
-    ConfigFile, Engine, EngineConfig, Health, Newest, SourceConfig, Status, YouTubeSettings,
+    ConfigFile, Engine, EngineConfig, Health, Newest, OBS_PASSWORD, SecretStore, SourceConfig,
+    Status, YouTubeSettings,
 };
 use chat_youtube::Auth;
 use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
@@ -74,6 +79,9 @@ async fn main() -> anyhow::Result<()> {
             path.display()
         );
         return Ok(());
+    }
+    if args.first().map(String::as_str) == Some("--obs-password") {
+        return obs_password().await;
     }
 
     let config = build_config(&args)?;
@@ -111,9 +119,17 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Prints a line with a status light whenever a source's state changes.
+/// Prints a line with a status light whenever a source's state, or a chat
+/// reactions output's connection, changes.
 async fn print_status_changes(mut status: tokio::sync::watch::Receiver<Status>) {
+    let light = |health| match health {
+        Health::Ok => "🟢",
+        Health::Warning => "🟡",
+        Health::Error => "🔴",
+        Health::Off => "⚪",
+    };
     let mut shown = HashMap::new();
+    let mut shown_outputs = Vec::new();
     let mut shown_clients = (0, 0);
     loop {
         // The borrow holds a lock (it's not `Send`) and must be gone before
@@ -137,15 +153,19 @@ async fn print_status_changes(mut status: tokio::sync::watch::Receiver<Status>) 
                 // text contains a countdown that would print a line per second.
                 let key = format!("{:?}{:?}", source.state, source.activity);
                 if shown.get(&source.id) != Some(&key) {
-                    let light = match source.health() {
-                        Health::Ok => "🟢",
-                        Health::Warning => "🟡",
-                        Health::Error => "🔴",
-                        Health::Off => "⚪",
-                    };
+                    let light = light(source.health());
                     println!("{light} {}: {}", source.label(), source.summary());
                     shown.insert(source.id, key);
                 }
+            }
+            let outputs = &current.reactions.outputs;
+            if *outputs != shown_outputs {
+                for output in outputs.iter().filter(|o| !shown_outputs.contains(o)) {
+                    let light = light(Health::from(&output.state));
+                    let name = output.target.label();
+                    println!("{light} reactions → {name}: {}", output.summary());
+                }
+                shown_outputs = outputs.clone();
             }
         }
         if status.changed().await.is_err() {
@@ -282,6 +302,28 @@ async fn youtube_login(app: &OAuthApp) -> anyhow::Result<()> {
     let auth = Auth::OAuth(TokenProvider::from_store(app.clone()).await?);
     let channel = chat_youtube::channel_title(&reqwest::Client::new(), &auth).await?;
     println!("logged in to YouTube as \"{channel}\"; start with --youtube-own");
+    Ok(())
+}
+
+/// Asks for the OBS WebSocket password and keeps it in the system keyring
+/// (where the engine's OBS output looks for it), or removes it.
+async fn obs_password() -> anyhow::Result<()> {
+    println!(
+        "OBS WebSocket password (in OBS: Tools → WebSocket Server Settings → Show Connect Info)."
+    );
+    println!("What you type is visible. Leave it empty to remove a stored one:");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let password = line.trim();
+    if password.is_empty() {
+        SecretStore::System.delete(OBS_PASSWORD).await?;
+        println!("removed the OBS password");
+    } else {
+        SecretStore::System.save(OBS_PASSWORD, password).await?;
+        println!(
+            "stored the OBS password; a running engine uses it at its next connection attempt"
+        );
+    }
     Ok(())
 }
 

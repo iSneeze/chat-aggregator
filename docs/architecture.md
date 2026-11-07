@@ -7,16 +7,17 @@ building and running, see the [README](https://github.com/iSneeze/chat-aggregato
 
 chat-aggregator reads live chat from several platforms, turns every
 message into one common format, and hands it to whoever wants it: the OBS
-overlay, other programs through a JSON API, and the desktop app's status
+overlay, other programs through a JSON API, chat reactions (chat makes
+things happen in other programs, e.g. Warudo), and the desktop app's status
 display.
 
 ```text
  Twitch (IRC) ──┐
  YouTube (gRPC)─┤                          ┌─ SSE /events ──────→ overlay page in OBS
  Picarto (WS) ──┤                          │
- Demo ──────────┼─→ forwarder ─→  Hub  ────┤
- Test window ───┘   (counts)     (fan-out  └─ WebSocket /api/v1/ws → games, bots
-                                  + history)
+ Demo ──────────┼─→ forwarder ─→  Hub  ────┼─ WebSocket /api/v1/ws → games, bots
+ Test window ───┘   (counts)     (fan-out  │
+                                  + history)└─ reactor (rules) ───→ Warudo, OBS (WebSocket)
         ▲                                    ▲
         │ start / stop / restart             │ theme, pacing, API on/off, direction
  ┌──────┴─────────── engine (actor) ─────────┴──┐
@@ -33,7 +34,8 @@ Two planes, kept apart on purpose:
   The app (or headless mode) sends commands; the engine publishes a status.
 
 Everything runs on the streamer's own computer. There is no server of ours:
-the overlay and the API are served on `127.0.0.1` only.
+the overlay and the API are served on `127.0.0.1` only. (Chat reactions
+connect *out* to programs the streamer names, on this computer by default.)
 
 ## Crates
 
@@ -41,12 +43,13 @@ the overlay and the API are served on `127.0.0.1` only.
 chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ──→ chat-core
                          ├─→ chat-twitch ─────────────────→ chat-core
                          ├─→ chat-youtube ────────────────→ chat-core
-                         └─→ chat-picarto ────────────────→ chat-core
+                         ├─→ chat-picarto ────────────────→ chat-core
+                         └─→ chat-reactions ──────────────→ chat-core
 ```
 
 | crate          | responsibility |
 |----------------|----------------|
-| `chat-core`    | the shared vocabulary: `ChatEvent`, `ChatMessage`, `MessageKind`, the `ChatSource` trait, the `Hub`, activity reports, demo data |
+| `chat-core`    | the shared vocabulary: `ChatEvent`, `ChatMessage`, `MessageKind`, the `ChatSource` trait, the `Hub`, activity reports, demo data; the secret store (keyring) |
 | `chat-twitch`  | Twitch chat over IRC (anonymous, read-only), converted to `ChatEvent`s |
 | `chat-youtube` | YouTube live chat: finding the broadcast (REST), reading it (gRPC), OAuth login, quota handling, custom emoji |
 | `chat-render`  | one message → HTML, through a theme (template + CSS); named theme folders |
@@ -55,6 +58,7 @@ chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ─�
 | `chat-app`     | the desktop app (GPUI): windows, settings, login, test messages |
 | `chat-rplay`   | placeholder for a future source |
 | `chat-picarto` | Picarto chat over the website's WebSocket (anonymous, read-only), its emotes, converted to `ChatEvent`s |
+| `chat-reactions` | chat reactions: rules (trigger, guards, cooldowns) and outputs to other programs (Warudo, OBS) |
 
 Why so many crates? Each one has one job and only knows what it must.
 `chat-server` never sees Twitch or YouTube, only `ChatEvent`s; the platform
@@ -90,6 +94,9 @@ Follow one Twitch message from a viewer's keyboard to OBS:
    list and removes the oldest messages beyond `--max-messages`.
 7. **JSON API** (if switched on): the same event, as JSON, to every
    WebSocket client. No pacing, no HTML.
+8. **Chat reactions**: the reactor checks the message against the rules;
+   if it's `!bonk` and a rule says so, Warudo gets `{"action":"throw_item"}`
+   right away (not in step with the overlay's pacing).
 
 Moderation (a deleted message, a banned user, a cleared chat) takes the same
 path as `ChatEvent::Delete`, `ClearUser` or `ClearAll`: the hub removes the
@@ -353,6 +360,137 @@ every field is an `Arc` or a small handle around one).
   WebSocket clients get a Close frame), otherwise graceful shutdown would
   wait forever for an open overlay.
 
+## Chat reactions (`chat-reactions`)
+
+Chat can make things happen in other programs: `!bonk` throws an item at
+the model in Warudo, a big Super Chat puts a voice filter on the mic in
+OBS for 30 seconds. The streamer writes
+**rules** (`[[reactions.rules]]` in `config.toml`); each has three parts,
+checked in this order:
+
+1. **Trigger**: which messages. A command (`!bonk` as the first word), a
+   keyword (whole words, any case), an emote (a real one, as the platform
+   marked it, not the code typed as text), a paid message (of a minimum
+   tier: tiers, not amounts, since amounts are display strings in the
+   viewer's currency), a membership, or gifts (a minimum count).
+2. **Guards**: who and how often. A minimum role, platforms, a cooldown
+   for the rule and one per chatter. A struct, not a list of guards: each
+   exists once, and "all must pass" needs no rules about duplicates.
+   - **Roles** come from badges, which platforms name differently (Twitch
+     `broadcaster`, YouTube `owner`): translated in one place
+     (`Role::of`) into an ordered enum, so the guard is `role >= min_role`.
+   - **Cooldowns start only when every guard has passed.** Otherwise a
+     viewer spamming a mods-only command would keep it resting for the
+     mods.
+3. **Action**: what happens where (`target`). Every rule that matches
+   fires, not just the first.
+
+```text
+                 ┌────────── reactor (one task) ──────────┐
+ Hub ─subscribe─→│ trigger? → guards? → cooldowns? → fire │──try_send──→ Warudo output
+ (history        │ rules.rs: pure logic, time as argument │──try_send──→ OBS output
+  dropped)       └────────────────────────────────────────┘   (each owns its connection)
+```
+
+- **The reactor is one more hub subscriber**, in the data plane like an
+  overlay: a busy chat can't slow the app down. It **drops the replay
+  history**: a reaction belongs to the moment a message arrives, and
+  reacting to history would fire everything again after every restart.
+  Demo messages never fire (`demo::is_sample`): styling a theme with the
+  demo running mustn't throw things at the model. The test window's do,
+  which is how a streamer tries a rule out.
+- **The rules are pure logic** (`rules.rs`): no network, and the time comes
+  in as an argument, so "61 seconds later" is a plain unit test. Cooldowns
+  are remembered by rule name, so editing a rule doesn't reset them; per
+  chatter by (platform, user id), forgotten once over when the map grows
+  large.
+- **Outputs own their connection.** Each is a task that connects, reports
+  its state (a status light: red while the program can't be reached, as
+  only the streamer can fix that), reconnects by itself with a short
+  backoff (1 s up to 30 s: the program is usually on the same machine),
+  and runs only while an enabled rule sends to it, so nobody gets a red
+  light for a program they don't use. New output settings (an address)
+  restart it; a new rule doesn't. What the outputs share (the job, the
+  waiting queue, the backoff) is in `output.rs`.
+- **Outputs end themselves.** Dropping an output closes its jobs channel,
+  and the task finishes on its own: it isn't aborted, because OBS first
+  switches back what it switched on. At shutdown the reactor waits for
+  its outputs (at most 3 s), and the engine waits for the reactor.
+- **The reactor never waits for an output**: actions go in with
+  `try_send`. While the program can't be reached, an action is dropped,
+  or waits up to `queue_secs` (per output, off by default, at most 32
+  waiting). Without that limit a flood of `!bonk`s during a Warudo restart
+  would all fire at once when it's back.
+- **Settings and status** take the usual paths: the rules are part of
+  `Settings` (a `watch` channel in `Controls` hands changes to the
+  reactor, which applies them at once), and the reactor's report (outputs,
+  and per rule how often it fired and its problem) is a `watch` the actor
+  puts into `Status`. `edit_settings` refuses reaction settings that
+  `config.toml` couldn't load (`ReactionSettings::check`: duplicate names,
+  an empty action, a URL that isn't `ws://`), so a bad edit can't make the
+  next start fail.
+- **Warudo** needs no plugin: a blueprint's *On WebSocket Action* node
+  fires on `{"action":"<name>"}` sent to its WebSocket
+  (`ws://127.0.0.1:19190` by default). The output keeps one connection
+  and also reads from it, only to notice when Warudo closes it, so the
+  next action doesn't go into a dead socket; an action whose sending fails
+  gets one more try on a fresh connection.
+- **OBS** has a remote control built in since OBS 28: obs-websocket, a
+  WebSocket on port 4455. We speak its protocol version 5 with a small
+  client of our own (`obs.rs`): only four kinds of request are needed,
+  and it keeps the dependencies down. On connecting, OBS says hello and,
+  if a password is set, sends a challenge; the answer is
+  `base64(sha256(base64(sha256(password + salt)) + challenge))` (a test
+  checks it against values computed independently). We subscribe to no
+  events; requests go one at a time and wait for their answer (matched
+  by id, at most 5 s).
+  - **Actions**: a filter on (`obs_filter`), a source shown
+    (`obs_source`), each for `seconds` or for good; a media source played
+    from the start (`obs_media`). Names come from the settings, never
+    from chat.
+  - **Timed effects** belong to the OBS task (`Timed`: what's on, until
+    when; one owner, no lock). Firing again while one runs makes it last
+    longer instead of stacking. When it ends, the switch goes back off,
+    unless it was already on before the reaction (asked first: a filter
+    the streamer had on stays on). Effects survive a reconnect; one that
+    ended while OBS was away is switched off right after reconnecting.
+    When the output stops (rules changed, quitting), everything still on
+    is switched off first.
+  - **A name OBS doesn't know** (a typo in a filter name) is OBS's answer,
+    not a broken connection: logged as a warning, shown on the rule (see
+    below), and the next reaction works as usual.
+  - **The password** isn't in `config.toml` (it controls all of OBS) but
+    in the secret store (`chat_core::secrets`: the OS keyring, as for the
+    YouTube login). The task reads it only when OBS asks for one, keeps
+    it, and reads it again only after OBS refused it: a locked keyring may
+    ask the user to unlock it every time. A wrong or missing password is a
+    red light ("OBS refused the stored password") and is retried, so a
+    newly stored one works without a restart. The app stores it with
+    `EngineHandle::set_obs_password`, which also wakes the output from its
+    pause between attempts (a `Notify`), so it tries at once instead of
+    within 30 s; headless mode stores it with `--obs-password`.
+- **Outcomes flow back.** Every job carries a sender back to the reactor
+  (unbounded: an output must never wait for the reactor, and there are
+  never more answers than jobs), and the output reports how it went:
+  sent, or refused by the program. The reactor keeps each rule's last
+  refusal as its `problem` in the status (next to how often it fired), so
+  the app shows "filter "Typo" on "Mic": No filter was found" on the rule
+  itself instead of only in the log. A sent reaction clears it, and so does
+  editing the rule's action. A reaction dropped because the program isn't
+  connected reports nothing: the output's light already says that.
+- **Testing a rule** (the app's Test button) is a request on a channel of
+  its own (`ReactionRequest::Test`, with a `oneshot` for the answer): the
+  saved rule's action goes out right away, without trigger or guards, also
+  when the rule is switched off or everything is paused, and isn't counted
+  as fired. Only while its program is connected: a test never starts an
+  output, so it never connects to a program no switched-on rule uses. The
+  reactor doesn't wait for the answer itself (it never waits for an
+  output); a small task does, at most 15 s, and replies "sent", the
+  program's refusal, or "isn't connected". A test sent right after saving
+  a rule must find it: before a request, the reactor applies settings that
+  changed but whose change it hasn't handled yet (`select!` picks among
+  ready branches at random).
+
 ## The engine (`chat-engine`)
 
 ### The actor
@@ -395,8 +533,9 @@ every window reads the current ones instead of keeping a copy.
   `settings.rs`): a new replay history goes to the hub, pacing, the JSON API
   switch, the chat direction and the theme go to the server's `watch`
   channels (a new direction or theme makes the overlays reload once), the
-  allowed sites to the API's gate, new YouTube settings restart the
-  YouTube sources, and a new port waits for the next start.
+  allowed sites to the API's gate, the chat reactions to the reactor, new
+  YouTube settings restart the YouTube sources, and a new port waits for
+  the next start.
 - **Changes the settings can't see** need their own command. A new emoji
   export imported over the old file leaves `emojis` as it was, so
   `use_youtube_emojis` restarts the YouTube sources anyway; a login made
@@ -439,7 +578,8 @@ type, and the production code carries no test hooks.
 ### The config file
 
 `config.toml` in the per-OS settings folder (`~/.config/chat-aggregator/` on
-Linux) with `[server]`, `[youtube]`, `[app]` and `[[sources]]`:
+Linux) with `[server]`, `[youtube]`, `[app]`, `[reactions]` and
+`[[sources]]`:
 
 - **`deny_unknown_fields`** everywhere: a typo like `vidoe_id` is an error
   naming the line, instead of being silently ignored (which would turn
@@ -475,9 +615,21 @@ need a tokio handle. The app reaches the platform crates only through
 
 ### Views and shared state
 
-- **Windows**: the main window (status, theme row, sources, YouTube section,
-  add form), the test messages window and the settings window. The side
-  windows open once; clicking again brings them to the front.
+- **Windows**: the main window (status, theme row, sources, reactions at a
+  glance, YouTube section, add form), the test messages window, the
+  settings window and the Reactions window. The side windows open once;
+  clicking again brings them to the front.
+- **The Reactions window** has the rules on the left, the selected rule's
+  form on the right and the two programs' connection settings below. A
+  rule's switch and Test button act at once, like a source's switch; the
+  form only applies with Save, since a half-typed rule would fire with a
+  half-typed action. The form keeps what it loaded (`Form`, everything as
+  typed) and compares: anything else is unsaved, and picking another rule
+  or closing the window asks before discarding it (the close via
+  `on_window_should_close`). Save replaces the rule found by the name it
+  was saved under, so a rename keeps its place. The OBS password field
+  hands the password to the engine and empties itself: the window keeps
+  no copy.
 - **`Entity<AppConfig>`**: the windows' read-only view of the settings,
   shared by all windows. A GPUI entity is shared, reference-counted state
   (like `Rc<RefCell<…>>`, but GPUI hands out access and tracks changes). It
@@ -543,7 +695,14 @@ happened to another overlay: CVE-2024-7971).
    passed on, with `nosniff` and `script-src 'none'`.
 5. **No reading outside the theme.** `/theme/…` accepts only plain path
    segments, so `../config.toml` (with the client secret) can't be fetched.
-6. **Secrets**: the refresh token in the OS keyring, the config file 0600,
+6. **Chat reactions pass no chat on.** A message only *picks* a rule; what
+   an output sends comes entirely from the rule (Warudo gets the action
+   name from the settings, as JSON built with serde_json, not glued
+   together; OBS only the names of the configured filters and sources).
+   A test sends a message with JSON and markup after the command and
+   checks Warudo gets exactly the configured action.
+7. **Secrets**: the YouTube refresh token and the OBS password in the OS
+   keyring (`chat_core::secrets`), the config file 0600,
    written atomically (`chat_core::fs::write_private`: temp file, sync,
    rename, so a crash never leaves it half-written), redacted debug output,
    API keys sent as headers (never in URLs, which end up in logs).

@@ -9,6 +9,7 @@ default-members = [
     "crates/chat-core",
     "crates/chat-engine",
     "crates/chat-picarto",
+    "crates/chat-reactions",
     "crates/chat-render",
     "crates/chat-rplay",
     "crates/chat-server",

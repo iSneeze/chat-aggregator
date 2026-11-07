@@ -18,13 +18,11 @@ tokio-util.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-# OAuth login (loopback flow): the callback server, the OAuth protocol
-# (without its own HTTP client; we plug in our reqwest), token storage in the
-# OS keyring, and the per-OS config dir for the keyring-less fallback.
+# OAuth login (loopback flow): the callback server and the OAuth protocol
+# (without its own HTTP client; we plug in our reqwest). The token is kept
+# with chat-core's `secrets`.
 axum.workspace = true
 oauth2.workspace = true
-keyring.workspace = true
-directories.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

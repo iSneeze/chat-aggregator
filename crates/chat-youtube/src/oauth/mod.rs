@@ -98,7 +98,7 @@ type GoogleClient =
 
 /// Forgets the stored login. The next start needs a new [`begin_login`].
 pub async fn logout(app: &OAuthApp) -> anyhow::Result<()> {
-    app.store.delete(app).await
+    app.store.delete(&store::account(app)).await
 }
 
 /// The YouTube channel the stored login belongs to, e.g. to show "connected

@@ -46,13 +46,23 @@ fn youtube(name: &str, badges: &[&str]) -> Author {
     }
 }
 
+/// What every sample message's id starts with.
+const ID_PREFIX: &str = "demo-";
+
+/// Whether `msg` is one of the [`sample_messages`]. Chat reactions ignore
+/// them: styling a theme with the demo running mustn't keep throwing things
+/// at the streamer's model.
+pub fn is_sample(msg: &ChatMessage) -> bool {
+    msg.id.starts_with(ID_PREFIX)
+}
+
 /// One message of every kind, alternating platforms. Ids are unique within
 /// the returned list; `round` is mixed into them so repeated calls (demo
 /// mode cycling) don't produce duplicate ids.
 pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
     let now = jiff::Timestamp::now();
     let msg = |n: usize, platform, author, text: &str, emotes, kind| ChatMessage {
-        id: format!("demo-{round}-{n}"),
+        id: format!("{ID_PREFIX}{round}-{n}"),
         platform,
         author,
         text: text.into(),
@@ -247,6 +257,14 @@ mod tests {
                 assert!(ids.insert(msg.id.clone()), "duplicate id {}", msg.id);
             }
         }
+    }
+
+    #[test]
+    fn samples_are_recognised() {
+        assert!(sample_messages(3).iter().all(is_sample));
+        let mut other = sample_messages(0).remove(0);
+        other.id = "manual-1".into(); // the app's test window
+        assert!(!is_sample(&other));
     }
 
     #[test]

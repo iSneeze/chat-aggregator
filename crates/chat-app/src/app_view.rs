@@ -1,5 +1,6 @@
 //! The main window: overall status, overlay URL, the list of sources with
-//! their status lights, and a form to add sources.
+//! their status lights, the chat reactions at a glance, and a form to add
+//! sources.
 //!
 //! The view only draws and forwards clicks. Engine calls run as GPUI tasks
 //! (`cx.spawn`) that await the engine's answer and then update the view;
@@ -19,7 +20,7 @@
 use std::time::Duration;
 
 use chat_engine::{
-    EngineHandle, Health, SourceConfig, SourceId, SourceState, SourceStatus, Status,
+    EngineHandle, Health, OutputStatus, SourceConfig, SourceId, SourceState, SourceStatus, Status,
 };
 use chat_render::{Builtin, themes};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -40,6 +41,7 @@ use chat_engine::{Appearance, Newest};
 
 use crate::app_config::{AppConfig, edit_settings};
 use crate::manual_window::ManualWindow;
+use crate::reactions_window::ReactionsWindow;
 use crate::settings_window::SettingsWindow;
 use crate::youtube_panel::YouTubePanel;
 
@@ -116,6 +118,7 @@ pub struct AppView {
     /// closed since).
     manual_window: Option<WindowHandle<Root>>,
     settings_window: Option<WindowHandle<Root>>,
+    reactions_window: Option<WindowHandle<Root>>,
     /// The web site the open "may it read your chat?" question is about.
     asking: Option<String>,
     /// Sites answered here whose question may still be in the status for a
@@ -247,6 +250,7 @@ impl AppView {
             theme_error: None,
             manual_window: None,
             settings_window: None,
+            reactions_window: None,
             asking: None,
             answered: Vec::new(),
             _subscriptions: subscriptions,
@@ -574,6 +578,27 @@ impl AppView {
         );
     }
 
+    pub(crate) fn open_reactions_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (engine, config) = (self.engine.clone(), self.config.clone());
+        open_or_focus(
+            &mut self.reactions_window,
+            "Reactions",
+            size(px(880.), px(600.)),
+            move |window, cx| {
+                let view = cx.new(|cx| ReactionsWindow::new(engine, config, window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The pause switch: every rule off (or back on) at once, right away.
+    fn set_reactions_on(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = window.window_handle();
+        edit_settings(&self.engine, handle, move |s| s.reactions.paused = !on, cx);
+    }
+
     // ---- drawing ----
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -585,11 +610,21 @@ impl AppView {
             Health::Off => "Nothing running",
         };
 
+        let reactions = &self.config.read(cx).settings().reactions;
+        let paused = reactions.paused && !reactions.rules.is_empty();
+
         h_flex()
             .gap_2()
             .items_center()
             .child(light(overall, cx))
-            .child(div().flex_1().text_lg().font_semibold().child(headline))
+            .child(div().text_lg().font_semibold().child(headline))
+            // Easy to forget after a break: said where it's always seen.
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(cx.theme().muted_foreground)
+                    .when(paused, |d| d.child("· reactions paused")),
+            )
             .child(
                 Button::new("open-settings")
                     .icon(IconName::Settings)
@@ -864,6 +899,68 @@ impl AppView {
             })
     }
 
+    /// The chat reactions at a glance: on or paused, how their programs are
+    /// connected, how much fired. Editing happens in the Reactions window.
+    fn render_reactions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = self.config.read(cx).settings().reactions;
+        let status = &self.status.reactions;
+        let muted = cx.theme().muted_foreground;
+        let edit = |label: &'static str| {
+            Button::new("open-reactions")
+                .label(label)
+                .small()
+                .on_click(cx.listener(|this, _, window, cx| this.open_reactions_window(window, cx)))
+        };
+        let title = div().flex_1().font_semibold().child("Reactions");
+        if settings.rules.is_empty() {
+            return card(cx)
+                .child(h_flex().items_center().child(title).child(edit("Set up…")))
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child("Chat can trigger things in Warudo and OBS: a filter, a sound, an item thrown at you."),
+                );
+        }
+
+        let fired: u64 = status.rules.iter().map(|r| r.fired).sum();
+        let problems = status.rules.iter().filter(|r| r.problem.is_some()).count();
+        let rules = settings.rules.len();
+        let mut counts = format!(
+            "{rules} {} · {fired} fired",
+            if rules == 1 { "rule" } else { "rules" }
+        );
+        if problems > 0 {
+            counts += &format!(" · {problems} with a problem");
+        }
+        let outputs = status
+            .outputs
+            .iter()
+            .map(|output| render_output(output, cx));
+
+        card(cx)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(title)
+                    .child(
+                        Switch::new("reactions-on")
+                            .checked(!settings.paused)
+                            .tooltip("Switch every reaction off or on at once")
+                            .on_click(cx.listener(|this, on: &bool, window, cx| {
+                                this.set_reactions_on(*on, window, cx);
+                            })),
+                    )
+                    .child(edit("Edit reactions…")),
+            )
+            // No output while every rule is off: nothing to connect to.
+            .when(status.outputs.is_empty(), |card| {
+                card.child(div().text_color(muted).child("Every rule is switched off."))
+            })
+            .children(outputs)
+            .child(div().text_sm().text_color(muted).child(counts))
+    }
+
     fn render_add_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let kinds = segmented(
             cx,
@@ -936,6 +1033,7 @@ impl Render for AppView {
             .child(self.render_header(cx))
             .child(self.render_overlay(cx))
             .child(self.render_sources(cx))
+            .child(self.render_reactions(cx))
             .child(card(cx).child(self.youtube.clone()))
             .child(self.render_add_form(cx))
     }
@@ -987,6 +1085,23 @@ fn open_or_focus(
     }
 }
 
+/// One program the reactions send to: its light and connection.
+pub(crate) fn render_output(output: &OutputStatus, cx: &App) -> impl IntoElement + use<> {
+    h_flex()
+        .gap_2()
+        .items_center()
+        .child(light(Health::from(&output.state), cx))
+        .child(div().font_semibold().child(output.target.label()))
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .text_ellipsis()
+                .text_color(cx.theme().muted_foreground)
+                .child(output.summary()),
+        )
+}
+
 /// The status light: a small coloured dot.
 pub(crate) fn light(health: Health, cx: &App) -> impl IntoElement + use<> {
     let theme = cx.theme();
@@ -1001,7 +1116,7 @@ pub(crate) fn light(health: Health, cx: &App) -> impl IntoElement + use<> {
 
 /// A section of the main window: a thin rounded frame, so the window reads
 /// as a few blocks rather than one long list.
-fn card(cx: &App) -> Div {
+pub(crate) fn card(cx: &App) -> Div {
     v_flex()
         .gap_2()
         .p_3()
@@ -1015,7 +1130,7 @@ fn card(cx: &App) -> Div {
 /// reads as "pick one", not as several actions. Built from buttons (not
 /// gpui-kit's `TabBar`) because a tab bar scrolls sideways when it's too
 /// wide, hiding choices, while this track wraps onto a second line.
-fn segmented(cx: &App, choices: impl IntoIterator<Item = Button>) -> Div {
+pub(crate) fn segmented(cx: &App, choices: impl IntoIterator<Item = Button>) -> Div {
     h_flex()
         // As wide as its choices, not the whole row.
         .self_start()
@@ -1256,6 +1371,44 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("timed out");
+    }
+
+    #[gpui_kit::test]
+    fn reactions_are_paused_from_the_main_window(cx: &mut TestAppContext) {
+        // Without rules: only "Set up…", no switch.
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("open-reactions").is_some());
+            assert!(window.try_find("reactions-on").is_none());
+        })
+        .unwrap();
+        drop(ui);
+
+        let mut config = EngineConfig::default();
+        config.settings.reactions.rules.push(chat_engine::Rule {
+            name: "bonk".into(),
+            enabled: true,
+            trigger: chat_engine::Trigger::Command {
+                command: "!bonk".into(),
+            },
+            guards: chat_engine::Guards::default(),
+            action: chat_engine::Action::Warudo {
+                action: "throw_item".into(),
+            },
+        });
+        let ui = open_with(cx, config);
+        let paused = || ui.engine.handle().settings().borrow().reactions.paused;
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("reactions-on", cx);
+        })
+        .unwrap();
+        run_until(cx, paused);
+        let path = ui.settings_dir.join("config.toml");
+        run_until(cx, || {
+            ConfigFile::load(&path).is_ok_and(|file| file.reactions.paused)
+        });
     }
 
     #[gpui_kit::test]

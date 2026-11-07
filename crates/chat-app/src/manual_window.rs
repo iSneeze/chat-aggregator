@@ -434,7 +434,7 @@ impl Render for ManualWindow {
 /// A form row: the label in a fixed-width column, then the control.
 /// (`E` is named rather than `impl IntoElement` so the result can say it
 /// holds an `E` but borrows nothing: `use<E>`.)
-fn labelled<E: IntoElement>(
+pub(crate) fn labelled<E: IntoElement>(
     label: &'static str,
     control: E,
     cx: &App,

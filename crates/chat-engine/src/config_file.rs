@@ -13,6 +13,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use chat_core::fs::write_private;
+use chat_core::secrets::SecretStore;
+use chat_reactions::ReactionSettings;
 
 use crate::config::{SourceConfig, YouTubeSettings};
 use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Newest, Stagger, ThemeSource};
@@ -29,6 +31,9 @@ pub struct ConfigFile {
     pub server: ServerSettings,
     pub youtube: YouTubeSettings,
     pub app: AppSettings,
+    /// Before the sources: a `[reactions]` table written after the
+    /// `[[sources]]` blocks would read as part of the last one.
+    pub reactions: ReactionSettings,
     pub sources: Vec<SourceEntry>,
 }
 
@@ -41,6 +46,7 @@ pub struct Settings {
     pub server: ServerSettings,
     pub youtube: YouTubeSettings,
     pub app: AppSettings,
+    pub reactions: ReactionSettings,
 }
 
 /// One `[[sources]]` block: what to read, and whether it's switched on.
@@ -188,7 +194,11 @@ impl ConfigFile {
 
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         // toml's error message already names the line and shows it.
-        Ok(toml::from_str(text)?)
+        let file: Self = toml::from_str(text)?;
+        // What serde can't see: a rule that could never fire (an empty
+        // command, two rules with one name). An error too, like a typo.
+        file.reactions.check().map_err(anyhow::Error::msg)?;
+        Ok(file)
     }
 
     /// Writes the file, readable only by you (it contains the client
@@ -219,6 +229,7 @@ impl ConfigFile {
                 server: self.server,
                 youtube: self.youtube,
                 app: self.app,
+                reactions: self.reactions,
             },
             sources: self.sources,
             themes_dir: Some(Self::themes_dir(settings_dir)),
@@ -229,6 +240,7 @@ impl ConfigFile {
             // the app switches both on.
             ask_api_origins: false,
             save_to: None,
+            secrets: Some(SecretStore::System),
         }
     }
 }
@@ -268,6 +280,15 @@ mod tests {
             [app]
             appearance = "high-contrast"
 
+            [reactions]
+            warudo = { url = "ws://192.168.1.20:19190" }
+            obs = { url = "ws://127.0.0.1:4456" }
+
+            [[reactions.rules]]
+            name = "bonk"
+            trigger = { type = "command", command = "!bonk" }
+            action = { target = "warudo", action = "throw_item" }
+
             [[sources]]
             type = "twitch"
             channel = "other_channel"
@@ -302,6 +323,11 @@ mod tests {
         assert_eq!(engine.sources, sources, "switched-off ones too: listed");
         assert!(!engine.ask_api_origins, "headless mode has nobody to ask");
         assert_eq!(engine.save_to, None, "headless mode leaves the file alone");
+        assert_eq!(
+            engine.secrets,
+            Some(SecretStore::System),
+            "the OBS password is looked for in the keyring"
+        );
         let server = &engine.settings.server;
         assert_eq!(server.port, 8080);
         assert!(server.api);
@@ -309,6 +335,11 @@ mod tests {
         assert_eq!(server.newest, Newest::Top);
         assert_eq!(server.history, 5);
         assert_eq!(engine.settings.app.appearance, Appearance::HighContrast);
+        let reactions = &engine.settings.reactions;
+        assert_eq!(reactions.warudo.url, "ws://192.168.1.20:19190");
+        assert_eq!(reactions.obs.url, "ws://127.0.0.1:4456");
+        assert_eq!(reactions.rules.len(), 1);
+        assert_eq!(reactions.rules[0].name, "bonk");
         assert_eq!(
             engine.themes_dir.as_deref(),
             Some(Path::new("/settings/themes"))
@@ -393,6 +424,23 @@ mod tests {
         assert!(format!("{err:#}").contains("enabeld"), "{err:#}");
         let err = ConfigFile::parse("[app]\nappearance = \"blue\"").unwrap_err();
         assert!(format!("{err:#}").contains("blue"), "{err:#}");
+        let err = ConfigFile::parse("[reactions]\npasued = true").unwrap_err();
+        assert!(format!("{err:#}").contains("pasued"), "{err:#}");
+    }
+
+    #[test]
+    fn reaction_rules_that_cant_work_are_errors() {
+        let rule = |name: &str, command: &str| {
+            format!(
+                "[[reactions.rules]]\nname = \"{name}\"\n\
+                 trigger = {{ type = \"command\", command = \"{command}\" }}\n\
+                 action = {{ target = \"warudo\", action = \"x\" }}\n"
+            )
+        };
+        assert!(ConfigFile::parse(&rule("a", "!a")).is_ok());
+        let err = ConfigFile::parse(&(rule("a", "!a") + &rule("a", "!b"))).unwrap_err();
+        assert!(format!("{err:#}").contains("unique"), "{err:#}");
+        assert!(ConfigFile::parse(&rule("a", "")).is_err());
     }
 
     #[test]
@@ -402,6 +450,7 @@ mod tests {
         assert_eq!(file.app, AppSettings::default());
         assert_eq!(file.server, ServerSettings::default());
         assert_eq!(file.youtube, YouTubeSettings::default());
+        assert_eq!(file.reactions, ReactionSettings::default());
     }
 
     #[test]
@@ -420,6 +469,16 @@ mod tests {
         let mut file = ConfigFile::default();
         file.youtube.client_secret = Some("secret".into());
         file.app.appearance = Appearance::Dark;
+        file.reactions = toml::from_str(
+            r#"
+            [[rules]]
+            name = "bonk"
+            trigger = { type = "command", command = "!bonk" }
+            guards = { min_role = "moderator", cooldown_secs = 10 }
+            action = { target = "warudo", action = "throw_item" }
+            "#,
+        )
+        .unwrap();
         file.sources.push(
             SourceConfig::Twitch {
                 channel: "your_channel".into(),

@@ -1,0 +1,29 @@
+[package]
+name = "chat-reactions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chat-core = { path = "../chat-core" }
+# OBS's login answer is a SHA-256 hash, base64-encoded. The versions the
+# workspace already uses.
+base64.workspace = true
+sha2.workspace = true
+# `sink`: sending into the WebSocket (`SinkExt::send`).
+futures-util = { workspace = true, features = ["sink"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+# Outputs are WebSocket clients. Plain ws:// only (no TLS features): the
+# programs we talk to listen on the streamer's own machine or LAN. Same
+# version as the other crates', so it's compiled once.
+tokio-tungstenite = "0.29"
+
+[dev-dependencies]
+# Paused, fast-forwarding clock for exact timing tests; tests only.
+tokio = { workspace = true, features = ["test-util"] }
+jiff.workspace = true
+toml.workspace = true

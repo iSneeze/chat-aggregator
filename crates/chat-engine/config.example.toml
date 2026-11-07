@@ -49,6 +49,72 @@ learn_emojis = true
 # "dark" or "high-contrast". Headless mode ignores this.
 appearance = "system"
 
+# Chat reactions: chat makes things happen in other programs. Each rule has
+# a trigger (which messages), optional guards (who, how often) and an
+# action (what happens where). Chat only picks a rule: nothing a chatter
+# writes is passed on. Demo messages never fire rules; the app's test
+# messages do.
+[reactions]
+# true switches every rule off at once (outputs stay connected).
+paused = false
+
+# Warudo: in a blueprint, add an "On WebSocket Action" node; its Action is
+# the name a rule sends. Connected only while a rule sends to it.
+[reactions.warudo]
+# Warudo's own default; another computer's address in a two-PC setup.
+url = "ws://127.0.0.1:19190"
+# How long a reaction may wait while Warudo can't be reached (not started
+# yet, restarting), in seconds, up to 300. 0 drops it.
+queue_secs = 0
+
+# OBS: switch on "Enable WebSocket server" in OBS under Tools → WebSocket
+# Server Settings. Connected only while a rule sends to it. The password
+# (Show Connect Info there) isn't kept in this file but in your system's
+# keyring: store it in the app's Reactions window (headless: `run
+# --obs-password`).
+[reactions.obs]
+url = "ws://127.0.0.1:4455"
+# As for Warudo.
+queue_secs = 0
+
+# One [[reactions.rules]] block per rule. Every matching rule fires.
+#
+# Triggers:
+#   { type = "command", command = "!bonk" }   first word of a message, any case
+#   { type = "keyword", keyword = "hype" }    a word or phrase anywhere, any case
+#   { type = "emote", emote = "Kappa" }       a real emote (exact case)
+#   { type = "paid" }                         bits, Super Chats, Super Stickers;
+#   { type = "paid", min_tier = 4 }           ... of at least this tier
+#   { type = "membership" }                   new subscriber/member, resub
+#   { type = "gift", min_count = 5 }          gifted subs/memberships
+# Guards (all optional):
+#   min_role = "everyone" | "subscriber" (= "member") | "vip" | "moderator" | "broadcaster"
+#   platforms = ["twitch", "youtube", "picarto"]   (default: all)
+#   cooldown_secs = 10        the rule rests this long after firing
+#   user_cooldown_secs = 60   ... and this long for the chatter who fired it
+# Actions (names exactly as in OBS):
+#   { target = "warudo", action = "throw_item" }
+#   { target = "obs_filter", source = "Mic", filter = "Chipmunk", seconds = 30 }
+#       a filter on for 30 s, then off again (without seconds: stays on);
+#       firing again meanwhile makes it last longer
+#   { target = "obs_source", scene = "Main", source = "Confetti", seconds = 5 }
+#       a source shown for 5 s, then hidden again (without seconds: stays)
+#   { target = "obs_media", source = "Airhorn" }
+#       a media source played from the start
+# Something that was already on before a reaction stays on afterwards.
+#
+# [[reactions.rules]]
+# name = "bonk"
+# trigger = { type = "command", command = "!bonk" }
+# guards = { cooldown_secs = 10, user_cooldown_secs = 60 }
+# action = { target = "warudo", action = "throw_item" }
+#
+# [[reactions.rules]]
+# name = "chipmunk"
+# trigger = { type = "paid", min_tier = 4 }
+# guards = { cooldown_secs = 60 }
+# action = { target = "obs_filter", source = "Mic", filter = "Chipmunk", seconds = 30 }
+
 # One [[sources]] block per chat to read. Add `enabled = false` to keep a
 # source listed in the app but switched off.
 

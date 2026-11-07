@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy policy
 
-_Effective 2026-10-20._
+_Effective 2026-11-04._
 
 chat-aggregator is a program that runs **on your own computer**. It has no
 servers, no user accounts and no analytics. The developers never receive
@@ -61,6 +61,10 @@ Picarto chat starts, and reads the emote lists from it.
   Windows, Secret Service on Linux). If none is available, it's stored in a
   file in chat-aggregator's settings folder that only your user account can
   read. It stays there until you log out or revoke access (see below).
+- **Your OBS WebSocket password**, if you store one for chat reactions
+  (in the Reactions window), is kept the same way as the YouTube login
+  (credential store, or a private file without one) until you remove it
+  there. It is never written to the settings file.
 - **Your settings** (for example your Google project's client id and
   secret, an optional API key, channel names, overlay theme, a copy of your
   custom emoji list) are stored in chat-aggregator's settings folder on your
@@ -96,7 +100,8 @@ Picarto chat starts, and reads the emote lists from it.
   ⚙ Settings → Connection). That chat can include members-only and unlisted
   YouTube broadcasts, if you read those, and a site you allow can tell from
   it which channel is yours.
-- The program connects only to the platforms themselves: Google/YouTube (for
+- Apart from chat reactions (below), the program connects only to the
+  platforms themselves: Google/YouTube (for
   login, chat, chatters' profile pictures and, through YouTube's chat page,
   channel emoji), Twitch (for chat) and Picarto (for chat, channel info and
   the emote lists in its website's script). It
@@ -105,6 +110,12 @@ Picarto chat starts, and reads the emote lists from it.
   Emote and gift images in the overlay are loaded from Twitch's,
   YouTube's and Picarto's image servers by your streaming software, and so
   are Picarto chatters' profile pictures.
+- **Chat reactions** (only if you set up rules for them): chat-aggregator
+  connects to the programs your rules name, at the address you enter (on
+  your own computer unless you enter another one): Warudo, OBS. It sends
+  them only what your rules say (an action name; which OBS filter or
+  source to switch, and the stored OBS password to log in), never chat
+  messages or chatter names.
 - Your YouTube API usage is recorded by Google in **your own** Google Cloud
   project.
 

@@ -135,7 +135,10 @@ impl PendingLogin {
         let refresh = tokens.refresh_token().context(
             "Google sent no refresh token; try logging in again (the consent screen must be shown)",
         )?;
-        self.app.store.save(&self.app, refresh.secret()).await
+        self.app
+            .store
+            .save(&super::store::account(&self.app), refresh.secret())
+            .await
     }
 }
 
@@ -248,7 +251,11 @@ mod tests {
         login.complete().await.unwrap();
 
         assert_eq!(
-            app.store.load(&app).await.unwrap().as_deref(),
+            app.store
+                .load(&crate::oauth::store::account(&app))
+                .await
+                .unwrap()
+                .as_deref(),
             Some("refresh-1")
         );
         std::fs::remove_dir_all(dir).unwrap();

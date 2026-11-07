@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use chat_core::{Activity, ChatEvent, ChatSource, Hub, Reporter};
+use chat_reactions::ReactionStatus;
 use chat_server::Connections;
 use chat_youtube::oauth::OAuthApp;
 use jiff::Timestamp;
@@ -108,6 +109,9 @@ pub(crate) struct Actor<F> {
     /// Sites waiting for an answer (`ApiOrigins::requests`): shown in the
     /// status, and a change is published right away.
     api_requests: watch::Receiver<Vec<String>>,
+    /// The reactor's report (outputs, counts): a change is published right
+    /// away, like the sites waiting above.
+    reactions: watch::Receiver<ReactionStatus>,
 }
 
 struct Slot {
@@ -215,6 +219,7 @@ impl<F: SourceFactory> Actor<F> {
         controls: Arc<Controls>,
         status: watch::Sender<Status>,
         connections: Arc<Connections>,
+        reactions: watch::Receiver<ReactionStatus>,
         save_to: Option<PathBuf>,
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
@@ -232,6 +237,7 @@ impl<F: SourceFactory> Actor<F> {
             status,
             connections,
             api_requests,
+            reactions,
         }
     }
 
@@ -269,6 +275,8 @@ impl<F: SourceFactory> Actor<F> {
                 // A question for the streamer: show it now, not at the next
                 // tick. (`Err` would mean the server is gone: shutting down.)
                 Ok(()) = self.api_requests.changed() => {}
+                // An output connected or lost its program, a rule fired.
+                Ok(()) = self.reactions.changed() => {}
                 () = shutdown.cancelled() => break,
             }
             self.publish();
@@ -351,8 +359,7 @@ impl<F: SourceFactory> Actor<F> {
                 let _ = reply.send(result);
             }
             Command::EditSettings(change, reply) => {
-                self.edit_settings(change);
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(self.edit_settings(change));
             }
             Command::AnswerApiRequest {
                 origin,
@@ -363,7 +370,8 @@ impl<F: SourceFactory> Actor<F> {
                 // "Allow" is for good: it goes into the settings. ("Deny"
                 // only lasts until the engine restarts.)
                 if allow {
-                    self.edit_settings(Box::new(move |settings| {
+                    // Can't be refused: only reaction settings are checked.
+                    let _ = self.edit_settings(Box::new(move |settings| {
                         let allowed = &mut settings.server.api_origins;
                         if !allowed.contains(&origin) {
                             allowed.push(origin);
@@ -386,7 +394,8 @@ impl<F: SourceFactory> Actor<F> {
                 // YouTube sources by itself. The same file is news too, but
                 // only in its contents, which the settings can't see.
                 let same_file = self.settings.borrow().youtube.emojis.as_ref() == Some(&path);
-                self.edit_settings(Box::new(move |settings| {
+                // Can't be refused: only reaction settings are checked.
+                let _ = self.edit_settings(Box::new(move |settings| {
                     settings.youtube.emojis = Some(path);
                 }));
                 if same_file {
@@ -448,6 +457,7 @@ impl<F: SourceFactory> Actor<F> {
             server,
             youtube,
             app,
+            reactions,
         } = self.settings.borrow().clone();
         let sources = self
             .slots
@@ -465,6 +475,7 @@ impl<F: SourceFactory> Actor<F> {
             server,
             youtube,
             app,
+            reactions,
             sources,
         };
         self.save_error = match file.save(path) {
@@ -478,12 +489,19 @@ impl<F: SourceFactory> Actor<F> {
 
     /// Runs `change` on the current settings, hands what changed to the
     /// running parts and publishes the new settings.
-    fn edit_settings(&mut self, change: SettingsChange) {
+    /// Applies `change`; refused (and nothing changes) if it makes the
+    /// chat reactions invalid, as `config.toml` would be refused at
+    /// startup: the app's forms check most of it themselves, but the engine
+    /// is what keeps the file loadable.
+    fn edit_settings(&mut self, change: SettingsChange) -> anyhow::Result<()> {
         let old = self.settings.borrow().clone();
         let mut new = old.clone();
         change(&mut new);
         if new == old {
-            return;
+            return Ok(());
+        }
+        if new.reactions != old.reactions {
+            new.reactions.check().map_err(|e| anyhow!(e))?;
         }
         let youtube_changed = self.controls.apply(&old, &new);
         if youtube_changed {
@@ -497,6 +515,7 @@ impl<F: SourceFactory> Actor<F> {
             self.restart_youtube();
         }
         self.save();
+        Ok(())
     }
 
     /// Restarts every YouTube source that is meant to run, with a fresh
@@ -663,17 +682,20 @@ impl<F: SourceFactory> Actor<F> {
         let api_clients = self.connections.api_clients();
         let api_requests = self.api_requests.borrow().clone();
         let save_error = self.save_error.clone();
+        let reactions = self.reactions.borrow().clone();
         self.status.send_if_modified(|status| {
             let unchanged = status.sources == sources
                 && status.overlays_connected == overlays
                 && status.api_clients == api_clients
                 && status.api_requests == api_requests
-                && status.save_error == save_error;
+                && status.save_error == save_error
+                && status.reactions == reactions;
             status.sources = sources;
             status.overlays_connected = overlays;
             status.api_clients = api_clients;
             status.api_requests = api_requests;
             status.save_error = save_error;
+            status.reactions = reactions;
             !unchanged
         });
     }

@@ -9,7 +9,7 @@ use anyhow::Context;
 use oauth2::basic::BasicErrorResponseType;
 use oauth2::{RefreshToken, RequestTokenError, TokenResponse};
 
-use super::{GoogleClient, OAuthApp, http_client, send};
+use super::{GoogleClient, OAuthApp, http_client, send, store};
 
 /// Refresh this long before the token expires, so a token handed out is
 /// never about to die during a request or a reconnect.
@@ -68,7 +68,7 @@ impl TokenProvider {
     pub async fn from_store(app: OAuthApp) -> anyhow::Result<Self> {
         let refresh_token = app
             .store
-            .load(&app)
+            .load(&store::account(&app))
             .await?
             .ok_or_else(|| LoginRequired("not logged in yet".into()))?;
         Self::new(app, refresh_token)
@@ -121,7 +121,9 @@ impl TokenProvider {
         {
             state.refresh_token = new.secret().clone();
             let app = &self.inner.app;
-            app.store.save(app, &state.refresh_token).await?;
+            app.store
+                .save(&store::account(app), &state.refresh_token)
+                .await?;
         }
 
         let token = response.access_token().secret().clone();

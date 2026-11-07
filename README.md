@@ -6,6 +6,9 @@ Website and docs: <https://isneeze.github.io/chat-aggregator/>
 
 Aggregates live chat from Twitch, YouTube, Picarto, and Rplay (soon™️) into a single unified
 message stream, exposed as a stylable HTML overlay for OBS/browser sources.
+Chat reactions turn chat into actions in other programs: `!bonk` throws an
+item at your model in Warudo, a big Super Chat puts a voice filter on your
+mic in OBS for 30 seconds.
 
 ## How it works
 
@@ -26,6 +29,7 @@ moderation: deletes, bans, clears). How the pieces fit together, and why:
 | `chat-picarto` | Picarto chat WebSocket (anonymous read)     |
 | `chat-render`  | templates + CSS, emote replacement          |
 | `chat-server`  | HTTP: overlay page, SSE stream, JSON API    |
+| `chat-reactions` | chat reactions: rules, Warudo and OBS outputs |
 | `chat-engine`  | runs sources, hub and server together       |
 | `chat-app`     | the desktop app (GPUI)                      |
 

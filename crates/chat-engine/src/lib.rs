@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use chat_core::Hub;
+use chat_reactions::ReactionRequest;
 use chat_server::{ApiOrigins, Avatars, Connections, ServerState};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -30,10 +31,17 @@ mod actor;
 mod config;
 mod config_file;
 mod factory;
+mod reactions;
 mod settings;
 mod status;
 mod youtube;
 
+pub use chat_core::secrets::SecretStore;
+pub use chat_reactions::{
+    Action, DEFAULT_OBS_URL, DEFAULT_WARUDO_URL, Guards, MAX_EFFECT_SECS, MAX_QUEUE_SECS,
+    OBS_PASSWORD, ObsSettings, OutputState, OutputStatus, ReactionSettings, ReactionStatus, Role,
+    Rule, RuleStatus, Target, Trigger, WarudoSettings,
+};
 pub use chat_server::{ANSWER_TIMEOUT, Builtin, Newest, Stagger, ThemeSource};
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, Settings, SourceEntry};
@@ -75,6 +83,9 @@ pub struct EngineConfig {
     /// (`config.toml`). `None`: never written (headless mode, which leaves
     /// your file and its comments alone, and tests).
     pub save_to: Option<PathBuf>,
+    /// Where secrets other than the YouTube login are read from (the OBS
+    /// password, `OBS_PASSWORD`). `None`: nowhere (tests).
+    pub secrets: Option<SecretStore>,
 }
 
 /// Controls a running engine. Cheap to clone: the UI, headless mode and
@@ -92,6 +103,10 @@ pub struct EngineHandle {
     /// login's local server, the keyring): callers may be on any executor,
     /// like the app's GPUI tasks.
     runtime: tokio::runtime::Handle,
+    /// To the chat reactions: tests, nudges (`reactions.rs`).
+    reactions: mpsc::Sender<ReactionRequest>,
+    /// Where the OBS password goes (`EngineConfig::secrets`).
+    secrets: Option<SecretStore>,
 }
 
 impl EngineHandle {
@@ -261,6 +276,10 @@ impl Engine {
             config.ask_api_origins,
         ));
         let connections = Arc::new(Connections::default());
+        // The reactor reads the rules; the actor changes them (`Controls`)
+        // and shows the reactor's report in the status.
+        let (reactions_tx, reactions_rx) = watch::channel(config.settings.reactions.clone());
+        let (reaction_status_tx, reaction_status_rx) = watch::channel(Default::default());
         let state = ServerState {
             hub: hub.clone(),
             theme: theme_rx,
@@ -280,6 +299,7 @@ impl Engine {
             api: api_tx,
             newest: newest_tx,
             origins,
+            reactions: reactions_tx,
             themes_dir: config.themes_dir,
         });
 
@@ -290,6 +310,7 @@ impl Engine {
             api_requests: Vec::new(),
             save_error: None,
             sources: Vec::new(),
+            reactions: Default::default(),
         });
         let (settings_tx, settings_rx) = watch::channel(config.settings);
         let (commands_tx, commands_rx) = mpsc::channel(32);
@@ -299,6 +320,7 @@ impl Engine {
             controls.clone(),
             status_tx,
             connections,
+            reaction_status_rx,
             config.save_to,
         );
         actor.add_from_config(config.sources);
@@ -308,6 +330,18 @@ impl Engine {
                 error!("overlay server failed: {e}");
             }
         });
+        // Chat reactions: one more reader of the hub. It ends at shutdown,
+        // after its outputs have finished (OBS switches its timed effects
+        // back off first), so `shutdown()` waits for that too.
+        let (reaction_requests_tx, reaction_requests_rx) = mpsc::channel(8);
+        tasks.spawn(chat_reactions::run(
+            hub.clone(),
+            reactions_rx,
+            reaction_status_tx,
+            config.secrets.clone(),
+            reaction_requests_rx,
+            shutdown.clone(),
+        ));
 
         let handle = EngineHandle {
             commands: commands_tx,
@@ -316,6 +350,8 @@ impl Engine {
             controls,
             // `start` runs on the engine's runtime: this is it.
             runtime: tokio::runtime::Handle::current(),
+            reactions: reaction_requests_tx,
+            secrets: config.secrets,
         };
 
         info!("overlay running at http://{addr}/");
@@ -492,6 +528,101 @@ mod tests {
             "{}",
             status.sources[0].summary()
         );
+        engine.shutdown().await;
+    }
+
+    /// A chat command from the test window reaches Warudo, and the status
+    /// shows the connection and the count. A setting changed while running
+    /// (pausing) applies at once.
+    #[tokio::test]
+    async fn chat_reactions_reach_warudo() {
+        use futures_util::StreamExt;
+        // A stand-in Warudo that hands every message it gets to the test.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (got_tx, mut got) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(frame)) = ws.next().await {
+                if let Ok(text) = frame.into_text() {
+                    let _ = got_tx.send(text.to_string());
+                }
+            }
+        });
+
+        let mut settings = local();
+        settings.reactions.warudo.url = url;
+        settings.reactions.rules.push(Rule {
+            name: "bonk".into(),
+            enabled: true,
+            trigger: Trigger::Command {
+                command: "!bonk".into(),
+            },
+            guards: Guards::default(),
+            action: Action::Warudo {
+                action: "throw_item".into(),
+            },
+        });
+        let engine = Engine::start(EngineConfig {
+            settings,
+            ..EngineConfig::default()
+        })
+        .await
+        .unwrap();
+        let handle = engine.handle();
+        let status = wait_for(&handle, |s| {
+            s.reactions
+                .outputs
+                .first()
+                .is_some_and(|o| Health::from(&o.state) == Health::Ok)
+        })
+        .await;
+        assert_eq!(status.reactions.outputs[0].target, Target::Warudo);
+        assert_eq!(status.reactions.outputs[0].summary(), "connected");
+
+        let (_id, input) = handle.add_manual_source().await.unwrap();
+        let mut msg = chat_core::demo::sample_messages(0).remove(0);
+        msg.id = "manual-1".into(); // the test window's, not a demo message
+        msg.text = "!bonk".into();
+        input.send(ChatEvent::Message(msg.clone())).await.unwrap();
+        let sent = timeout(WAIT, got.recv()).await.unwrap().unwrap();
+        assert_eq!(sent, r#"{"action":"throw_item"}"#);
+        let fired = |s: &Status| {
+            s.reactions
+                .rules
+                .iter()
+                .map(|r| r.fired)
+                .collect::<Vec<_>>()
+        };
+        wait_for(&handle, |s| fired(s) == [1]).await;
+
+        handle
+            .edit_settings(|s| s.reactions.paused = true)
+            .await
+            .unwrap();
+        msg.id = "manual-2".into();
+        input.send(ChatEvent::Message(msg)).await.unwrap();
+        // Give a wrongly sent reaction time to arrive.
+        assert!(
+            timeout(Duration::from_millis(300), got.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(fired(&handle.status().borrow()), [1]);
+
+        // Paused, a test still fires (and isn't counted).
+        handle.test_reaction("bonk").await.unwrap();
+        let sent = timeout(WAIT, got.recv()).await.unwrap().unwrap();
+        assert_eq!(sent, r#"{"action":"throw_item"}"#);
+        assert_eq!(fired(&handle.status().borrow()), [1]);
+
+        // Settings that `config.toml` couldn't load are refused, not saved.
+        let duplicate = handle
+            .edit_settings(|s| s.reactions.rules.push(s.reactions.rules[0].clone()))
+            .await;
+        assert!(duplicate.is_err());
+        assert_eq!(handle.settings().borrow().reactions.rules.len(), 1);
         engine.shutdown().await;
     }
 

@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 chat-core = { path = "../chat-core" }
 chat-picarto = { path = "../chat-picarto" }
+chat-reactions = { path = "../chat-reactions" }
 chat-server = { path = "../chat-server" }
 chat-twitch = { path = "../chat-twitch" }
 chat-youtube = { path = "../chat-youtube" }
@@ -25,4 +26,8 @@ tokio = { workspace = true, features = ["test-util"] }
 reqwest.workspace = true
 serde_json.workspace = true
 tracing-subscriber.workspace = true
+# A stand-in Warudo for the chat reactions test (the same version
+# chat-reactions uses).
+tokio-tungstenite = "0.29"
+futures-util.workspace = true
 webbrowser.workspace = true

@@ -1003,11 +1003,14 @@ name = "chat-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "directories",
  "jiff",
+ "keyring",
  "schemars",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1017,15 +1020,18 @@ dependencies = [
  "anyhow",
  "chat-core",
  "chat-picarto",
+ "chat-reactions",
  "chat-server",
  "chat-twitch",
  "chat-youtube",
  "directories",
+ "futures-util",
  "jiff",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
@@ -1050,6 +1056,24 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "webpki-roots 1.0.11",
+]
+
+[[package]]
+name = "chat-reactions"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chat-core",
+ "futures-util",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "toml 1.1.8+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -1119,10 +1143,8 @@ dependencies = [
  "anyhow",
  "axum",
  "chat-core",
- "directories",
  "futures-util",
  "jiff",
- "keyring",
  "oauth2",
  "prost",
  "prost-types",

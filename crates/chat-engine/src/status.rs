@@ -5,6 +5,7 @@
 use std::fmt;
 
 use chat_core::Activity;
+use chat_reactions::{OutputState, ReactionStatus};
 use jiff::Timestamp;
 
 use crate::config::SourceConfig;
@@ -140,6 +141,24 @@ pub struct Status {
     pub save_error: Option<String>,
     /// In the order they were added.
     pub sources: Vec<SourceStatus>,
+    /// Chat reactions: the outputs in use, with a light each
+    /// (`Health::from(&output.state)`), and how often each rule fired.
+    pub reactions: ReactionStatus,
+}
+
+/// An output's light. Can't reach the program: red, since only the streamer
+/// can fix that (start Warudo, correct the address); it's retried anyway.
+// (`From` is implemented here, next to `Health`: Rust allows implementing
+// a trait for a type only in the crate of either one, and `OutputState`
+// lives in chat-reactions, which doesn't know about lights.)
+impl From<&OutputState> for Health {
+    fn from(state: &OutputState) -> Self {
+        match state {
+            OutputState::Connected => Health::Ok,
+            OutputState::Connecting => Health::Warning,
+            OutputState::Retrying { .. } => Health::Error,
+        }
+    }
 }
 
 impl Status {
@@ -204,6 +223,7 @@ mod tests {
             api_requests: vec![],
             save_error: None,
             sources: vec![],
+            reactions: ReactionStatus::default(),
         };
         assert_eq!(all.overall(), Health::Off);
         all.sources

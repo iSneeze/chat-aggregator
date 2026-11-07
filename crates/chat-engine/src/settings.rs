@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chat_core::Hub;
+use chat_reactions::ReactionSettings;
 use chat_server::{ApiOrigins, Newest, Stagger, ThemeSource};
 use tokio::sync::watch;
 
@@ -19,7 +20,7 @@ use crate::config_file::Settings;
 
 /// The running parts that settings steer, besides the sources (the actor
 /// restarts those itself). The server reads the other ends of these
-/// channels (`ServerState`).
+/// channels (`ServerState`), the reactor its own (`reactions`).
 pub(crate) struct Controls {
     pub(crate) hub: Arc<Hub>,
     pub(crate) theme: watch::Sender<ThemeSource>,
@@ -27,6 +28,9 @@ pub(crate) struct Controls {
     pub(crate) api: watch::Sender<bool>,
     pub(crate) newest: watch::Sender<Newest>,
     pub(crate) origins: Arc<ApiOrigins>,
+    /// The chat reactions' rules and outputs: the reactor applies a change
+    /// right away (and reconnects an output whose address changed).
+    pub(crate) reactions: watch::Sender<ReactionSettings>,
     /// Where theme names in the settings are looked up.
     pub(crate) themes_dir: Option<PathBuf>,
 }
@@ -66,6 +70,9 @@ impl Controls {
         } else if now.newest != was.newest {
             self.reload_overlays();
         }
+        if new.reactions != old.reactions {
+            self.reactions.send_replace(new.reactions.clone());
+        }
         // (A new port only applies at the next start: the server keeps its
         // socket until then.)
         old.youtube != new.youtube
@@ -89,6 +96,7 @@ mod tests {
         stagger: watch::Receiver<Stagger>,
         api: watch::Receiver<bool>,
         newest: watch::Receiver<Newest>,
+        reactions: watch::Receiver<ReactionSettings>,
     }
 
     fn controls() -> (Controls, Server) {
@@ -96,6 +104,7 @@ mod tests {
         let (stagger, stagger_rx) = watch::channel(Stagger::default());
         let (api, api_rx) = watch::channel(false);
         let (newest, newest_rx) = watch::channel(Newest::Bottom);
+        let (reactions, reactions_rx) = watch::channel(ReactionSettings::default());
         let controls = Controls {
             hub: Arc::new(Hub::new(20)),
             theme,
@@ -103,6 +112,7 @@ mod tests {
             api,
             newest,
             origins: Arc::new(ApiOrigins::new([], false)),
+            reactions,
             themes_dir: None,
         };
         let server = Server {
@@ -110,6 +120,7 @@ mod tests {
             stagger: stagger_rx,
             api: api_rx,
             newest: newest_rx,
+            reactions: reactions_rx,
         };
         (controls, server)
     }
@@ -133,6 +144,19 @@ mod tests {
         assert!(!changed(&server.theme), "no reload for pacing");
         assert!(!changed(&server.api));
         assert!(!changed(&server.newest));
+        assert!(!changed(&server.reactions));
+    }
+
+    #[test]
+    fn new_reaction_settings_reach_the_reactor() {
+        let (controls, server) = controls();
+        let old = Settings::default();
+        let mut new = old.clone();
+        new.reactions.paused = true;
+        assert!(!controls.apply(&old, &new));
+        assert!(changed(&server.reactions));
+        assert!(server.reactions.borrow().paused);
+        assert!(!changed(&server.theme), "overlays don't reload");
     }
 
     #[test]

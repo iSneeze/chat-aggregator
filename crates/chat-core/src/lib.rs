@@ -5,6 +5,7 @@ pub mod activity;
 pub mod demo;
 pub mod fs;
 pub mod hub;
+pub mod secrets;
 
 pub use activity::{Activity, Reporter};
 pub use hub::Hub;
@@ -94,8 +95,11 @@ pub struct EmoteRef {
 }
 
 // `Copy`: a fieldless enum is just a small tag, so passing it by value is
-// as cheap as passing a reference. `PartialEq`/`Eq` let us compare platforms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+// as cheap as passing a reference. `PartialEq`/`Eq` let us compare platforms,
+// `Hash` makes them usable as map keys (per-chatter cooldowns).
+// `Deserialize`: settings name platforms too (a reaction's platform guard),
+// with the same lowercase names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ChatPlatform {
