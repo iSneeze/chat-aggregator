@@ -1,6 +1,7 @@
-//! The settings window (⚙): the app's look, the overlay's replay history
-//! and burst pacing, the port, the JSON API and the web sites allowed to use
-//! it, the YouTube API key and emoji learning, the settings folder.
+//! The settings window (⚙): the app's look, the overlay's replay history,
+//! burst pacing and what it shows, the tip currency and tiers, the port,
+//! the JSON API and the web sites allowed to use it, the YouTube API key
+//! and emoji learning, the settings folder.
 //!
 //! gpui-kit's settings fields report every keystroke. Applying each one
 //! would go wrong: typing "25" over "20" passes through "2", which would
@@ -11,7 +12,8 @@
 
 use std::time::Duration;
 
-use chat_engine::{Appearance, DEFAULT_HISTORY, DEFAULT_PORT, EngineHandle, ServerSettings};
+use chat_core::tiers::{Amount, TipSettings};
+use chat_engine::{Appearance, DEFAULT_HISTORY, DEFAULT_PORT, EngineHandle, Hide, ServerSettings};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::setting::{
@@ -24,6 +26,7 @@ use gpui_kit::*;
 use crate::app_config::{AppConfig, edit_settings};
 use crate::app_view::report;
 use crate::appearance;
+use crate::paid;
 
 /// How long typing must pause before edits apply.
 const APPLY_AFTER: Duration = Duration::from_millis(800);
@@ -34,6 +37,43 @@ const APPEARANCES: [(Appearance, &str, &str); 4] = [
     (Appearance::Light, "light", "Light"),
     (Appearance::Dark, "dark", "Dark"),
     (Appearance::HighContrast, "high-contrast", "High contrast"),
+];
+
+/// The overlay's platform switches: label, and what switching it off hides.
+const SHOWN_PLATFORMS: [(&str, &[Hide]); 5] = [
+    ("Twitch", &[Hide::Twitch]),
+    ("YouTube", &[Hide::YouTube]),
+    ("Picarto", &[Hide::Picarto]),
+    ("StreamElements tips", &[Hide::StreamElements]),
+    ("Streamlabs tips", &[Hide::Streamlabs]),
+];
+
+/// The overlay's message switches: label, description, and what switching
+/// it off hides. "Chat" covers emote-only messages too: hiding chat but
+/// showing a lone emote would be odd.
+const SHOWN_KINDS: [(&str, &str, &[Hide]); 6] = [
+    (
+        "Chat",
+        "Normal chat messages, also emote-only ones.",
+        &[Hide::Text, Hide::EmoteOnly],
+    ),
+    ("Donations", "Bits, Super Chats, tips.", &[Hide::Donation]),
+    (
+        "Stickers and gifts",
+        "YouTube Super Stickers and gifts.",
+        &[Hide::Special],
+    ),
+    (
+        "Memberships",
+        "New subscribers and members, resubs, milestones.",
+        &[Hide::Membership],
+    ),
+    ("Gifted subs", "Gifted subs and memberships.", &[Hide::Gift]),
+    (
+        "Notices",
+        "Raids, announcements and other platform events.",
+        &[Hide::Notice],
+    ),
 ];
 
 /// What this window edits, not yet applied. Only these settings: the
@@ -49,6 +89,13 @@ struct Draft {
     api: bool,
     api_key: String,
     learn_emojis: bool,
+    /// What the overlay leaves out, sorted (so the file doesn't change
+    /// with the order switches were flipped in).
+    hide: Vec<Hide>,
+    /// The tip currency and where tip tiers 2–7 start, as typed: checked
+    /// together ([`Draft::tips`]), and only applied when they make sense.
+    tip_currency: String,
+    tip_tiers: [String; 6],
 }
 
 // The engine's settings by their full name: `Settings` alone is gpui-kit's
@@ -64,17 +111,68 @@ impl Draft {
             api: server.api,
             api_key: settings.youtube.api_key.clone().unwrap_or_default(),
             learn_emojis: settings.youtube.learn_emojis,
+            hide: server.hide.clone(),
+            tip_currency: settings.tips.currency.clone(),
+            tip_tiers: settings.tips.tiers.map(|amount| amount.to_string()),
         }
+    }
+
+    /// The tip currency as typed (in capitals), if it's one.
+    fn tip_currency(&self) -> Result<String, String> {
+        let currency = self.tip_currency.trim().to_ascii_uppercase();
+        let tips = TipSettings {
+            currency: currency.clone(),
+            ..TipSettings::default()
+        };
+        tips.check()
+            .map_err(|e| e.trim_start_matches("tips: ").to_string())?;
+        Ok(currency)
+    }
+
+    /// Where tip tiers 2–7 start, as typed, if they make sense. A
+    /// half-typed table ("1" on the way to "100") stays here instead of
+    /// reaching the engine, which would refuse it anyway.
+    fn tip_tiers(&self) -> Result<[Amount; 6], String> {
+        let mut tiers = [Amount::default(); 6];
+        for (i, (text, tier)) in self.tip_tiers.iter().zip(&mut tiers).enumerate() {
+            *tier = text.parse().map_err(|e| format!("tier {}: {e}", i + 2))?;
+        }
+        let tips = TipSettings {
+            tiers,
+            ..TipSettings::default()
+        };
+        tips.check()
+            .map_err(|e| e.trim_start_matches("tips: ").to_string())?;
+        Ok(tiers)
+    }
+
+    /// The tip settings as typed, or the first thing wrong with them.
+    fn tips(&self) -> Result<TipSettings, String> {
+        Ok(TipSettings {
+            currency: self.tip_currency()?,
+            tiers: self.tip_tiers()?,
+        })
     }
 
     /// Writes the draft into `settings`, leaving everything else as it is.
     fn write_to(self, settings: &mut chat_engine::Settings) {
+        // Only what makes sense: the rest waits until it's fixed (the page
+        // says what's wrong). First, while `self` is still whole: the lines
+        // below move fields out of it.
+        // Each on its own: a half-typed tier doesn't hold back the currency.
+        if let Ok(currency) = self.tip_currency() {
+            settings.tips.currency = currency;
+        }
+        if let Ok(tiers) = self.tip_tiers() {
+            settings.tips.tiers = tiers;
+        }
         let server = &mut settings.server;
         server.history = self.history;
         server.stagger_ms = self.stagger_ms;
         server.stagger_max_ms = self.stagger_max_ms;
         server.port = self.port;
         server.api = self.api;
+        server.hide = self.hide;
         settings.youtube.api_key = Some(self.api_key).filter(|key| !key.is_empty());
         settings.youtube.learn_emojis = self.learn_emojis;
     }
@@ -93,6 +191,9 @@ pub struct SettingsWindow {
     /// The draft has changes that aren't applied yet.
     dirty: bool,
     api_key: Entity<InputState>,
+    tip_currency: Entity<InputState>,
+    /// Where tip tiers 2–7 start (tier 1 is everything below tier 2).
+    tip_tiers: [Entity<InputState>; 6],
     _subscriptions: Vec<Subscription>,
 }
 
@@ -111,11 +212,26 @@ impl SettingsWindow {
                 .masked(true)
                 .default_value(draft.api_key.clone())
         });
-        let subscriptions = vec![
+        let tip_currency = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("e.g. EUR")
+                .default_value(draft.tip_currency.clone())
+        });
+        // `from_fn` builds the array from its index: one field per tier.
+        let tip_tiers: [Entity<InputState>; 6] = std::array::from_fn(|i| {
+            cx.new(|cx| InputState::new(window, cx).default_value(draft.tip_tiers[i].clone()))
+        });
+        let mut subscriptions = vec![
             cx.subscribe(&api_key, |this, input, event: &InputEvent, cx| {
                 if let InputEvent::Change = event {
                     let key = input.read(cx).value().trim().to_string();
                     this.change(|draft| draft.api_key = key, cx);
+                }
+            }),
+            cx.subscribe(&tip_currency, |this, input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let code = input.read(cx).value().to_string();
+                    this.change(|draft| draft.tip_currency = code, cx);
                 }
             }),
             // The allowed sites change from the main window too ("Allow"
@@ -130,6 +246,15 @@ impl SettingsWindow {
                 }
             }),
         ];
+        for (i, input) in tip_tiers.iter().enumerate() {
+            // `move`: each closure keeps its own `i`.
+            subscriptions.push(cx.subscribe(input, move |this, input, event, cx| {
+                if let InputEvent::Change = event {
+                    let text = input.read(cx).value().to_string();
+                    this.change(|draft| draft.tip_tiers[i] = text, cx);
+                }
+            }));
+        }
         Self {
             engine,
             config,
@@ -138,6 +263,8 @@ impl SettingsWindow {
             pending: None,
             dirty: false,
             api_key,
+            tip_currency,
+            tip_tiers,
             _subscriptions: subscriptions,
         }
     }
@@ -181,6 +308,20 @@ impl SettingsWindow {
         self.apply_now(|draft| draft.learn_emojis = on, cx);
     }
 
+    /// Shows (`on`) or hides the overlay's messages of `items`.
+    fn set_shown(&mut self, items: &[Hide], on: bool, cx: &mut Context<Self>) {
+        self.apply_now(
+            |draft| {
+                draft.hide.retain(|hide| !items.contains(hide));
+                if !on {
+                    draft.hide.extend_from_slice(items);
+                    draft.hide.sort();
+                }
+            },
+            cx,
+        );
+    }
+
     /// For switches: applies right away (a switch has no half-typed states
     /// to wait out). Edits still waiting for the pause go along with it.
     fn apply_now(&mut self, edit: impl FnOnce(&mut Draft), cx: &mut Context<Self>) {
@@ -201,6 +342,17 @@ impl SettingsWindow {
             move |settings| settings.server.api_origins.retain(|o| *o != origin),
             cx,
         );
+    }
+
+    /// Puts the tip tiers back to YouTube's steps.
+    fn reset_tip_tiers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let steps = TipSettings::default()
+            .tiers
+            .map(|amount| amount.to_string());
+        for (input, step) in self.tip_tiers.iter().zip(&steps) {
+            input.update(cx, |input, cx| input.set_value(step.clone(), window, cx));
+        }
+        self.change(|draft| draft.tip_tiers = steps, cx);
     }
 
     /// Changes the look right away, and saves it.
@@ -365,6 +517,20 @@ impl SettingsWindow {
             })
         };
 
+        let tip_currency = {
+            let input = self.tip_currency.clone();
+            SettingField::render(move |_, _, _| {
+                div()
+                    .w(px(100.))
+                    .child(Input::new(&input).id("settings-tip-currency"))
+            })
+        };
+        let tier_table = {
+            let view = view.clone();
+            let inputs = self.tip_tiers.clone();
+            SettingItem::render(move |_, _, cx| tier_table(&view, &inputs, cx))
+        };
+
         vec![
             SettingPage::new("General").groups([
                 SettingGroup::new().title("Look").item(
@@ -381,7 +547,7 @@ impl SettingsWindow {
                     )),
                 ),
             ]),
-            SettingPage::new("Overlay").group(
+            SettingPage::new("Overlay").groups([
                 SettingGroup::new()
                     .description(
                         "Changes reach overlays when they connect or reload; \
@@ -410,7 +576,46 @@ impl SettingsWindow {
                         )
                         .description("A message is never held back longer than this."),
                     ]),
-            ),
+                SettingGroup::new()
+                    .title("Platforms shown")
+                    .description(
+                        "Switched off: that platform's messages stay out of the overlay. \
+                         Chat reactions and the JSON API still get them. Applies to new \
+                         messages right away; an overlay URL with ?hide=… chooses for \
+                         itself.",
+                    )
+                    .items(SHOWN_PLATFORMS.iter().map(|(label, items)| {
+                        SettingItem::new(*label, shown_switch(&view, items).default_value(true))
+                    })),
+                SettingGroup::new()
+                    .title("Messages shown")
+                    .description("The same, by kind of message, on every platform.")
+                    .items(SHOWN_KINDS.iter().map(|(label, description, items)| {
+                        SettingItem::new(*label, shown_switch(&view, items).default_value(true))
+                            .description(*description)
+                    })),
+            ]),
+            SettingPage::new("Paid messages").groups([
+                SettingGroup::new().title("Tips").item(
+                    SettingItem::new("Tip currency", tip_currency).description(
+                        "Your tip page's currency (StreamElements, Streamlabs), as 3 letters \
+                         (EUR, USD). Nothing is converted: StreamElements tips show in it, \
+                         and amount rules count Super Chats in it too. A Streamlabs tip in \
+                         another currency gets tier 1. Empty: StreamElements tips show as \
+                         plain numbers.",
+                    ),
+                ),
+                SettingGroup::new()
+                    .title("Tiers")
+                    .description(
+                        "Every paid message gets a tier from 1 to 7, on one scale for all \
+                         platforms: YouTube's Super Chat tiers. Twitch counts 100 bits as a \
+                         dollar; tips start where you say, in your tip currency. Tiers \
+                         colour donations in the overlay, and are what a reaction's \
+                         \"tier 4 or more\" means.",
+                    )
+                    .item(tier_table),
+            ]),
             SettingPage::new("Connection").group(
                 SettingGroup::new().items([
                     SettingItem::new("JSON API", json_api.default_value(false)).description(
@@ -449,6 +654,108 @@ impl SettingsWindow {
             ),
         ]
     }
+}
+
+/// The tier table: tips editable (tiers 2–7), Twitch and YouTube for
+/// comparison, and what's wrong with the tips if anything is.
+fn tier_table(
+    view: &WeakEntity<SettingsWindow>,
+    inputs: &[Entity<InputState>; 6],
+    cx: &mut App,
+) -> impl IntoElement + use<> {
+    let muted = cx.theme().muted_foreground;
+    let draft = view.upgrade().map(|view| view.read(cx).draft.clone());
+    let tips = draft.as_ref().map(Draft::tips);
+    // The tips' column header says the currency, as typed.
+    let currency = draft
+        .as_ref()
+        .map(|d| d.tip_currency.trim().to_ascii_uppercase())
+        .filter(|code| !code.is_empty());
+    let cell = |width: f32| div().w(px(width)).flex_none();
+    let header = h_flex()
+        .gap_3()
+        .text_sm()
+        .text_color(muted)
+        .child(cell(40.).child("Tier"))
+        .child(cell(150.).child(match &currency {
+            Some(code) => format!("Tips ({code})"),
+            None => "Tips".into(),
+        }))
+        .child(cell(120.).child("Twitch"))
+        .child(cell(80.).child("YouTube"));
+    let rows = paid::all().map(|tier| {
+        let tips_cell = match tier.checked_sub(2) {
+            // Tier 1 follows from tier 2.
+            None => {
+                let below = match &tips {
+                    Some(Ok(tips)) => paid::tips_start(1, tips),
+                    _ => "below tier 2".into(),
+                };
+                div().text_sm().child(below)
+            }
+            Some(i) => h_flex()
+                .gap_1()
+                .items_center()
+                .child(
+                    div().w(px(100.)).child(
+                        Input::new(&inputs[i as usize])
+                            .id(("settings-tip-tier", tier as usize))
+                            .small(),
+                    ),
+                )
+                .child(div().text_sm().child("+")),
+        };
+        h_flex()
+            .gap_3()
+            .items_center()
+            .child(cell(40.).child(tier.to_string()))
+            .child(cell(150.).child(tips_cell))
+            .child(cell(120.).text_sm().child(paid::bits_start(tier)))
+            .child(cell(80.).text_sm().child(paid::youtube_start(tier)))
+    });
+    let problem = match &tips {
+        Some(Err(problem)) => Some(format!("Not applied yet: {problem}.")),
+        _ => None,
+    };
+    let reset = {
+        let view = view.clone();
+        Button::new("settings-tip-tiers-reset")
+            .label("YouTube's steps")
+            .small()
+            .on_click(move |_, window, cx| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |this, cx| this.reset_tip_tiers(window, cx));
+                }
+            })
+    };
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(header)
+        .children(rows)
+        .when_some(problem, |table, problem| {
+            table.child(div().text_sm().text_color(cx.theme().danger).child(problem))
+        })
+        .child(h_flex().child(reset))
+}
+
+/// A switch for the overlay's messages of `items`: on while none of them is
+/// hidden.
+fn shown_switch(view: &WeakEntity<SettingsWindow>, items: &'static [Hide]) -> SettingField<bool> {
+    let (read, write) = (view.clone(), view.clone());
+    SettingField::switch(
+        move |cx| {
+            read.upgrade().is_none_or(|view| {
+                let hidden = &view.read(cx).draft.hide;
+                !items.iter().any(|item| hidden.contains(item))
+            })
+        },
+        move |on, cx| {
+            if let Some(view) = write.upgrade() {
+                view.update(cx, |this, cx| this.set_shown(items, on, cx));
+            }
+        },
+    )
 }
 
 /// A number field editing one number in the draft. `field` picks which
@@ -530,9 +837,11 @@ mod tests {
     use std::path::PathBuf;
 
     use chat_core::ChatEvent;
-    use chat_engine::{Appearance, ConfigFile, Engine, EngineConfig};
+    use chat_engine::{Appearance, ConfigFile, Engine, EngineConfig, Hide};
     use gpui_kit::component::{Root, Theme};
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
+
+    use chat_core::tiers::{Amount, TipSettings};
 
     use super::{APPLY_AFTER, SettingsWindow};
     use crate::app_config::AppConfig;
@@ -634,6 +943,79 @@ mod tests {
         panic!("timed out");
     }
 
+    /// Types `text` into the tip field `input` (a tier, or the currency),
+    /// replacing what's there, as the field's change event does.
+    fn type_tip(ui: &Ui, cx: &mut TestAppContext, input: Option<usize>, text: &str) {
+        let view = ui.view().clone();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            let field = view.read_with(cx, |this, _| match input {
+                Some(i) => this.tip_tiers[i].clone(),
+                None => this.tip_currency.clone(),
+            });
+            field.update(cx, |field, cx| field.set_value(text, window, cx));
+        })
+        .unwrap();
+        // `set_value` doesn't report a change (only typing does): say it.
+        let text = text.to_string();
+        ui.view().update(cx, |this, cx| {
+            this.change(
+                |draft| match input {
+                    Some(i) => draft.tip_tiers[i] = text,
+                    None => draft.tip_currency = text,
+                },
+                cx,
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn tip_settings_apply_once_they_make_sense(cx: &mut TestAppContext) {
+        let ui = open(cx, "tips");
+        // Tier 4 from 12: on the way there, "1" is below tier 3's 5.
+        type_tip(&ui, cx, Some(2), "1");
+        type_tip(&ui, cx, None, "eur");
+        cx.executor().advance_clock(APPLY_AFTER * 2);
+        run_until(cx, || ui.saved().is_some());
+        let saved = ui.saved().unwrap().tips;
+        assert_eq!(saved.currency, "EUR", "the currency, in capitals");
+        assert_eq!(
+            saved.tiers,
+            TipSettings::default().tiers,
+            "the half-typed tier waits"
+        );
+        let problem = ui.view().read_with(cx, |this, _| this.draft.tips());
+        assert!(problem.is_err_and(|e| e.contains("above")));
+
+        type_tip(&ui, cx, Some(2), "12");
+        cx.executor().advance_clock(APPLY_AFTER * 2);
+        run_until(cx, || {
+            ui.saved()
+                .is_some_and(|f| f.tips.tiers[2] == Amount::whole(12))
+        });
+        assert_eq!(ui.engines().tips.tier(Amount::whole(12)), 4);
+        assert_eq!(ui.engines().tips.tier(Amount::of(11.99).unwrap()), 3);
+    }
+
+    #[gpui_kit::test]
+    fn the_tier_table_resets_to_youtubes_steps(cx: &mut TestAppContext) {
+        let ui = open(cx, "tips-reset");
+        type_tip(&ui, cx, Some(5), "500");
+        cx.executor().advance_clock(APPLY_AFTER * 2);
+        run_until(cx, || {
+            ui.saved()
+                .is_some_and(|f| f.tips.tiers[5] == Amount::whole(500))
+        });
+        // What the table's button does (the table is on another page than
+        // the one the window opens on).
+        let view = ui.view().clone();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.reset_tip_tiers(window, cx));
+        })
+        .unwrap();
+        cx.executor().advance_clock(APPLY_AFTER * 2);
+        run_until(cx, || ui.saved().is_some_and(|f| f.tips.is_default()));
+    }
+
     #[gpui_kit::test]
     fn typing_applies_only_the_final_value_after_a_pause(cx: &mut TestAppContext) {
         let ui = open(cx, "debounce");
@@ -711,6 +1093,33 @@ mod tests {
             .update(cx, |this, cx| this.set_learn_emojis(false, cx));
         run_until(cx, || ui.saved().is_some_and(|f| !f.youtube.learn_emojis));
         assert!(!ui.engines().youtube.learn_emojis);
+    }
+
+    #[gpui_kit::test]
+    fn what_the_overlay_shows_applies_at_once_and_is_saved(cx: &mut TestAppContext) {
+        let ui = open(cx, "hide");
+        assert!(ui.engines().server.hide.is_empty(), "everything by default");
+        ui.view().update(cx, |this, cx| {
+            this.set_shown(&[Hide::StreamElements], false, cx)
+        });
+        run_until(cx, || {
+            ui.saved()
+                .is_some_and(|f| f.server.hide == [Hide::StreamElements])
+        });
+        // "Chat" hides emote-only messages too; kept sorted.
+        ui.view().update(cx, |this, cx| {
+            this.set_shown(&[Hide::Text, Hide::EmoteOnly], false, cx)
+        });
+        let all = [Hide::StreamElements, Hide::Text, Hide::EmoteOnly];
+        run_until(cx, || ui.saved().is_some_and(|f| f.server.hide == all));
+        assert_eq!(ui.engines().server.hide, all);
+
+        // Back on.
+        ui.view().update(cx, |this, cx| {
+            this.set_shown(&[Hide::StreamElements], true, cx)
+        });
+        let chat = [Hide::Text, Hide::EmoteOnly];
+        run_until(cx, || ui.saved().is_some_and(|f| f.server.hide == chat));
     }
 
     #[gpui_kit::test]

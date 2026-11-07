@@ -6,6 +6,7 @@
 //! when the window opens and removed when the view is released (window
 //! closed).
 
+use chat_core::tiers::{self, Amount, TipSettings};
 use chat_core::{Author, ChatEvent, ChatMessage, ChatPlatform, MessageKind};
 use chat_engine::{EngineHandle, ManualInput, SourceId};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -70,6 +71,13 @@ impl Role {
 
     /// The badge names chat-twitch and chat-youtube produce for this role.
     fn badges(self, platform: ChatPlatform) -> Vec<String> {
+        // A tip page knows no roles.
+        if matches!(
+            platform,
+            ChatPlatform::StreamElements | ChatPlatform::Streamlabs
+        ) {
+            return Vec::new();
+        }
         let youtube = platform == ChatPlatform::YouTube;
         let badge = match self {
             Role::Viewer => return Vec::new(),
@@ -83,13 +91,59 @@ impl Role {
     }
 }
 
-/// The donation tiers the window offers, labelled with where each one
-/// starts on the platform's scale (see `MessageKind::Special`'s `tier`):
-/// tier 1 is the first entry.
-fn tier_steps(platform: ChatPlatform) -> &'static [&'static str] {
+/// The platforms test messages can come from.
+const PLATFORMS: [(ChatPlatform, &str); 4] = [
+    (ChatPlatform::Twitch, "Twitch"),
+    (ChatPlatform::YouTube, "YouTube"),
+    (ChatPlatform::StreamElements, "StreamElements"),
+    (ChatPlatform::Streamlabs, "Streamlabs"),
+];
+
+/// A test donation of `amount` on `platform`, as that platform's source
+/// would send it: (amount as shown, tier, currency). The tier comes from
+/// the amount, on the scale every platform shares (`chat_core::tiers`).
+fn donation(
+    platform: ChatPlatform,
+    amount: Amount,
+    tips: &TipSettings,
+) -> Result<(String, u32, Option<String>), String> {
+    Ok(match platform {
+        ChatPlatform::Twitch => {
+            let bits = amount.as_f64();
+            if bits.fract() != 0.0 {
+                return Err("bits are a whole number".into());
+            }
+            // Whole and at most 1e13 (see `Amount::of`): the cast is exact.
+            let bits = bits as u64;
+            (format!("{bits} bits"), tiers::bits_tier(bits), None)
+        }
+        // In the tip currency if one is set, so amount rules can be tried
+        // with Super Chats too; otherwise in dollars, YouTube's tier unit.
+        ChatPlatform::YouTube => {
+            let currency = tips.currency().unwrap_or("USD").to_owned();
+            let shown = TipSettings {
+                currency: currency.clone(),
+                ..TipSettings::default()
+            }
+            .display(amount);
+            (shown, tiers::youtube_tier(amount), Some(currency))
+        }
+        _ => (
+            tips.display(amount),
+            tips.tier(amount),
+            tips.currency().map(str::to_owned),
+        ),
+    })
+}
+
+/// What the amount is in, next to its field.
+fn unit(platform: ChatPlatform, tips: &TipSettings) -> String {
     match platform {
-        ChatPlatform::YouTube => &["$1+", "$2+", "$5+", "$10+", "$20+", "$50+", "$100+"],
-        _ => &["1+", "100+", "1,000+", "5,000+", "10,000+"],
+        ChatPlatform::Twitch => "bits".into(),
+        ChatPlatform::YouTube => tips.currency().unwrap_or("USD").into(),
+        _ => tips
+            .currency()
+            .map_or("in your tip currency (none set)".into(), str::to_owned),
     }
 }
 
@@ -100,8 +154,9 @@ pub struct ManualWindow {
     platform: ChatPlatform,
     kind: Kind,
     role: Role,
-    /// Donations only: `None` tries a theme's look without a tier.
-    tier: Option<u32>,
+    /// Donations only: the tier from the amount, or none (to try a theme's
+    /// look without a tier, like a YouTube jewel gift's).
+    tiered: bool,
     author: Entity<InputState>,
     text: Entity<InputState>,
     amount: Entity<InputState>,
@@ -127,12 +182,7 @@ impl ManualWindow {
         };
         let author = input("author name", "Tester", window, cx);
         let text = input("message, e.g. !jump", "", window, cx);
-        let amount = input(
-            "amount as shown, e.g. €5.00 or 100 bits",
-            "€5.00",
-            window,
-            cx,
-        );
+        let amount = input("a number, e.g. 5 or 2.50", "5", window, cx);
         let count = input("number of gifts", "5", window, cx);
         let info = input("description, e.g. subscribed for 3 months", "", window, cx);
 
@@ -174,7 +224,7 @@ impl ManualWindow {
             platform: ChatPlatform::Twitch,
             kind: Kind::Message,
             role: Role::Viewer,
-            tier: None,
+            tiered: true,
             author,
             text,
             amount,
@@ -194,10 +244,19 @@ impl ManualWindow {
         let kind = match self.kind {
             Kind::Message if text.is_empty() => return Err("type a message".into()),
             Kind::Message => MessageKind::Text,
-            Kind::Donation => MessageKind::Donation {
-                amount: non_empty(value(&self.amount), "the amount")?,
-                tier: self.tier,
-            },
+            Kind::Donation => {
+                let amount: Amount = value(&self.amount)
+                    .parse()
+                    .map_err(|e| format!("the amount: {e}"))?;
+                let tips = self.engine.settings().borrow().tips.clone();
+                let (shown, tier, currency) = donation(self.platform, amount, &tips)?;
+                MessageKind::Donation {
+                    amount: shown,
+                    tier: self.tiered.then_some(tier),
+                    value: Some(amount.as_f64()),
+                    currency,
+                }
+            }
             Kind::Membership => MessageKind::MembershipJoin {
                 info: non_empty(value(&self.info), "a description")?,
                 months: None,
@@ -304,19 +363,42 @@ impl ManualWindow {
         labelled("Role", group, cx)
     }
 
-    /// Donation tier: none, or one per step of the platform's scale.
+    /// The amount, with what it's in next to it.
+    fn amount_field(&self, cx: &App) -> impl IntoElement + use<> {
+        let tips = self.engine.settings().borrow().tips.clone();
+        let control = h_flex()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .child(Input::new(&self.amount).id("manual-amount")),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(unit(self.platform, &tips)),
+            );
+        labelled("Amount", control, cx)
+    }
+
+    /// Donation tier: from the amount (shown), or none.
     fn tier_field(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let steps = tier_steps(self.platform);
-        let radios = std::iter::once("none")
-            .chain(steps.iter().copied())
-            .enumerate()
-            .map(|(i, label)| Radio::new(i).label(label));
+        let from_amount = match self.compose(cx).map(|m| m.kind) {
+            Ok(MessageKind::Donation {
+                tier: Some(tier), ..
+            }) => {
+                format!("from the amount: tier {tier}")
+            }
+            _ => "from the amount".into(),
+        };
         let tiers = RadioGroup::horizontal("manual-tier")
-            .children(radios)
-            // Index 0 is "none", index n is tier n.
-            .selected_index(Some(self.tier.map_or(0, |t| t as usize)))
+            .child(Radio::new(0).label(from_amount))
+            .child(Radio::new(1).label("none"))
+            .selected_index(Some(if self.tiered { 0 } else { 1 }))
             .on_click(cx.listener(|this, index: &usize, _, cx| {
-                this.tier = (*index > 0).then_some(*index as u32);
+                this.tiered = *index == 0;
                 cx.notify();
             }));
         labelled("Tier", tiers, cx)
@@ -325,24 +407,18 @@ impl ManualWindow {
 
 impl Render for ManualWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let platforms = RadioGroup::horizontal("manual-platform")
-            .selected_index(Some(match self.platform {
-                ChatPlatform::YouTube => 1,
-                _ => 0,
-            }))
+        let platforms = PLATFORMS
+            .into_iter()
+            .enumerate()
+            .fold(
+                RadioGroup::horizontal("manual-platform"),
+                |group, (i, (_, label))| group.child(Radio::new(i).label(label)),
+            )
+            .selected_index(PLATFORMS.iter().position(|(p, _)| *p == self.platform))
             .on_click(cx.listener(|this, index: &usize, _, cx| {
-                this.platform = if *index == 1 {
-                    ChatPlatform::YouTube
-                } else {
-                    ChatPlatform::Twitch
-                };
-                // Twitch has fewer tiers: keep the choice on the new scale.
-                let top = tier_steps(this.platform).len() as u32;
-                this.tier = this.tier.map(|t| t.min(top));
+                this.platform = PLATFORMS[*index].0;
                 cx.notify();
-            }))
-            .child(Radio::new(0).label("Twitch"))
-            .child(Radio::new(1).label("YouTube"));
+            }));
 
         // The group numbers its radios itself (0, 1, …, inside the group's
         // id), which is also how the tests find them.
@@ -367,7 +443,7 @@ impl Render for ManualWindow {
         fields = match self.kind {
             Kind::Message => fields.child(self.field("Message", &self.text, "manual-text", cx)),
             Kind::Donation => fields
-                .child(self.field("Amount", &self.amount, "manual-amount", cx))
+                .child(self.amount_field(cx))
                 .child(self.tier_field(cx))
                 .child(self.field("Message", &self.text, "manual-text", cx)),
             Kind::Membership => fields
@@ -520,6 +596,16 @@ mod tests {
         panic!("timed out");
     }
 
+    /// Replaces the amount (typing would add to the "5" it starts with).
+    fn set_amount(cx: &mut TestAppContext, ui: &Ui, amount: &str) {
+        let view = ui.view.clone();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            let input = view.read(cx).amount.clone();
+            input.update(cx, |input, cx| input.set_value(amount, window, cx));
+        })
+        .unwrap();
+    }
+
     fn pick_kind(window: &mut gpui_kit::Window, kind: Kind, cx: &mut gpui_kit::App) {
         let index = Kind::ALL.iter().position(|k| *k == kind).unwrap();
         window.within("manual-kind").click(index, cx);
@@ -588,42 +674,80 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn tier_follows_the_platforms_scale(cx: &mut TestAppContext) {
+    fn the_tier_follows_the_amount_on_each_platform(cx: &mut TestAppContext) {
         let ui = open(cx);
-        let tier = |cx: &mut TestAppContext| {
+        let donation = |cx: &mut TestAppContext| {
             ui.view.read_with(cx, |view, cx| match view.compose(cx) {
                 Ok(m) => match m.kind {
-                    MessageKind::Donation { tier, .. } => tier,
+                    MessageKind::Donation {
+                        amount,
+                        tier,
+                        value,
+                        currency,
+                    } => (amount, tier, value, currency),
                     other => panic!("expected a donation, got {other:?}"),
                 },
                 Err(e) => panic!("{e}"),
             })
         };
+        let set = |cx: &mut TestAppContext, platform: usize, amount: &str| {
+            set_amount(cx, &ui, amount);
+            cx.update_window(ui.window.into(), |_, window, cx| {
+                window.within("manual-platform").click(platform, cx);
+            })
+            .unwrap();
+        };
         cx.update_window(ui.window.into(), |_, window, cx| {
             pick_kind(window, Kind::Donation, cx);
-            window.within("manual-platform").click(1, cx); // YouTube
         })
         .unwrap();
-        assert_eq!(tier(cx), None, "no tier until one is picked");
+
+        // Twitch: bits, on YouTube's dollar steps × 100.
+        set(cx, 0, "500");
+        assert_eq!(
+            donation(cx),
+            ("500 bits".into(), Some(3), Some(500.0), None)
+        );
+        // YouTube without a tip currency: dollars.
+        set(cx, 1, "100");
+        assert_eq!(
+            donation(cx),
+            ("$100.00".into(), Some(7), Some(100.0), Some("USD".into()))
+        );
+        // StreamElements: the streamer's tiers (here the defaults).
+        set(cx, 2, "69");
+        assert_eq!(donation(cx), ("69".into(), Some(6), Some(69.0), None));
 
         cx.update_window(ui.window.into(), |_, window, cx| {
-            window.within("manual-tier").click(7, cx); // $100+
+            window.within("manual-tier").click(1, cx); // none
         })
         .unwrap();
-        assert_eq!(tier(cx), Some(7));
+        assert_eq!(donation(cx).1, None);
+    }
 
-        // Twitch's scale ends at 5: the choice moves to its top tier.
+    #[gpui_kit::test]
+    fn test_tips_follow_the_tip_settings(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let settings = ui.engine.handle().edit_settings(|s| {
+            s.tips.currency = "EUR".into();
+            // Tier 5 from 69.
+            s.tips.tiers = [3, 6, 9, 69, 100, 420].map(chat_core::tiers::Amount::whole);
+        });
+        ui.runtime.block_on(settings).unwrap();
         cx.update_window(ui.window.into(), |_, window, cx| {
-            window.within("manual-platform").click(0, cx);
+            pick_kind(window, Kind::Donation, cx);
+            window.within("manual-platform").click(2, cx);
         })
         .unwrap();
-        assert_eq!(tier(cx), Some(5));
-
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            window.within("manual-tier").click(0, cx); // none
-        })
-        .unwrap();
-        assert_eq!(tier(cx), None);
+        set_amount(cx, &ui, "69");
+        let kind = ui
+            .view
+            .read_with(cx, |view, cx| view.compose(cx).unwrap().kind);
+        assert!(
+            matches!(&kind, MessageKind::Donation { amount, tier: Some(5), currency: Some(c), .. }
+                if amount == "€69.00" && c == "EUR"),
+            "{kind:?}"
+        );
     }
 
     #[gpui_kit::test]
@@ -654,9 +778,9 @@ mod tests {
             .read_with(cx, |view, _| view.source.clone().unwrap());
         assert!(ui.engine.handle().status().borrow().source(id).is_some());
 
+        set_amount(cx, &ui, "200"); // Twitch: 200 bits, tier 2
         cx.update_window(ui.window.into(), |_, window, cx| {
             pick_kind(window, Kind::Donation, cx);
-            window.within("manual-tier").click(2, cx); // Twitch: 100+ bits
             window.click("manual-text", cx);
             window.input("keep it up", cx);
             window.click("manual-send", cx);
@@ -674,7 +798,7 @@ mod tests {
                 assert_eq!(m.text, "keep it up");
                 assert_eq!(m.author.name, "Tester");
                 assert!(
-                    matches!(m.kind, MessageKind::Donation { amount, tier: Some(2) } if amount == "€5.00")
+                    matches!(m.kind, MessageKind::Donation { amount, tier: Some(2), .. } if amount == "200 bits")
                 );
             }
             other => panic!("expected the donation, got {other:?}"),

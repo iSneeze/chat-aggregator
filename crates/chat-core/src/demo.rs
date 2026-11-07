@@ -106,17 +106,21 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
             MessageKind::Donation {
                 amount: "€5.00".into(),
                 tier: Some(3),
+                value: Some(5.0),
+                currency: Some("EUR".into()),
             },
         ),
         msg(
             4,
             Twitch,
             twitch("Eve", "#ff8906", &["subscriber"]),
-            "Cheer100 take my bits",
+            "Cheer500 take my bits",
             vec![],
             MessageKind::Donation {
-                amount: "100 bits".into(),
-                tier: Some(2),
+                amount: "500 bits".into(),
+                tier: Some(3),
+                value: Some(500.0),
+                currency: None,
             },
         ),
         msg(
@@ -130,6 +134,8 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
                 amount: Some("€2.00".into()),
                 info: Some("Super Sticker: cat doing a little dance".into()),
                 tier: Some(2),
+                value: Some(2.0),
+                currency: Some("EUR".into()),
             },
         ),
         msg(

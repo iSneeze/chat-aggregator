@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy policy
 
-_Effective 2026-11-04._
+_Effective 2026-11-07._
 
 chat-aggregator is a program that runs **on your own computer**. It has no
 servers, no user accounts and no analytics. The developers never receive
@@ -54,6 +54,18 @@ picture link and badges. To show Picarto's own emotes and emoji names, the
 program also downloads the script of Picarto's website once each time a
 Picarto chat starts, and reads the emote lists from it.
 
+From StreamElements, only if you add it as a source, with the Overlay Token
+you enter: your channel's activity feed. That feed also carries your
+platforms' own events (follows, subscriptions, Super Chats); chat-aggregator
+keeps only the tips from it: each tipper's name, profile picture link,
+amount and message.
+
+From Streamlabs, only if you add it as a source, with the Socket API Token
+you enter: your account's live events. Streamlabs also sends your alert
+and tip page settings, your donation totals and your platforms' own events
+(follows, subscriptions, Super Chats) on that connection; chat-aggregator
+keeps only the tips: each tipper's name, amount, currency and message.
+
 ## What is stored, where, and for how long
 
 - **Your YouTube login** (a refresh token) is stored in your operating
@@ -65,6 +77,14 @@ Picarto chat starts, and reads the emote lists from it.
   (in the Reactions window), is kept the same way as the YouTube login
   (credential store, or a private file without one) until you remove it
   there. It is never written to the settings file.
+- **Your StreamElements Overlay Token**, if you add StreamElements as a
+  source, is kept the same way, under your StreamElements Account ID, until
+  you remove that source (which deletes it). It is never written to the
+  settings file; the Account ID is.
+- **Your Streamlabs Socket API Token**, if you add Streamlabs as a source,
+  is kept the same way, under the name you gave that account in the app,
+  until you remove that source (which deletes it). It is never written to
+  the settings file; the name is.
 - **Your settings** (for example your Google project's client id and
   secret, an optional API key, channel names, overlay theme, a copy of your
   custom emoji list) are stored in chat-aggregator's settings folder on your
@@ -103,13 +123,16 @@ Picarto chat starts, and reads the emote lists from it.
 - Apart from chat reactions (below), the program connects only to the
   platforms themselves: Google/YouTube (for
   login, chat, chatters' profile pictures and, through YouTube's chat page,
-  channel emoji), Twitch (for chat) and Picarto (for chat, channel info and
-  the emote lists in its website's script). It
+  channel emoji), Twitch (for chat), Picarto (for chat, channel info and
+  the emote lists in its website's script), StreamElements (for tips,
+  with your Overlay Token) and Streamlabs (for tips, with your Socket API
+  Token). It
   downloads each YouTube profile picture shown in the overlay once from
   YouTube's image server and hands it to your streaming software itself.
   Emote and gift images in the overlay are loaded from Twitch's,
   YouTube's and Picarto's image servers by your streaming software, and so
-  are Picarto chatters' profile pictures.
+  are Picarto chatters' and StreamElements tippers' profile pictures (from
+  StreamElements' image server).
 - **Chat reactions** (only if you set up rules for them): chat-aggregator
   connects to the programs your rules name, at the address you enter (on
   your own computer unless you enter another one): Warudo, OBS. It sends
@@ -124,6 +147,13 @@ Picarto chat starts, and reads the emote lists from it.
 - Log out in chat-aggregator (**Log out** in the app's YouTube section,
   `--youtube-logout` in the command-line version): this deletes the stored
   login from your computer.
+- Remove the StreamElements source in chat-aggregator: this deletes the
+  stored Overlay Token from your computer. To make a token useless
+  everywhere, create a new one on the StreamElements dashboard.
+- Remove a Streamlabs source in chat-aggregator: this deletes its stored
+  Socket API Token from your computer. To make a token useless everywhere,
+  generate a new one on the Streamlabs dashboard (Settings → API Settings →
+  API Tokens).
 - Revoke chat-aggregator's access at any time in your Google Account, under
   third-party connections:
   [myaccount.google.com/connections](https://myaccount.google.com/connections).

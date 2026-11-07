@@ -14,6 +14,8 @@ or bots, can receive the same chat as a live JSON feed.
 
 - One chat for all platforms, with emotes, badges, donations, subs and
   memberships.
+- Tips through StreamElements or Streamlabs show up in the same chat, like
+  Super Chats (several Streamlabs accounts too, say one per persona).
 - Moderation carries over: messages deleted on a platform disappear from the
   overlay too.
 - Fully stylable with your own HTML template and CSS.

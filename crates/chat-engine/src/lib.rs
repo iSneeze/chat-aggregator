@@ -34,15 +34,18 @@ mod factory;
 mod reactions;
 mod settings;
 mod status;
+mod streamelements;
+mod streamlabs;
+mod tokens;
 mod youtube;
 
 pub use chat_core::secrets::SecretStore;
 pub use chat_reactions::{
-    Action, DEFAULT_OBS_URL, DEFAULT_WARUDO_URL, Guards, MAX_EFFECT_SECS, MAX_QUEUE_SECS,
+    Action, Compare, DEFAULT_OBS_URL, DEFAULT_WARUDO_URL, Guards, MAX_EFFECT_SECS, MAX_QUEUE_SECS,
     OBS_PASSWORD, ObsSettings, OutputState, OutputStatus, ReactionSettings, ReactionStatus, Role,
     Rule, RuleStatus, Target, Trigger, WarudoSettings,
 };
-pub use chat_server::{ANSWER_TIMEOUT, Builtin, Newest, Stagger, ThemeSource};
+pub use chat_server::{ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource};
 pub use config::{SetupError, SourceConfig, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, Settings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
@@ -84,7 +87,8 @@ pub struct EngineConfig {
     /// your file and its comments alone, and tests).
     pub save_to: Option<PathBuf>,
     /// Where secrets other than the YouTube login are read from (the OBS
-    /// password, `OBS_PASSWORD`). `None`: nowhere (tests).
+    /// password, `OBS_PASSWORD`; the tip services' tokens). `None`: nowhere
+    /// (tests).
     pub secrets: Option<SecretStore>,
 }
 
@@ -105,7 +109,8 @@ pub struct EngineHandle {
     runtime: tokio::runtime::Handle,
     /// To the chat reactions: tests, nudges (`reactions.rs`).
     reactions: mpsc::Sender<ReactionRequest>,
-    /// Where the OBS password goes (`EngineConfig::secrets`).
+    /// Where the OBS password and the tip services' tokens go
+    /// (`EngineConfig::secrets`).
     secrets: Option<SecretStore>,
 }
 
@@ -128,9 +133,14 @@ impl EngineHandle {
         self.call(Command::AddManual).await
     }
 
-    /// Stops and forgets a source.
+    /// Stops and forgets a source, and any secret only it used (a tip
+    /// service's token).
     pub async fn remove_source(&self, id: SourceId) -> anyhow::Result<()> {
-        self.call(|reply| Command::Remove(id, reply)).await
+        let removed = self.call(|reply| Command::Remove(id, reply)).await?;
+        if let Some(config) = removed {
+            self.forget_secrets_of(id, &config).await;
+        }
+        Ok(())
     }
 
     /// Starts a stopped (or failed, or finished) source.
@@ -243,6 +253,8 @@ impl Engine {
         let factory = Production::new(
             config.settings.youtube.clone(),
             config.emoji_cache_dir.clone(),
+            config.secrets.clone(),
+            config.settings.tips.clone(),
         );
         Self::start_with(config, factory).await
     }
@@ -271,6 +283,7 @@ impl Engine {
         let (stagger_tx, stagger_rx) = watch::channel(server.stagger());
         let (api_tx, api_rx) = watch::channel(server.api);
         let (newest_tx, newest_rx) = watch::channel(server.newest);
+        let (hide_tx, hide_rx) = watch::channel(server.hide.clone());
         let origins = Arc::new(ApiOrigins::new(
             server.api_origins.clone(),
             config.ask_api_origins,
@@ -279,6 +292,7 @@ impl Engine {
         // The reactor reads the rules; the actor changes them (`Controls`)
         // and shows the reactor's report in the status.
         let (reactions_tx, reactions_rx) = watch::channel(config.settings.reactions.clone());
+        let (tips_tx, tips_rx) = watch::channel(config.settings.tips.clone());
         let (reaction_status_tx, reaction_status_rx) = watch::channel(Default::default());
         let state = ServerState {
             hub: hub.clone(),
@@ -287,6 +301,7 @@ impl Engine {
             stagger: stagger_rx,
             api: api_rx,
             newest: newest_rx,
+            hide: hide_rx,
             themes_dir: config.themes_dir.clone(),
             connections: connections.clone(),
             origins: origins.clone(),
@@ -298,8 +313,10 @@ impl Engine {
             stagger: stagger_tx,
             api: api_tx,
             newest: newest_tx,
+            hide: hide_tx,
             origins,
             reactions: reactions_tx,
+            tips: tips_tx,
             themes_dir: config.themes_dir,
         });
 
@@ -337,6 +354,7 @@ impl Engine {
         tasks.spawn(chat_reactions::run(
             hub.clone(),
             reactions_rx,
+            tips_rx,
             reaction_status_tx,
             config.secrets.clone(),
             reaction_requests_rx,
@@ -388,7 +406,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chat_core::{Activity, ChatEvent, ChatSource, Reporter};
+    use chat_core::{Activity, ChatEvent, ChatPlatform, ChatSource, MessageKind, Reporter};
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -623,6 +641,83 @@ mod tests {
             .await;
         assert!(duplicate.is_err());
         assert_eq!(handle.settings().borrow().reactions.rules.len(), 1);
+        engine.shutdown().await;
+    }
+
+    /// An amount rule counts a Super Chat only in the tip currency, and a
+    /// new currency set while running reaches the reactor for the next
+    /// message.
+    #[tokio::test]
+    async fn a_new_tip_currency_reaches_amount_rules() {
+        use futures_util::StreamExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (got_tx, mut got) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(frame)) = ws.next().await {
+                if let Ok(text) = frame.into_text() {
+                    let _ = got_tx.send(text.to_string());
+                }
+            }
+        });
+        let mut settings = local();
+        settings.reactions.warudo.url = url;
+        settings.reactions.rules.push(Rule {
+            name: "nice".into(),
+            enabled: true,
+            trigger: Trigger::PaidAmount {
+                amount: chat_core::tiers::Amount::whole(69),
+                compare: Compare::Exactly,
+            },
+            guards: Guards::default(),
+            action: Action::Warudo {
+                action: "nice".into(),
+            },
+        });
+        let engine = Engine::start(EngineConfig {
+            settings,
+            ..EngineConfig::default()
+        })
+        .await
+        .unwrap();
+        let handle = engine.handle();
+        wait_for(&handle, |s| {
+            s.reactions
+                .outputs
+                .first()
+                .is_some_and(|o| Health::from(&o.state) == Health::Ok)
+        })
+        .await;
+        let (_id, input) = handle.add_manual_source().await.unwrap();
+        let super_chat = |id: &str| {
+            let mut msg = chat_core::demo::sample_messages(0).remove(0);
+            msg.id = id.into();
+            msg.platform = ChatPlatform::YouTube;
+            msg.kind = MessageKind::Donation {
+                amount: "€69.00".into(),
+                tier: Some(6),
+                value: Some(69.0),
+                currency: Some("EUR".into()),
+            };
+            ChatEvent::Message(msg)
+        };
+
+        // No tip currency yet: a Super Chat's euros aren't compared.
+        input.send(super_chat("manual-1")).await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(300), got.recv())
+                .await
+                .is_err()
+        );
+        handle
+            .edit_settings(|s| s.tips.currency = "EUR".into())
+            .await
+            .unwrap();
+        input.send(super_chat("manual-2")).await.unwrap();
+        let sent = timeout(WAIT, got.recv()).await.unwrap().unwrap();
+        assert_eq!(sent, r#"{"action":"nice"}"#);
         engine.shutdown().await;
     }
 

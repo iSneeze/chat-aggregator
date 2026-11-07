@@ -15,6 +15,8 @@ display.
  Twitch (IRC) ──┐
  YouTube (gRPC)─┤                          ┌─ SSE /events ──────→ overlay page in OBS
  Picarto (WS) ──┤                          │
+ StreamElements ┤                          │
+ Streamlabs ────┤                          │
  Demo ──────────┼─→ forwarder ─→  Hub  ────┼─ WebSocket /api/v1/ws → games, bots
  Test window ───┘   (counts)     (fan-out  │
                                   + history)└─ reactor (rules) ───→ Warudo, OBS (WebSocket)
@@ -44,6 +46,8 @@ chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ─�
                          ├─→ chat-twitch ─────────────────→ chat-core
                          ├─→ chat-youtube ────────────────→ chat-core
                          ├─→ chat-picarto ────────────────→ chat-core
+                         ├─→ chat-streamelements ─────────→ chat-core
+                         ├─→ chat-streamlabs ─────────────→ chat-core
                          └─→ chat-reactions ──────────────→ chat-core
 ```
 
@@ -58,6 +62,8 @@ chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ─�
 | `chat-app`     | the desktop app (GPUI): windows, settings, login, test messages |
 | `chat-rplay`   | placeholder for a future source |
 | `chat-picarto` | Picarto chat over the website's WebSocket (anonymous, read-only), its emotes, converted to `ChatEvent`s |
+| `chat-streamelements` | tips through StreamElements (its Astro event gateway, with the streamer's Overlay Token), converted to donation `ChatEvent`s |
+| `chat-streamlabs` | tips through Streamlabs (its Socket API, socket.io 2 by hand, with the account's Socket API Token), converted to donation `ChatEvent`s |
 | `chat-reactions` | chat reactions: rules (trigger, guards, cooldowns) and outputs to other programs (Warudo, OBS) |
 
 Why so many crates? Each one has one job and only knows what it must.
@@ -111,7 +117,7 @@ ChatEvent
 ├── ClearUser { platform, user_id }
 └── ClearAll { platform }
 
-MessageKind: Text | EmoteOnly | Donation { amount, tier } | Special { image_url, amount, info, tier }
+MessageKind: Text | EmoteOnly | Donation { amount, tier, value, currency } | Special { image_url, amount, info, tier, value, currency }
            | MembershipJoin { info, months } | MembershipGift { count } | SystemNotice { info }
 ```
 
@@ -122,12 +128,23 @@ generated from the types (`docs/schema/chat-event.json`, checked by a test),
 and only additive changes are allowed within `v1`. Missing values are
 `null` rather than omitted, so typed languages get a stable shape.
 
-Amounts stay display strings (`"€5.00"`, `"100 bits"`): platforms format
-them in the viewer's currency, and the overlay only shows them. How *big*
-an amount is comes as a `tier` on the platform's own scale instead: YouTube
-reports one with every Super Chat (so no exchange rates on our side), and
-Twitch bits are sorted into Twitch's cheer steps. Themes colour paid
-messages by it.
+Amounts are display strings (`"€5.00"`, `"500 bits"`), as platforms
+format them, plus the number (`value`) and its `currency`. Nothing is ever
+converted (decided 2026-11-07: rates drift, and a $50 Super Chat arriving
+as €49 must not miss a "50+" rule). How *big* an amount is comes as a
+`tier` from 1 to 7 on **one scale for every platform**, YouTube's Super
+Chat tiers (`chat_core::tiers`): YouTube reports its tier with every Super
+Chat, in every currency; bits use YouTube's dollar steps × 100; tips start
+where the streamer says (`[tips]`, in their tip page's currency; a
+Streamlabs tip in another currency is tier 1, its worth unknown). Themes
+colour paid messages by it, and reaction rules compare it.
+
+```text
+tier        1       2      3      4        5        6        7
+YouTube     $1+     $2+    $5+    $10+     $20+     $50+     $100+
+Twitch      1+      200+   500+   1,000+   2,000+   5,000+   10,000+ bits
+tips        <2      2+     5+     10+      20+      50+      100+   (default)
+```
 
 ## Sources
 
@@ -240,6 +257,51 @@ Picarto; only the configured channel's own streamer gets the
 `broadcaster` badge. Tips, subscriptions and raids aren't converted yet:
 none has been captured.
 
+**StreamElements** is not a chat but a tipping service: every message is a
+donation. The source connects to Astro, StreamElements' documented event
+gateway (a plain WebSocket with JSON), and subscribes to the channel's
+activity feed with the streamer's **Overlay Token**. That token may not
+read Astro's tips topic, but tips arrive in the activity feed too; the
+stronger JWT is never needed. The feed also relays the platforms' own
+events (Super Chats, bits, subs), which the platform sources show already,
+so the source keeps only `type: "tip"`: an allow-list, so nothing
+StreamElements adds later can appear twice. Tips emulated from the
+dashboard are kept too (they're how streamers rehearse alerts and
+reactions). Amounts come without a currency, in the one the streamer set
+for their tip page: the streamer's tip settings (`TipSettings`: currency,
+tier starts) say both, read from a `watch` channel for every tip, so a
+change in Settings applies to the next tip without a reconnect (the source
+factory holds the sender, `SourceFactory::set_tips`). The token lives in the secret
+store under the account id, never in `config.toml`:
+`EngineHandle::add_streamelements_source` stores it and adds the source,
+the factory reads it at every start (a missing one is a `SetupError`), and
+removing the last source of that account deletes it. A refused token is a
+`TokenRefused` and waits for the user. Like Picarto, it reconnects by
+itself; 75 s without a frame (Astro pings every 30 s) is a dead
+connection.
+
+**Streamlabs** is a tipping service too. Its Socket API is socket.io 2
+(Engine.IO 3), which no Rust crate speaks anymore, so the little it takes
+is done by hand on a plain WebSocket: the token goes in the address, the
+open packet says how often to ping, and the *client* pings (`2`, answered
+by `3`; without pings Streamlabs drops the connection). Events come as
+`42["event",{…}]`. The socket carries much more than tips (alert box and
+tip page settings, totals, the platforms' relayed events): the source keeps
+only `type: "donation"` from the tip page (`for: "streamlabs"`, or none).
+Test donations from the dashboard (`isTest`) count like real ones; the
+alert box editor's previews (`isPreview`, a fake alert every ~18 s while
+it's open) never do. Unlike StreamElements, Streamlabs reports each tip's
+currency: tiers come from the same `TipSettings`, but a tip in another
+currency than the tip currency gets tier 1 (nothing is converted). A
+streamer can have several accounts (a VTuber with a corporate and an indie
+persona), and the token doesn't say whose account it is, so each source has
+a **label** the streamer picks: the token lives in the secret store under
+it (`EngineHandle::add_streamlabs_source`; the shared token handling for
+both tip services is in chat-engine's `tokens.rs`). A wrong token is
+answered with `44"Authentication error"` and the connection stays open: the
+source turns it into its `TokenRefused` and waits for the user. The server
+speaks only TLS 1.2, hence rustls' `tls12` feature.
+
 **Demo** sends sample messages of every kind, for styling themes without a
 live chat. **Manual** is fed by the app's test window; it exists exactly as
 long as that window (see below).
@@ -323,7 +385,7 @@ every field is an `Arc` or a small handle around one).
   is never delayed, and it removes matching messages still waiting. The API
   and the history replay are never paced.
 - **Runtime settings** (theme, pacing, JSON API on/off, default chat
-  direction) are `tokio::sync::watch` channels: one value, readable any
+  direction, what overlays hide) are `tokio::sync::watch` channels: one value, readable any
   time, plus a notification when it changes. A theme change makes every
   overlay stream send a `reload` event; switching the API off closes the
   connected clients. The engine sets them when the settings change (see
@@ -334,6 +396,16 @@ every field is an `Arc` or a small handle around one).
   with `column-reverse` (the page order stays oldest-first, so inserting and
   trimming don't change) and pins the view to the newest message after every
   insert, with the browser's scroll anchoring switched off.
+- **What an overlay shows** (`hide.rs`): the settings' `hide` list
+  (platforms and kinds of message, by their API names) or the overlay
+  URL's `?hide=`, which wins. Filtered in `/events` before the pacer and in
+  the history replay, so a hidden message takes no pacing slot and doesn't
+  crowd the replay; moderation always passes. Only the overlay: the JSON
+  API and the reactions are the hub's other readers and see everything.
+  The app's list is read from its `watch` channel for every message, so a
+  change applies without a reload. Both `match`es from platform and kind to
+  a name are exhaustive: a new platform or kind doesn't compile until it
+  has a name.
 - **A theme per browser source**: `?theme=<name>` in the overlay URL pins
   that overlay to a theme from the themes folder or a built-in one,
   whatever the app's theme. The page links `/themes/<name>/overlay.css`
@@ -371,8 +443,11 @@ checked in this order:
 1. **Trigger**: which messages. A command (`!bonk` as the first word), a
    keyword (whole words, any case), an emote (a real one, as the platform
    marked it, not the code typed as text), a paid message (of a minimum
-   tier: tiers, not amounts, since amounts are display strings in the
-   viewer's currency), a membership, or gifts (a minimum count).
+   tier, picked from a list in the app; or of an amount, at least or
+   exactly, compared in whole cents as `Amount`), a membership, or gifts
+   (a minimum count). Amount rules compare `value` as it is: bits as bits,
+   money only in the tip currency (a ¥69 Super Chat isn't $69), so the
+   reactor watches the tip settings too.
 2. **Guards**: who and how often. A minimum role, platforms, a cooldown
    for the rule and one per chatter. A struct, not a list of guards: each
    exists once, and "all must pass" needs no rules about duplicates.

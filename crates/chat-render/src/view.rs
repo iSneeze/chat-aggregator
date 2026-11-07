@@ -75,7 +75,7 @@ impl<'a> MessageView<'a> {
         match &msg.kind {
             MessageKind::Text => {}
             MessageKind::EmoteOnly => view.kind = "emote-only",
-            MessageKind::Donation { amount, tier } => {
+            MessageKind::Donation { amount, tier, .. } => {
                 view.kind = "donation";
                 view.paid = true;
                 view.amount = Some(amount);
@@ -86,6 +86,7 @@ impl<'a> MessageView<'a> {
                 amount,
                 info,
                 tier,
+                ..
             } => {
                 view.kind = "special";
                 view.paid = true;

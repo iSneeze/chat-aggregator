@@ -29,6 +29,13 @@ api = false
 # or "top" (it grows downward). An overlay URL ending in ?newest=top or
 # ?newest=bottom overrides this for that browser source.
 newest = "bottom"
+# What the overlay leaves out (chat reactions and the JSON API still get
+# it): platforms "twitch", "youtube", "picarto", "streamelements",
+# "streamlabs", and kinds of message "text", "emote_only", "donation", "special" (stickers, gifts),
+# "membership", "gift" (gifted subs), "notice" (raids, announcements). An
+# overlay URL ending in ?hide=streamelements,notice overrides this for that
+# browser source (?hide= alone shows everything there).
+# hide = ["streamelements"]
 
 [youtube]
 # Your own Google project's OAuth client, see
@@ -48,6 +55,22 @@ learn_emojis = true
 # The desktop app's look: "system" (follows light/dark mode), "light",
 # "dark" or "high-contrast". Headless mode ignores this.
 appearance = "system"
+
+# Tips (StreamElements, Streamlabs). Nothing is ever converted between
+# currencies.
+[tips]
+# Your tip page's currency, as 3 letters: StreamElements tips show in it
+# ("€10.00"), and amount rules count Super Chats and Streamlabs tips in it.
+# A Streamlabs tip in another currency gets tier 1. Without it,
+# StreamElements tips show as plain numbers and amount rules ignore Super
+# Chats and Streamlabs tips.
+# currency = "EUR"
+# Paid messages get a tier from 1 to 7, on one scale for every platform:
+# YouTube's Super Chat tiers ($1+, $2+, $5+, $10+, $20+, $50+, $100+);
+# Twitch bits count 100 per dollar (200+ bits is tier 2, …, 10,000+ tier
+# 7). Tips' tiers 2 to 7 start at these amounts, in your currency (below the
+# first is tier 1); by default YouTube's steps:
+tiers = [2, 5, 10, 20, 50, 100]
 
 # Chat reactions: chat makes things happen in other programs. Each rule has
 # a trigger (which messages), optional guards (who, how often) and an
@@ -83,13 +106,16 @@ queue_secs = 0
 #   { type = "command", command = "!bonk" }   first word of a message, any case
 #   { type = "keyword", keyword = "hype" }    a word or phrase anywhere, any case
 #   { type = "emote", emote = "Kappa" }       a real emote (exact case)
-#   { type = "paid" }                         bits, Super Chats, Super Stickers;
-#   { type = "paid", min_tier = 4 }           ... of at least this tier
+#   { type = "paid" }                         bits, Super Chats, Super Stickers, tips;
+#   { type = "paid", min_tier = 4 }           ... of at least this tier (1 to 7, see [tips])
+#   { type = "paid_amount", amount = 50 }     ... of at least this amount: tips and
+#       Super Chats in your tip currency (no conversion), Twitch in bits
+#   { type = "paid_amount", amount = 69, compare = "exactly" }   ... of just this amount
 #   { type = "membership" }                   new subscriber/member, resub
 #   { type = "gift", min_count = 5 }          gifted subs/memberships
 # Guards (all optional):
 #   min_role = "everyone" | "subscriber" (= "member") | "vip" | "moderator" | "broadcaster"
-#   platforms = ["twitch", "youtube", "picarto"]   (default: all)
+#   platforms = ["twitch", "youtube", "picarto", "streamelements", "streamlabs"]   (default: all)
 #   cooldown_secs = 10        the rule rests this long after firing
 #   user_cooldown_secs = 60   ... and this long for the chatter who fired it
 # Actions (names exactly as in OBS):
@@ -114,6 +140,12 @@ queue_secs = 0
 # trigger = { type = "paid", min_tier = 4 }
 # guards = { cooldown_secs = 60 }
 # action = { target = "obs_filter", source = "Mic", filter = "Chipmunk", seconds = 30 }
+#
+# [[reactions.rules]]
+# name = "nice"
+# trigger = { type = "paid_amount", amount = 69, compare = "exactly" }
+# guards = { platforms = ["streamelements"] }
+# action = { target = "obs_media", source = "Nice" }
 
 # One [[sources]] block per chat to read. Add `enabled = false` to keep a
 # source listed in the app but switched off.
@@ -135,6 +167,24 @@ queue_secs = 0
 # [[sources]]
 # type = "picarto"
 # channel = "your_channel"
+
+# Tips through StreamElements. The Account ID and the Overlay Token are on
+# the StreamElements dashboard (your avatar, top right → your channel). The
+# token is a secret: it goes into the system keyring, not this file (run
+# with --streamelements-token <account id> once to store it).
+# [[sources]]
+# type = "streamelements"
+# account = "0123456789abcdef01234567"
+
+# Tips through Streamlabs, one source per account, each under a name of
+# your own ("Main", or one per persona). The Socket API Token is on the
+# Streamlabs dashboard (Settings → API Settings → API Tokens → Your Socket
+# API Token). It's a secret: it goes into the system keyring under that
+# name, not this file (run with --streamlabs-token <name> once to store
+# it).
+# [[sources]]
+# type = "streamlabs"
+# label = "Main"
 
 # Sample messages of every kind, for trying out themes:
 [[sources]]

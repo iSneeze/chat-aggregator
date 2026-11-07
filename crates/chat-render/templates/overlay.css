@@ -5,11 +5,13 @@
  * at the top of message.html; every message is an <article class="msg">
  * with modifier classes:
  *   .msg--twitch / .msg--youtube / .msg--picarto    platform
+ *   / .msg--streamelements / .msg--streamlabs
  *   .msg--text / --emote-only / --donation / --special
  *   .msg--membership / --gift / --notice            kind
  *   .msg--paid                                      donation or special
- *   .msg--tier-1, -2, …                             the amount's tier on its
- *                                                   platform (see message.html)
+ *   .msg--tier-1 … -7                               the amount's tier, one
+ *                                                   scale for all platforms
+ *                                                   (see message.html)
  *   .msg--deleted                                   removed by a moderator
  */
 
@@ -31,6 +33,8 @@
   --twitch: #9146ff;
   --youtube: #ff0033;
   --picarto: #35a775;
+  --streamelements: #5c7cfa;
+  --streamlabs: #31c3a2;
   --paid: #f5b700;
   --membership: #2cb67d;
   --notice: #3da9fc;
@@ -87,6 +91,8 @@ body {
 .msg--twitch  { --platform-color: var(--twitch); }
 .msg--youtube { --platform-color: var(--youtube); }
 .msg--picarto { --platform-color: var(--picarto); }
+.msg--streamelements { --platform-color: var(--streamelements); }
+.msg--streamlabs { --platform-color: var(--streamlabs); }
 
 /* New messages slide in from below; with the newest at the top
    (?newest=top), from above. */

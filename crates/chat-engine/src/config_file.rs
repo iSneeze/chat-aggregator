@@ -14,10 +14,11 @@ use std::time::Duration;
 use anyhow::Context;
 use chat_core::fs::write_private;
 use chat_core::secrets::SecretStore;
+use chat_core::tiers::TipSettings;
 use chat_reactions::ReactionSettings;
 
 use crate::config::{SourceConfig, YouTubeSettings};
-use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Newest, Stagger, ThemeSource};
+use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Hide, Newest, Stagger, ThemeSource};
 
 /// A commented starting point, written by `run --init-config`.
 pub const TEMPLATE: &str = include_str!("../config.example.toml");
@@ -31,6 +32,9 @@ pub struct ConfigFile {
     pub server: ServerSettings,
     pub youtube: YouTubeSettings,
     pub app: AppSettings,
+    /// Only written when changed from the defaults.
+    #[serde(skip_serializing_if = "TipSettings::is_default")]
+    pub tips: TipSettings,
     /// Before the sources: a `[reactions]` table written after the
     /// `[[sources]]` blocks would read as part of the last one.
     pub reactions: ReactionSettings,
@@ -46,6 +50,7 @@ pub struct Settings {
     pub server: ServerSettings,
     pub youtube: YouTubeSettings,
     pub app: AppSettings,
+    pub tips: TipSettings,
     pub reactions: ReactionSettings,
 }
 
@@ -126,6 +131,11 @@ pub struct ServerSettings {
     /// Which end of the overlay new messages appear at, unless the overlay
     /// URL says otherwise (`?newest=top`).
     pub newest: Newest,
+    /// Platforms and kinds of message the overlay leaves out, e.g.
+    /// `["streamelements", "notice"]`, unless the overlay URL says otherwise
+    /// (`?hide=…`). The JSON API and chat reactions still get them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<Hide>,
 }
 
 impl Default for ServerSettings {
@@ -139,6 +149,7 @@ impl Default for ServerSettings {
             api: false,
             api_origins: Vec::new(),
             newest: Newest::Bottom,
+            hide: Vec::new(),
         }
     }
 }
@@ -197,6 +208,7 @@ impl ConfigFile {
         let file: Self = toml::from_str(text)?;
         // What serde can't see: a rule that could never fire (an empty
         // command, two rules with one name). An error too, like a typo.
+        file.tips.check().map_err(anyhow::Error::msg)?;
         file.reactions.check().map_err(anyhow::Error::msg)?;
         Ok(file)
     }
@@ -229,6 +241,7 @@ impl ConfigFile {
                 server: self.server,
                 youtube: self.youtube,
                 app: self.app,
+                tips: self.tips,
                 reactions: self.reactions,
             },
             sources: self.sources,
@@ -254,6 +267,7 @@ fn is_not_found(e: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chat_core::tiers::Amount;
 
     #[test]
     fn full_file_parses() {
@@ -268,6 +282,7 @@ mod tests {
             api = true
             api_origins = ["https://game.example"]
             newest = "top"
+            hide = ["streamelements", "notice"]
 
             [youtube]
             client_id = "id"
@@ -333,6 +348,7 @@ mod tests {
         assert!(server.api);
         assert_eq!(server.api_origins, ["https://game.example"]);
         assert_eq!(server.newest, Newest::Top);
+        assert_eq!(server.hide, [Hide::StreamElements, Hide::Notice]);
         assert_eq!(server.history, 5);
         assert_eq!(engine.settings.app.appearance, Appearance::HighContrast);
         let reactions = &engine.settings.reactions;
@@ -408,6 +424,10 @@ mod tests {
 
         let err = ConfigFile::parse("[[sources]]\ntype = \"twich\"").unwrap_err();
         assert!(format!("{err:#}").contains("twich"), "{err:#}");
+        // Unlike in an overlay URL, an unknown name to hide is an error here:
+        // the app can say so.
+        let err = ConfigFile::parse("[server]\nhide = [\"stremelements\"]").unwrap_err();
+        assert!(format!("{err:#}").contains("stremelements"), "{err:#}");
 
         // Inside a source and in [youtube] too: a typo must not silently
         // change what gets watched.
@@ -450,7 +470,46 @@ mod tests {
         assert_eq!(file.app, AppSettings::default());
         assert_eq!(file.server, ServerSettings::default());
         assert_eq!(file.youtube, YouTubeSettings::default());
+        assert_eq!(file.tips, TipSettings::default());
         assert_eq!(file.reactions, ReactionSettings::default());
+    }
+
+    #[test]
+    fn tip_settings_parse_and_are_checked() {
+        let file =
+            ConfigFile::parse("[tips]\ncurrency = \"EUR\"\ntiers = [3, 6, 9, 69, 100, 420.5]")
+                .unwrap();
+        assert_eq!(file.tips.currency(), Some("EUR"));
+        assert_eq!(file.tips.tier(Amount::whole(69)), 5);
+        assert_eq!(file.tips.tiers[5], Amount::of(420.5).unwrap());
+        for bad in [
+            "[tips]\ncurrency = \"euro\"",
+            "[tips]\ntiers = [2, 5, 10, 20, 50]",
+            "[tips]\ntiers = [2, 5, 10, 9, 50, 100]",
+            "[tips]\ntiers = [2, 5, 10, 20, 50, -1]",
+        ] {
+            assert!(ConfigFile::parse(bad).is_err(), "{bad}");
+        }
+        // A tier no platform reaches: refused, naming the rule.
+        let err = ConfigFile::parse(
+            "[[reactions.rules]]\nname = \"big\"\n\
+             trigger = { type = \"paid\", min_tier = 20 }\n\
+             action = { target = \"warudo\", action = \"x\" }",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("\"big\""), "{err:#}");
+    }
+
+    #[test]
+    fn default_tip_settings_stay_out_of_the_file() {
+        let mut file = ConfigFile::default();
+        let text = toml::to_string_pretty(&file).unwrap();
+        assert!(!text.contains("[tips]"), "{text}");
+        file.tips.currency = "EUR".into();
+        let text = toml::to_string_pretty(&file).unwrap();
+        // Written as typed: whole amounts without ".0".
+        assert!(text.contains("tiers = [\n    2,"), "{text}");
+        assert_eq!(ConfigFile::parse(&text).unwrap(), file);
     }
 
     #[test]

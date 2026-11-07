@@ -29,6 +29,7 @@ mod appearance;
 mod emoji_import;
 mod logging;
 mod manual_window;
+mod paid;
 mod reactions_window;
 mod settings_window;
 mod startup_error;

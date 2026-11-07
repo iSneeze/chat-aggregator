@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use chat_core::tiers::{Amount, TOP_TIER};
 use chat_core::{ChatMessage, ChatPlatform, MessageKind};
 use tokio::time::Instant;
 
@@ -56,12 +57,22 @@ pub enum Trigger {
     /// (exact case: Twitch tells emotes apart by it). Only real emotes
     /// count, as the platform marked them, not the code typed as text.
     Emote { emote: String },
-    /// A paid message (bits, Super Chat, Super Sticker), of at least this
-    /// tier if given (see `MessageKind::Donation`'s `tier`; scales differ
-    /// per platform, so a tier usually goes with a platform guard).
+    /// A paid message (bits, Super Chat, Super Sticker, tip), of at least
+    /// this tier if given: 1 to 7, on the scale every platform shares (see
+    /// `chat_core::tiers`), picked from a list in the app.
     Paid {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         min_tier: Option<u32>,
+    },
+    /// A paid message of this amount, compared as a number in the
+    /// platform's unit (`MessageKind::Donation`'s `value`): bits on Twitch,
+    /// money otherwise. Nothing is converted: money counts only in the tip
+    /// currency (`[tips]`), so a ¥69 Super Chat doesn't play the $69 clip.
+    /// A rule for tips alone adds a platform guard.
+    PaidAmount {
+        amount: Amount,
+        #[serde(default)]
+        compare: Compare,
     },
     /// A new subscriber or member, a resub or a milestone.
     Membership,
@@ -74,6 +85,17 @@ pub enum Trigger {
 
 fn one() -> usize {
     1
+}
+
+/// How [`Trigger::PaidAmount`] compares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Compare {
+    /// The amount or more ("50+", as tiers count: a 50 tip is in).
+    #[default]
+    AtLeast,
+    /// Just this amount, to the cent: 69 and 69.00, not 69.50.
+    Exactly,
 }
 
 /// Who may fire a rule, and how often. A struct rather than a list of
@@ -234,6 +256,15 @@ impl Rule {
                 return Err("the emote is empty");
             }
             Trigger::Gift { min_count: 0 } => return Err("min_count starts at 1"),
+            // A tier no platform reaches would never fire, silently.
+            Trigger::Paid {
+                min_tier: Some(tier),
+            } if !(1..=TOP_TIER).contains(tier) => {
+                return Err("min_tier is a tier from 1 to 7 (pick it from the list in the app)");
+            }
+            Trigger::PaidAmount { amount, .. } if *amount == Amount::default() => {
+                return Err("the amount starts above 0");
+            }
             _ => {}
         }
         let empty = |name: &str| name.trim().is_empty();
@@ -263,7 +294,9 @@ impl Rule {
 }
 
 impl Trigger {
-    pub fn matches(&self, msg: &ChatMessage) -> bool {
+    /// `tip_currency`: the streamer's tip currency (`[tips]`), for amount
+    /// rules; `None` if not set.
+    pub fn matches(&self, msg: &ChatMessage, tip_currency: Option<&str>) -> bool {
         match self {
             Trigger::Command { command } => msg
                 .text
@@ -277,6 +310,31 @@ impl Trigger {
                     // Without a minimum any paid message counts; with one, a
                     // message without a tier (the platform has none) doesn't.
                     min_tier.is_none_or(|min| tier.is_some_and(|tier| tier >= min))
+                }
+                _ => false,
+            },
+            Trigger::PaidAmount { amount, compare } => match &msg.kind {
+                MessageKind::Donation {
+                    value, currency, ..
+                }
+                | MessageKind::Special {
+                    value, currency, ..
+                } => {
+                    let comparable = match currency {
+                        Some(code) => Some(code.as_str()) == tip_currency,
+                        // No currency: bits, and tips while none is set,
+                        // count as they are. YouTube's jewels don't: a
+                        // jewel is worth about a cent.
+                        None => msg.platform != ChatPlatform::YouTube,
+                    };
+                    // Compared in whole cents (`Amount`), so "exactly"
+                    // doesn't trip over floating-point dust.
+                    let value = value.and_then(Amount::of);
+                    comparable
+                        && value.is_some_and(|value| match compare {
+                            Compare::AtLeast => value >= *amount,
+                            Compare::Exactly => value == *amount,
+                        })
                 }
                 _ => false,
             },
@@ -318,6 +376,9 @@ pub(crate) struct Fire {
 pub(crate) struct Rules {
     rules: Vec<Rule>,
     paused: bool,
+    /// The streamer's tip currency, for amount rules (see
+    /// [`Trigger::PaidAmount`]); kept up to date by the reactor.
+    pub(crate) tip_currency: Option<String>,
     /// By rule name, so it survives edits of the rules.
     state: HashMap<String, RuleState>,
 }
@@ -341,6 +402,7 @@ impl Rules {
         let mut rules = Self {
             rules: Vec::new(),
             paused: false,
+            tip_currency: None,
             state: HashMap::new(),
         };
         rules.update(settings);
@@ -370,7 +432,9 @@ impl Rules {
         // borrows all of `self`.)
         for rule in &self.rules {
             // Cheap and timeless first; cooldowns last.
-            if !rule.enabled || !rule.trigger.matches(msg) || !rule.guards.admit(msg.platform, role)
+            if !rule.enabled
+                || !rule.trigger.matches(msg, self.tip_currency.as_deref())
+                || !rule.guards.admit(msg.platform, role)
             {
                 continue;
             }
@@ -508,11 +572,14 @@ pub(crate) mod tests {
     #[test]
     fn commands_are_the_first_word_in_any_case() {
         let bonk = command("!bonk");
-        assert!(bonk.matches(&message("!bonk")));
-        assert!(bonk.matches(&message("  !BONK the streamer")));
-        assert!(!bonk.matches(&message("lol !bonk")), "not the first word");
-        assert!(!bonk.matches(&message("!bonkers")));
-        assert!(!bonk.matches(&message("")));
+        assert!(bonk.matches(&message("!bonk"), None));
+        assert!(bonk.matches(&message("  !BONK the streamer"), None));
+        assert!(
+            !bonk.matches(&message("lol !bonk"), None),
+            "not the first word"
+        );
+        assert!(!bonk.matches(&message("!bonkers"), None));
+        assert!(!bonk.matches(&message(""), None));
     }
 
     #[test]
@@ -520,21 +587,24 @@ pub(crate) mod tests {
         let hype = Trigger::Keyword {
             keyword: "hype".into(),
         };
-        assert!(hype.matches(&message("HYPE!")));
-        assert!(hype.matches(&message("so much hype in here")));
-        assert!(hype.matches(&message("hyperion hype")), "the second one");
-        assert!(!hype.matches(&message("hyperion")));
-        assert!(!hype.matches(&message("unhyped")));
+        assert!(hype.matches(&message("HYPE!"), None));
+        assert!(hype.matches(&message("so much hype in here"), None));
+        assert!(
+            hype.matches(&message("hyperion hype"), None),
+            "the second one"
+        );
+        assert!(!hype.matches(&message("hyperion"), None));
+        assert!(!hype.matches(&message("unhyped"), None));
 
         let phrase = Trigger::Keyword {
             keyword: "good night".into(),
         };
-        assert!(phrase.matches(&message("Good night, chat")));
-        assert!(!phrase.matches(&message("good nightmare")));
+        assert!(phrase.matches(&message("Good night, chat"), None));
+        assert!(!phrase.matches(&message("good nightmare"), None));
         let unicode = Trigger::Keyword {
             keyword: "größe".into(),
         };
-        assert!(unicode.matches(&message("GRÖSSE? nein: Größe!")));
+        assert!(unicode.matches(&message("GRÖSSE? nein: Größe!"), None));
     }
 
     #[test]
@@ -543,13 +613,16 @@ pub(crate) mod tests {
             emote: ":_hypeWave:".into(),
         };
         let typed = message("look :_hypeWave:");
-        assert!(!trigger.matches(&typed), "typed as text, not an emote");
+        assert!(
+            !trigger.matches(&typed, None),
+            "typed as text, not an emote"
+        );
         let mut real = typed;
         real.emotes.push(EmoteRef {
             code: ":_hypeWave:".into(),
             url: "https://example.com/e.png".into(),
         });
-        assert!(trigger.matches(&real));
+        assert!(trigger.matches(&real, None));
     }
 
     #[test]
@@ -558,6 +631,8 @@ pub(crate) mod tests {
             kind(MessageKind::Donation {
                 amount: "€5.00".into(),
                 tier,
+                value: Some(5.0),
+                currency: Some("EUR".into()),
             })
         };
         let sticker = kind(MessageKind::Special {
@@ -565,17 +640,74 @@ pub(crate) mod tests {
             amount: Some("€2.00".into()),
             info: None,
             tier: Some(2),
+            value: Some(2.0),
+            currency: Some("EUR".into()),
         });
         let any = Trigger::Paid { min_tier: None };
         let big = Trigger::Paid { min_tier: Some(4) };
-        assert!(any.matches(&donation(None)));
-        assert!(any.matches(&sticker));
-        assert!(!any.matches(&message("free")));
-        assert!(big.matches(&donation(Some(4))));
-        assert!(big.matches(&donation(Some(7))));
-        assert!(!big.matches(&donation(Some(3))));
-        assert!(!big.matches(&donation(None)), "no tier, no match");
-        assert!(!big.matches(&sticker));
+        assert!(any.matches(&donation(None), None));
+        assert!(any.matches(&sticker, None));
+        assert!(!any.matches(&message("free"), None));
+        assert!(big.matches(&donation(Some(4)), None));
+        assert!(big.matches(&donation(Some(7)), None));
+        assert!(!big.matches(&donation(Some(3)), None));
+        assert!(!big.matches(&donation(None), None), "no tier, no match");
+        assert!(!big.matches(&sticker, None));
+    }
+
+    /// A paid message on `platform` of `value`, in `currency`.
+    fn paid(platform: ChatPlatform, value: f64, currency: Option<&str>) -> ChatMessage {
+        let mut msg = kind(MessageKind::Donation {
+            amount: value.to_string(),
+            tier: None,
+            value: Some(value),
+            currency: currency.map(str::to_owned),
+        });
+        msg.platform = platform;
+        msg
+    }
+
+    fn amount(amount: f64, compare: Compare) -> Trigger {
+        Trigger::PaidAmount {
+            amount: Amount::of(amount).unwrap(),
+            compare,
+        }
+    }
+
+    #[test]
+    fn paid_messages_by_amount() {
+        use ChatPlatform::{StreamElements, Twitch};
+        let nice = amount(69.0, Compare::Exactly);
+        let eur = Some("EUR");
+        // Exactly: to the cent.
+        assert!(nice.matches(&paid(StreamElements, 69.0, eur), eur));
+        assert!(!nice.matches(&paid(StreamElements, 69.5, eur), eur));
+        assert!(!nice.matches(&paid(StreamElements, 70.0, eur), eur));
+        // Tips while no currency is set count as they are.
+        assert!(nice.matches(&paid(StreamElements, 69.0, None), None));
+        // Bits are counted, not converted.
+        assert!(nice.matches(&paid(Twitch, 69.0, None), eur));
+        // At least: the amount itself is in.
+        let fifty = amount(50.0, Compare::AtLeast);
+        assert!(fifty.matches(&paid(StreamElements, 50.0, eur), eur));
+        assert!(fifty.matches(&paid(StreamElements, 420.0, eur), eur));
+        assert!(!fifty.matches(&paid(StreamElements, 49.99, eur), eur));
+        assert!(!fifty.matches(&message("50"), eur), "free chat");
+    }
+
+    #[test]
+    fn amounts_in_another_currency_never_match() {
+        let nice = amount(69.0, Compare::Exactly);
+        let eur = Some("EUR");
+        let super_chat = |currency| paid(ChatPlatform::YouTube, 69.0, Some(currency));
+        assert!(nice.matches(&super_chat("EUR"), eur));
+        assert!(!nice.matches(&super_chat("JPY"), eur), "¥69 isn't €69");
+        assert!(
+            !nice.matches(&super_chat("EUR"), None),
+            "no tip currency set"
+        );
+        // Jewels have no currency, but aren't money either.
+        assert!(!nice.matches(&paid(ChatPlatform::YouTube, 69.0, None), eur));
     }
 
     #[test]
@@ -585,12 +717,12 @@ pub(crate) mod tests {
             months: None,
         });
         let gift = |count| kind(MessageKind::MembershipGift { count });
-        assert!(Trigger::Membership.matches(&join));
-        assert!(!Trigger::Membership.matches(&gift(1)));
+        assert!(Trigger::Membership.matches(&join, None));
+        assert!(!Trigger::Membership.matches(&gift(1), None));
         let five = Trigger::Gift { min_count: 5 };
-        assert!(five.matches(&gift(5)));
-        assert!(!five.matches(&gift(4)));
-        assert!(!five.matches(&join));
+        assert!(five.matches(&gift(5), None));
+        assert!(!five.matches(&gift(4), None));
+        assert!(!five.matches(&join, None));
     }
 
     #[test]

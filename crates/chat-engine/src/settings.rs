@@ -12,8 +12,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chat_core::Hub;
+use chat_core::tiers::TipSettings;
 use chat_reactions::ReactionSettings;
-use chat_server::{ApiOrigins, Newest, Stagger, ThemeSource};
+use chat_server::{ApiOrigins, Hide, Newest, Stagger, ThemeSource};
 use tokio::sync::watch;
 
 use crate::config_file::Settings;
@@ -27,10 +28,14 @@ pub(crate) struct Controls {
     pub(crate) stagger: watch::Sender<Stagger>,
     pub(crate) api: watch::Sender<bool>,
     pub(crate) newest: watch::Sender<Newest>,
+    pub(crate) hide: watch::Sender<Vec<Hide>>,
     pub(crate) origins: Arc<ApiOrigins>,
     /// The chat reactions' rules and outputs: the reactor applies a change
     /// right away (and reconnects an output whose address changed).
     pub(crate) reactions: watch::Sender<ReactionSettings>,
+    /// The tip currency, for the reactor's amount rules. (The tip sources
+    /// get theirs from the source factory, see `SourceFactory::set_tips`.)
+    pub(crate) tips: watch::Sender<TipSettings>,
     /// Where theme names in the settings are looked up.
     pub(crate) themes_dir: Option<PathBuf>,
 }
@@ -53,6 +58,11 @@ impl Controls {
         if now.api != was.api {
             self.api.send_replace(now.api);
         }
+        // Read by overlays for every message: no reload, the next message
+        // follows it.
+        if now.hide != was.hide {
+            self.hide.send_replace(now.hide.clone());
+        }
         // A removed site's clients are disconnected.
         if now.api_origins != was.api_origins {
             self.origins.set_allowed(now.api_origins.clone());
@@ -72,6 +82,10 @@ impl Controls {
         }
         if new.reactions != old.reactions {
             self.reactions.send_replace(new.reactions.clone());
+        }
+        // Read for the next message: no restart of anything.
+        if new.tips != old.tips {
+            self.tips.send_replace(new.tips.clone());
         }
         // (A new port only applies at the next start: the server keeps its
         // socket until then.)
@@ -96,7 +110,9 @@ mod tests {
         stagger: watch::Receiver<Stagger>,
         api: watch::Receiver<bool>,
         newest: watch::Receiver<Newest>,
+        hide: watch::Receiver<Vec<Hide>>,
         reactions: watch::Receiver<ReactionSettings>,
+        tips: watch::Receiver<TipSettings>,
     }
 
     fn controls() -> (Controls, Server) {
@@ -104,15 +120,19 @@ mod tests {
         let (stagger, stagger_rx) = watch::channel(Stagger::default());
         let (api, api_rx) = watch::channel(false);
         let (newest, newest_rx) = watch::channel(Newest::Bottom);
+        let (hide, hide_rx) = watch::channel(Vec::new());
         let (reactions, reactions_rx) = watch::channel(ReactionSettings::default());
+        let (tips, tips_rx) = watch::channel(TipSettings::default());
         let controls = Controls {
             hub: Arc::new(Hub::new(20)),
             theme,
             stagger,
             api,
             newest,
+            hide,
             origins: Arc::new(ApiOrigins::new([], false)),
             reactions,
+            tips,
             themes_dir: None,
         };
         let server = Server {
@@ -120,7 +140,9 @@ mod tests {
             stagger: stagger_rx,
             api: api_rx,
             newest: newest_rx,
+            hide: hide_rx,
             reactions: reactions_rx,
+            tips: tips_rx,
         };
         (controls, server)
     }
@@ -144,7 +166,34 @@ mod tests {
         assert!(!changed(&server.theme), "no reload for pacing");
         assert!(!changed(&server.api));
         assert!(!changed(&server.newest));
+        assert!(!changed(&server.hide));
         assert!(!changed(&server.reactions));
+        assert!(!changed(&server.tips));
+    }
+
+    #[test]
+    fn new_tip_settings_reach_the_reactor() {
+        let (controls, server) = controls();
+        let old = Settings::default();
+        let mut new = old.clone();
+        new.tips.currency = "EUR".into();
+        assert!(!controls.apply(&old, &new), "no YouTube restart");
+        assert!(changed(&server.tips));
+        assert_eq!(server.tips.borrow().currency(), Some("EUR"));
+        assert!(!changed(&server.reactions));
+        assert!(!changed(&server.theme), "overlays don't reload");
+    }
+
+    #[test]
+    fn what_overlays_hide_applies_without_a_reload() {
+        let (controls, server) = controls();
+        let old = Settings::default();
+        let mut new = old.clone();
+        new.server.hide = vec![Hide::StreamElements];
+        controls.apply(&old, &new);
+        assert!(changed(&server.hide));
+        assert_eq!(*server.hide.borrow(), [Hide::StreamElements]);
+        assert!(!changed(&server.theme), "overlays don't reload");
     }
 
     #[test]

@@ -90,7 +90,9 @@
         "twitch",
         "youtube",
         "rplay",
-        "picarto"
+        "picarto",
+        "streamelements",
+        "streamlabs"
       ],
       "type": "string"
     },
@@ -148,6 +150,13 @@
               "description": "As displayed by the platform: \"€5.00\", \"100 bits\".",
               "type": "string"
             },
+            "currency": {
+              "description": "See [`MessageKind::Special`]'s `currency`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "tier": {
               "description": "See [`MessageKind::Special`]'s `tier`.",
               "format": "uint32",
@@ -160,12 +169,22 @@
             "type": {
               "const": "donation",
               "type": "string"
+            },
+            "value": {
+              "description": "See [`MessageKind::Special`]'s `value`.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
             }
           },
           "required": [
             "type",
             "amount",
-            "tier"
+            "tier",
+            "value",
+            "currency"
           ],
           "type": "object"
         },
@@ -174,6 +193,13 @@
           "properties": {
             "amount": {
               "description": "\"€2.00\", \"10 jewels\"",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "currency": {
+              "description": "The ISO code of `value`'s currency (\"EUR\"): YouTube's is the\nviewer's, a StreamElements tip's the streamer's tip page's (if\nthey set it), a Streamlabs tip's the one Streamlabs reports;\n`null` for bits, jewels or an unknown currency.",
               "type": [
                 "string",
                 "null"
@@ -194,7 +220,7 @@
               ]
             },
             "tier": {
-              "description": "How big the amount is on the platform's own scale, from 1 (the\nsmallest) up; `null` if the platform has none. Scales differ per\nplatform, so compare tiers only within one platform:\n- YouTube Super Chats and Stickers: YouTube's tier (its colour in\n  YouTube's chat: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange,\n  6 magenta, 7 red), whatever the currency.\n- Twitch bits: the cheer tiers, 1 (1+ bits), 2 (100+),\n  3 (1,000+), 4 (5,000+), 5 (10,000+).",
+              "description": "How big the amount is, from 1 (the smallest) to 7, on one scale\nfor every platform (YouTube's Super Chat tiers, see\n`chat_core::tiers`); `null` if the platform has none:\n- YouTube Super Chats and Stickers: YouTube's tier (its colour in\n  YouTube's chat: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange,\n  6 magenta, 7 red), whatever the currency. YouTube's top band\n  may report more than 7.\n- Twitch bits: YouTube's dollar steps × 100: 1 (below 200 bits),\n  2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+), 6 (5,000+),\n  7 (10,000+).\n- StreamElements and Streamlabs tips: from the streamer's own\n  amounts (by default YouTube's steps, in the tip page's\n  currency). A Streamlabs tip in another currency: 1 (its worth\n  is unknown without a conversion).",
               "format": "uint32",
               "minimum": 0,
               "type": [
@@ -205,6 +231,14 @@
             "type": {
               "const": "special",
               "type": "string"
+            },
+            "value": {
+              "description": "The amount as a number, in the platform's unit: bits for Twitch,\njewels for YouTube gifts, otherwise money in `currency` (`5.0`\nfor \"€5.00\"); `null` if unknown.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
             }
           },
           "required": [
@@ -212,7 +246,9 @@
             "image_url",
             "amount",
             "info",
-            "tier"
+            "tier",
+            "value",
+            "currency"
           ],
           "type": "object"
         },

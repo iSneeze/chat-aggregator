@@ -14,7 +14,8 @@
 //!   --config <file>       use this config file
 //!   --init-config [file]  write a commented config file (default location) and exit
 //!
-//! Flags (combine freely; --twitch, --youtube and --picarto may repeat):
+//! Flags (combine freely; --twitch, --youtube, --picarto and --streamlabs may
+//! repeat):
 //!   --demo                sample messages of every kind, including deletions
 //!   --twitch <channel>
 //!   --youtube-own         your own current/next broadcast (the streamer path);
@@ -22,6 +23,10 @@
 //!   --youtube <video_id>  a specific public video (testing path); uses
 //!                         YOUTUBE_API_KEY if set, otherwise the login
 //!   --picarto <channel>   a Picarto channel (its name or a picarto.tv link)
+//!   --streamelements <account id>
+//!                         StreamElements tips (store the token first, see below)
+//!   --streamlabs <name>   Streamlabs tips of the account you named so (store
+//!                         its token first, see below)
 //!   --theme <name|dir>    overlay theme: "minimal" (built in), a folder name in
 //!                         "themes" next to the config file, or a path to any
 //!                         theme folder (like `theme` in the config file)
@@ -40,6 +45,17 @@
 //! OBS WebSocket password for chat reactions (once; kept in the system
 //! keyring, not the config file; an empty answer removes it):
 //!   cargo run -p chat-engine --example run -- --obs-password
+//!
+//! StreamElements Overlay Token (once per account; the Account ID and the
+//! token are on the StreamElements dashboard: your avatar → your channel;
+//! kept in the system keyring; an empty answer removes it):
+//!   cargo run -p chat-engine --example run -- --streamelements-token <account id>
+//!
+//! Streamlabs Socket API Token (once per account, under a name you pick,
+//! like "Main"; the token is on the Streamlabs dashboard: Settings → API
+//! Settings → API Tokens; kept in the system keyring; an empty answer
+//! removes it):
+//!   cargo run -p chat-engine --example run -- --streamlabs-token <name>
 //!
 //! These environment variables override the file's [youtube] settings:
 //!   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET  your OAuth client (docs/youtube-setup.md)
@@ -82,6 +98,18 @@ async fn main() -> anyhow::Result<()> {
     }
     if args.first().map(String::as_str) == Some("--obs-password") {
         return obs_password().await;
+    }
+    if args.first().map(String::as_str) == Some("--streamelements-token") {
+        let account = args
+            .get(1)
+            .context("--streamelements-token needs the Account ID")?;
+        return streamelements_token(account).await;
+    }
+    if args.first().map(String::as_str) == Some("--streamlabs-token") {
+        let label = args
+            .get(1)
+            .context("--streamlabs-token needs a name for the account")?;
+        return streamlabs_token(label).await;
     }
 
     let config = build_config(&args)?;
@@ -211,6 +239,12 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
             "--picarto" => flag_sources.push(SourceConfig::Picarto {
                 channel: next_value(&mut args, "--picarto")?,
             }),
+            "--streamelements" => flag_sources.push(SourceConfig::StreamElements {
+                account: next_value(&mut args, "--streamelements")?,
+            }),
+            "--streamlabs" => flag_sources.push(SourceConfig::Streamlabs {
+                label: next_value(&mut args, "--streamlabs")?,
+            }),
             // A theme name, or a path to any theme folder.
             "--theme" => {
                 let theme = next_value(&mut args, "--theme")?;
@@ -323,6 +357,50 @@ async fn obs_password() -> anyhow::Result<()> {
         println!(
             "stored the OBS password; a running engine uses it at its next connection attempt"
         );
+    }
+    Ok(())
+}
+
+/// Asks for the StreamElements Overlay Token of `account` and keeps it in
+/// the system keyring (where the engine looks for it), or removes it.
+async fn streamelements_token(account: &str) -> anyhow::Result<()> {
+    let account = chat_streamelements::normalize_account(account).map_err(anyhow::Error::msg)?;
+    let name = chat_streamelements::token_secret_name(&account);
+    println!("StreamElements Overlay Token (dashboard: your avatar → your channel).");
+    println!("What you type is visible. Leave it empty to remove a stored one:");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let token = line.trim();
+    if token.is_empty() {
+        SecretStore::System.delete(&name).await?;
+        println!("removed the StreamElements token");
+    } else {
+        SecretStore::System.save(&name, token).await?;
+        println!("stored the StreamElements token; start with --streamelements {account}");
+    }
+    Ok(())
+}
+
+/// Asks for the Streamlabs Socket API Token of the account named `label`
+/// and keeps it in the system keyring (where the engine looks for it), or
+/// removes it.
+async fn streamlabs_token(label: &str) -> anyhow::Result<()> {
+    let label = chat_streamlabs::normalize_label(label).map_err(anyhow::Error::msg)?;
+    let name = chat_streamlabs::token_secret_name(&label);
+    println!(
+        "Streamlabs Socket API Token for \"{label}\" (dashboard: Settings → API Settings → API \
+         Tokens → Your Socket API Token)."
+    );
+    println!("What you type is visible. Leave it empty to remove a stored one:");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let token = line.trim();
+    if token.is_empty() {
+        SecretStore::System.delete(&name).await?;
+        println!("removed the Streamlabs token for \"{label}\"");
+    } else {
+        SecretStore::System.save(&name, token).await?;
+        println!("stored the Streamlabs token; start with --streamlabs \"{label}\"");
     }
     Ok(())
 }

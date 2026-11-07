@@ -6,6 +6,7 @@ pub mod demo;
 pub mod fs;
 pub mod hub;
 pub mod secrets;
+pub mod tiers;
 
 pub use activity::{Activity, Reporter};
 pub use hub::Hub;
@@ -107,6 +108,14 @@ pub enum ChatPlatform {
     YouTube,
     Rplay,
     Picarto,
+    // Tips through StreamElements' tip page: not a chat, every message is a
+    // donation. A plain comment, not a doc comment: with one, the JSON
+    // Schema would describe this value apart from the others (`oneOf`)
+    // instead of keeping one flat list of platforms.
+    StreamElements,
+    // Tips through Streamlabs' tip page: donations only, like
+    // StreamElements.
+    Streamlabs,
 }
 
 impl ChatPlatform {
@@ -117,6 +126,8 @@ impl ChatPlatform {
             ChatPlatform::YouTube => "youtube",
             ChatPlatform::Rplay => "rplay",
             ChatPlatform::Picarto => "picarto",
+            ChatPlatform::StreamElements => "streamelements",
+            ChatPlatform::Streamlabs => "streamlabs",
         }
     }
 }
@@ -153,6 +164,10 @@ pub enum MessageKind {
         amount: String,
         /// See [`MessageKind::Special`]'s `tier`.
         tier: Option<u32>,
+        /// See [`MessageKind::Special`]'s `value`.
+        value: Option<f64>,
+        /// See [`MessageKind::Special`]'s `currency`.
+        currency: Option<String>,
     },
     /// Paid visual items: YouTube Super Stickers and gifts, later maybe
     /// Twitch giant emotes.
@@ -163,15 +178,30 @@ pub enum MessageKind {
         amount: Option<String>,
         /// Name or description of the item, e.g. the sticker's alt text.
         info: Option<String>,
-        /// How big the amount is on the platform's own scale, from 1 (the
-        /// smallest) up; `null` if the platform has none. Scales differ per
-        /// platform, so compare tiers only within one platform:
+        /// How big the amount is, from 1 (the smallest) to 7, on one scale
+        /// for every platform (YouTube's Super Chat tiers, see
+        /// `chat_core::tiers`); `null` if the platform has none:
         /// - YouTube Super Chats and Stickers: YouTube's tier (its colour in
         ///   YouTube's chat: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange,
-        ///   6 magenta, 7 red), whatever the currency.
-        /// - Twitch bits: the cheer tiers, 1 (1+ bits), 2 (100+),
-        ///   3 (1,000+), 4 (5,000+), 5 (10,000+).
+        ///   6 magenta, 7 red), whatever the currency. YouTube's top band
+        ///   may report more than 7.
+        /// - Twitch bits: YouTube's dollar steps × 100: 1 (below 200 bits),
+        ///   2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+), 6 (5,000+),
+        ///   7 (10,000+).
+        /// - StreamElements and Streamlabs tips: from the streamer's own
+        ///   amounts (by default YouTube's steps, in the tip page's
+        ///   currency). A Streamlabs tip in another currency: 1 (its worth
+        ///   is unknown without a conversion).
         tier: Option<u32>,
+        /// The amount as a number, in the platform's unit: bits for Twitch,
+        /// jewels for YouTube gifts, otherwise money in `currency` (`5.0`
+        /// for "€5.00"); `null` if unknown.
+        value: Option<f64>,
+        /// The ISO code of `value`'s currency ("EUR"): YouTube's is the
+        /// viewer's, a StreamElements tip's the streamer's tip page's (if
+        /// they set it), a Streamlabs tip's the one Streamlabs reports;
+        /// `null` for bits, jewels or an unknown currency.
+        currency: Option<String>,
     },
     /// New subscriber/member, resub, membership milestone.
     #[serde(rename = "membership")]
@@ -355,8 +385,10 @@ mod json_contract {
             kind(MessageKind::Donation {
                 amount: "€5.00".into(),
                 tier: Some(3),
+                value: Some(5.0),
+                currency: Some("EUR".into()),
             }),
-            json!({ "type": "donation", "amount": "€5.00", "tier": 3 })
+            json!({ "type": "donation", "amount": "€5.00", "tier": 3, "value": 5.0, "currency": "EUR" })
         );
         assert_eq!(
             kind(MessageKind::Special {
@@ -364,8 +396,10 @@ mod json_contract {
                 amount: Some("€2.00".into()),
                 info: Some("cat".into()),
                 tier: None,
+                value: None,
+                currency: None,
             }),
-            json!({ "type": "special", "image_url": null, "amount": "€2.00", "info": "cat", "tier": null })
+            json!({ "type": "special", "image_url": null, "amount": "€2.00", "info": "cat", "tier": null, "value": null, "currency": null })
         );
         assert_eq!(
             kind(MessageKind::MembershipJoin {
@@ -420,6 +454,12 @@ mod json_contract {
                 platform: ChatPlatform::Picarto,
             }),
             json!({ "type": "clear_all", "platform": "picarto" })
+        );
+        assert_eq!(
+            to_json(&ChatEvent::ClearAll {
+                platform: ChatPlatform::StreamElements,
+            }),
+            json!({ "type": "clear_all", "platform": "streamelements" })
         );
     }
 }

@@ -28,6 +28,7 @@ use chat_core::{ChatEvent, Hub};
 use chat_render::Theme;
 use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, stream};
+use hide::OverlayFilter;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_stream::wrappers::BroadcastStream;
@@ -40,6 +41,7 @@ mod api;
 mod approvals;
 mod avatars;
 mod connections;
+mod hide;
 mod local;
 mod stagger;
 
@@ -49,6 +51,7 @@ pub use approvals::{ANSWER_TIMEOUT, ApiOrigins};
 pub use avatars::Avatars;
 pub use chat_render::{Builtin, ThemeSource};
 pub use connections::Connections;
+pub use hide::{Hide, shown};
 pub use stagger::Stagger;
 
 /// Which end of the overlay the newest message appears at. The app's
@@ -137,6 +140,9 @@ pub struct ServerState {
     /// The default chat direction, written into the overlay page when it
     /// loads (so a change needs an overlay reload).
     pub newest: watch::Receiver<Newest>,
+    /// What overlays leave out, unless their URL says otherwise
+    /// (`?hide=`). Read for every message: a change applies to the next one.
+    pub hide: watch::Receiver<Vec<Hide>>,
     /// The folder of named themes (`themes/` next to `config.toml`), for
     /// overlays that pick their own with `?theme=<name>`. Fixed for the
     /// server's lifetime; `None`: every overlay uses the app's theme.
@@ -154,6 +160,9 @@ pub struct ServerState {
 #[derive(Default, serde::Deserialize)]
 struct OverlayQuery {
     theme: Option<String>,
+    /// What this overlay leaves out, instead of the app's setting: names
+    /// separated by commas (`?hide=streamelements,notice`), see [`Hide`].
+    hide: Option<String>,
 }
 
 /// Which theme an overlay uses.
@@ -409,19 +418,28 @@ async fn events(
     Query(query): Query<OverlayQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let theme = state.load_theme(state.choose_theme(query.theme.as_deref()));
+    let filter = OverlayFilter::new(&state.hide, query.hide.as_deref());
     let (history, rx) = state.hub.subscribe();
 
-    let replay = stream::iter(history.into_iter().map(ChatEvent::Message));
-    let live = BroadcastStream::new(rx).filter_map(|item| async move {
-        match item {
-            Ok(event) => Some(event),
+    // Hidden messages are left out before anything else: they take no
+    // pacing slot, and the replay shows the visible ones it has.
+    let history: Vec<ChatEvent> = history
+        .into_iter()
+        .filter(|msg| filter.shows_message(msg))
+        .map(ChatEvent::Message)
+        .collect();
+    let replay = stream::iter(history);
+    let live = BroadcastStream::new(rx).filter_map(move |item| {
+        let event = match item {
+            Ok(event) => Some(event).filter(|event| filter.shows(event)),
             // This overlay fell more than the broadcast buffer behind: the
             // missed events are gone, carry on with the current ones.
             Err(BroadcastStreamRecvError::Lagged(missed)) => {
                 warn!(missed, "overlay fell behind, skipped events");
                 None
             }
-        }
+        };
+        std::future::ready(event)
     });
     // Live events go through the pacer (its own task per overlay); the
     // replay above doesn't: after a reload the history should appear at once.
@@ -518,6 +536,7 @@ mod tests {
         pub(crate) stagger: watch::Sender<Stagger>,
         pub(crate) api: watch::Sender<bool>,
         pub(crate) newest: watch::Sender<Newest>,
+        pub(crate) hide: watch::Sender<Vec<Hide>>,
         pub(crate) connections: Arc<Connections>,
         pub(crate) origins: Arc<ApiOrigins>,
         pub(crate) avatars: Arc<Avatars>,
@@ -553,6 +572,7 @@ mod tests {
         // On in tests: most of them are about the API.
         let (api_tx, api_rx) = watch::channel(true);
         let (newest_tx, newest_rx) = watch::channel(Newest::default());
+        let (hide_tx, hide_rx) = watch::channel(Vec::new());
         let avatars = Arc::new(Avatars::for_tests());
         let state = ServerState {
             hub: hub.clone(),
@@ -561,6 +581,7 @@ mod tests {
             stagger: stagger_rx,
             api: api_rx,
             newest: newest_rx,
+            hide: hide_rx,
             themes_dir,
             connections: connections.clone(),
             origins: origins.clone(),
@@ -576,6 +597,7 @@ mod tests {
             stagger: stagger_tx,
             api: api_tx,
             newest: newest_tx,
+            hide: hide_tx,
             connections,
             origins,
             avatars,
@@ -655,6 +677,73 @@ mod tests {
         read_until(&mut resp, &mut seen, r#"data-id="new""#).await;
         assert!(seen.contains("event: delete"), "{seen}");
         assert!(seen.contains(r#""message_id":"old""#), "{seen}");
+    }
+
+    /// A StreamElements tip: hidden by `streamelements` and by `donation`.
+    fn tip(id: &str) -> ChatEvent {
+        let ChatEvent::Message(mut msg) = message(id) else {
+            unreachable!()
+        };
+        msg.platform = ChatPlatform::StreamElements;
+        msg.kind = MessageKind::Donation {
+            amount: "10".into(),
+            tier: Some(4),
+            value: None,
+            currency: None,
+        };
+        ChatEvent::Message(msg)
+    }
+
+    #[tokio::test]
+    async fn hidden_messages_never_reach_the_overlay() {
+        let server = start(None).await;
+        server.hide.send_replace(vec![Hide::StreamElements]);
+        // In the history...
+        server.hub.publish(tip("old-tip"));
+        server.hub.publish(message("old-chat"));
+
+        let mut resp = reqwest::get(format!("http://{}/events", server.addr))
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"data-id="old-chat""#).await;
+        // ...and live. Messages arrive in order, so once "chat" is here, the
+        // tip before it would have been too.
+        server.hub.publish(tip("tip"));
+        server.hub.publish(message("chat"));
+        read_until(&mut resp, &mut seen, r#"data-id="chat""#).await;
+        assert!(!seen.contains(r#"data-id="old-tip""#), "{seen}");
+        assert!(!seen.contains(r#"data-id="tip""#), "{seen}");
+
+        // The app shows tips again: the next one gets through, no reload.
+        server.hide.send_replace(Vec::new());
+        server.hub.publish(tip("new-tip"));
+        read_until(&mut resp, &mut seen, r#"data-id="new-tip""#).await;
+    }
+
+    #[tokio::test]
+    async fn an_overlay_url_hides_its_own_choice() {
+        let server = start(None).await;
+        // The app hides nothing; this overlay hides donations.
+        let mut resp = reqwest::get(format!("http://{}/events?hide=donation", server.addr))
+            .await
+            .unwrap();
+        eventually(|| server.connections.overlays() == 1).await;
+        server.hub.publish(tip("tip"));
+        server.hub.publish(message("chat"));
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"data-id="chat""#).await;
+        assert!(!seen.contains(r#"data-id="tip""#), "{seen}");
+
+        // The app hides tips; an empty `?hide=` still shows everything.
+        server.hide.send_replace(vec![Hide::StreamElements]);
+        let mut resp = reqwest::get(format!("http://{}/events?hide=", server.addr))
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        // Both in the history now.
+        read_until(&mut resp, &mut seen, r#"data-id="chat""#).await;
+        assert!(seen.contains(r#"data-id="tip""#), "{seen}");
     }
 
     #[tokio::test]

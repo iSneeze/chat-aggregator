@@ -73,6 +73,34 @@ With the newest at the top, the chat element gets the class
 from above instead of below (`--msg-enter-offset`). Themes made before this
 option existed work too: the overlay flips the direction itself.
 
+## What the overlay shows
+
+Some messages may be ones you'd rather not repeat in the chat box: tips
+that StreamElements' or Streamlabs' own alert box already shows, Super Chats, raid
+notices. These are left out before they reach the overlay, so a theme
+doesn't have to hide them:
+
+- **In the app:** ⚙ Settings → Overlay, **Platforms shown** and **Messages
+  shown**. A switch turned off keeps that platform or kind of message out
+  of overlays; it applies to new messages right away. Chat reactions and
+  the JSON API still get everything, so a hidden tip still fires its
+  reaction.
+- **Per browser source:** add `?hide=` and the names, separated by commas,
+  to the overlay URL. That wins over the app's setting, so one scene can
+  have a chat box without tips and another one with everything:
+
+```text
+http://127.0.0.1:7878/?hide=streamelements
+http://127.0.0.1:7878/?hide=donation,special,notice&newest=top
+http://127.0.0.1:7878/?hide=        everything, whatever the app hides
+```
+
+The names: platforms `twitch`, `youtube`, `picarto`, `streamelements`,
+`streamlabs`;
+kinds of message `text`, `emote_only`, `donation` (bits, Super Chats,
+tips), `special` (stickers, gifts), `membership`, `gift` (gifted subs),
+`notice` (raids, announcements). Names it doesn't know are skipped.
+
 ## A theme per browser source
 
 Normally every overlay shows the theme picked in the app. To give one OBS
@@ -114,19 +142,27 @@ remove deleted messages.
 
 ## Colours by amount
 
-Paid messages (Super Chats, Super Stickers, bits) get a class for how big
-the amount is: `msg--tier-1`, `msg--tier-2`, … Each platform has its own
-scale, so style the tier together with the platform:
+Paid messages (Super Chats, Super Stickers, bits, tips) get a class for
+how big the amount is: `msg--tier-1` to `msg--tier-7`. It's one scale for
+every platform, YouTube's Super Chat tiers:
 
 | platform | tiers |
 |----------|-------|
-| YouTube | 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange, 6 magenta, 7 red: YouTube's own Super Chat tiers, whatever the currency |
-| Twitch  | bits: 1 (1+), 2 (100+), 3 (1,000+), 4 (5,000+), 5 (10,000+): Twitch's cheer steps |
+| YouTube | YouTube's own tier, whatever the currency: 1 ($1+), 2 ($2+), 3 ($5+), 4 ($10+), 5 ($20+), 6 ($50+), 7 ($100+) |
+| Twitch  | bits, YouTube's dollar steps × 100: 1 (below 200), 2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+), 6 (5,000+), 7 (10,000+) |
+| StreamElements | tips, from the amounts set in ⚙ Settings → Paid messages (by default YouTube's steps) |
+| Streamlabs | the same; a tip in another currency than the one set there is 1 |
+
+The colours can still be each platform's own. YouTube's chat shows its
+tiers as blue, cyan, teal, yellow, orange, magenta and red; Twitch's cheer
+colours are five, so two tiers share some of them:
 
 ```css
 .msg--youtube.msg--tier-1 { --paid-color: #1e88e5; }
 .msg--youtube.msg--tier-4 { --paid-color: #ffca28; }
-.msg--twitch.msg--tier-2  { --paid-color: #9c3ee8; }
+/* Twitch: grey, purple (2, 3), teal (4, 5), blue, red */
+.msg--twitch.msg--tier-2,
+.msg--twitch.msg--tier-3  { --paid-color: #9c3ee8; }
 ```
 
 Messages without a tier (YouTube jewel gifts, the app's test messages)

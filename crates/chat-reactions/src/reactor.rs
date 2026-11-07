@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chat_core::secrets::SecretStore;
+use chat_core::tiers::TipSettings;
 use chat_core::{ChatEvent, ChatMessage, Hub};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -106,6 +107,7 @@ impl OutputStatus {
 
 /// Reacts to what's published in `hub` from now on, with the rules in
 /// `settings` (watched: edits apply right away), and reports to `status`.
+/// `tips`: the streamer's tip settings, for amount rules (watched too).
 /// `secrets`: where the OBS password is (`None`: nowhere). `requests`: the
 /// app's tests and nudges.
 ///
@@ -114,6 +116,7 @@ impl OutputStatus {
 pub async fn run(
     hub: Arc<Hub>,
     mut settings: watch::Receiver<ReactionSettings>,
+    tips: watch::Receiver<TipSettings>,
     status: watch::Sender<ReactionStatus>,
     secrets: Option<SecretStore>,
     mut requests: mpsc::Receiver<ReactionRequest>,
@@ -124,7 +127,7 @@ pub async fn run(
     // again after every restart.
     let (_history, mut events) = hub.subscribe();
     let initial = settings.borrow_and_update().clone();
-    let mut reactor = Reactor::new(initial, status, secrets);
+    let mut reactor = Reactor::new(initial, tips, status, secrets);
     loop {
         tokio::select! {
             event = events.recv() => match event {
@@ -163,9 +166,16 @@ pub async fn run(
     reactor.stop().await;
 }
 
+fn tip_currency(tips: &mut watch::Receiver<TipSettings>) -> Option<String> {
+    tips.borrow_and_update().currency().map(str::to_owned)
+}
+
 struct Reactor {
     rules: Rules,
     settings: ReactionSettings,
+    /// Read when a message arrives rather than in the loop's `select!`:
+    /// only amount rules need it, and only then.
+    tips: watch::Receiver<TipSettings>,
     /// Each running while some enabled rule sends to it.
     warudo: Option<Output<WarudoSettings, warudo::Job>>,
     obs: Option<Output<ObsSettings, obs::Job>>,
@@ -196,6 +206,7 @@ struct Output<S, J> {
 impl Reactor {
     fn new(
         settings: ReactionSettings,
+        tips: watch::Receiver<TipSettings>,
         status: watch::Sender<ReactionStatus>,
         secrets: Option<SecretStore>,
     ) -> Self {
@@ -203,6 +214,7 @@ impl Reactor {
         let mut reactor = Self {
             rules: Rules::new(&settings),
             settings,
+            tips,
             warudo: None,
             obs: None,
             secrets,
@@ -211,6 +223,9 @@ impl Reactor {
             results,
             problems: HashMap::new(),
         };
+        // A fresh receiver counts its first value as seen (`has_changed` is
+        // false), so it's read here once.
+        reactor.rules.tip_currency = tip_currency(&mut reactor.tips);
         reactor.start_outputs();
         reactor.publish();
         reactor
@@ -264,6 +279,11 @@ impl Reactor {
     }
 
     fn react(&mut self, msg: &ChatMessage, now: Instant) {
+        // Copied over only when changed: a new currency set in the app
+        // applies from the next message on.
+        if self.tips.has_changed().unwrap_or(false) {
+            self.rules.tip_currency = tip_currency(&mut self.tips);
+        }
         for fire in self.rules.check(msg, now) {
             // Only the rule's name: chatter names stay out of the log.
             info!(rule = %fire.rule, "reaction fired");
@@ -589,9 +609,11 @@ mod tests {
         let (status_tx, status) = watch::channel(ReactionStatus::default());
         let shutdown = CancellationToken::new();
         let (requests, requests_rx) = mpsc::channel(4);
+        let (_, tips) = watch::channel(TipSettings::default());
         let reactor = run(
             hub.clone(),
             settings_rx,
+            tips,
             status_tx,
             None,
             requests_rx,

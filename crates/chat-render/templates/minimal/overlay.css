@@ -4,6 +4,7 @@
  * of message.html; every message is a <div class="msg"> with modifier
  * classes:
  *   .msg--twitch / .msg--youtube / .msg--picarto    platform
+ *   / .msg--streamelements / .msg--streamlabs
  *   .msg--role-viewer / -member / -moderator / -owner
  *   .msg--text / --emote-only / --donation / --special
  *   .msg--membership / --gift / --notice            kind
@@ -26,6 +27,8 @@
   --twitch: #9146ff;
   --youtube: #ff0033;
   --picarto: #35a775;
+  --streamelements: #5c7cfa;
+  --streamlabs: #31c3a2;
 
   /* names by role (YouTube's chat colours) */
   --name-viewer: #ffffff;
@@ -37,8 +40,8 @@
   --membership: #2ba640;
   --paid: #ffca28; /* donations without a tier */
 
-  /* donation tiers, per platform: YouTube's Super Chat colours, Twitch's
-     cheer colours (1+, 100+, 1,000+, 5,000+, 10,000+ bits) */
+  /* donation colours: YouTube's Super Chat colours by tier (tips use them
+     too), and Twitch's five cheer colours (see the tier rules below) */
   --paid-youtube-1: #1e88e5;
   --paid-youtube-2: #00e5ff;
   --paid-youtube-3: #1de9b6;
@@ -114,6 +117,8 @@ body {
 .msg--twitch .msg__platform  { background: var(--twitch); }
 .msg--youtube .msg__platform { background: var(--youtube); }
 .msg--picarto .msg__platform { background: var(--picarto); }
+.msg--streamelements .msg__platform { background: var(--streamelements); }
+.msg--streamlabs .msg__platform { background: var(--streamlabs); }
 
 .msg__author,
 .msg__colon {
@@ -158,21 +163,36 @@ body {
   height: var(--emote-only-size);
 }
 
-/* donation colours by tier, on each platform's own scale */
-.msg--youtube.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
-.msg--youtube.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
-.msg--youtube.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
-.msg--youtube.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
-.msg--youtube.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
-.msg--youtube.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
+/* donation colours by tier. Tiers are one scale on every platform
+   (YouTube's Super Chat tiers; tips start where the streamer set them), so
+   tips take YouTube's colours */
+.msg--youtube.msg--tier-1, .msg--streamelements.msg--tier-1,
+.msg--streamlabs.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
+.msg--youtube.msg--tier-2, .msg--streamelements.msg--tier-2,
+.msg--streamlabs.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
+.msg--youtube.msg--tier-3, .msg--streamelements.msg--tier-3,
+.msg--streamlabs.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
+.msg--youtube.msg--tier-4, .msg--streamelements.msg--tier-4,
+.msg--streamlabs.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
+.msg--youtube.msg--tier-5, .msg--streamelements.msg--tier-5,
+.msg--streamlabs.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
+.msg--youtube.msg--tier-6, .msg--streamelements.msg--tier-6,
+.msg--streamlabs.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
 /* YouTube's top band may come as more than one number: all of it is red */
 .msg--youtube[class*="msg--tier-"]:not(.msg--tier-1, .msg--tier-2, .msg--tier-3,
   .msg--tier-4, .msg--tier-5, .msg--tier-6) { --paid-color: var(--paid-youtube-7); }
+.msg--streamelements.msg--tier-7,
+.msg--streamlabs.msg--tier-7 { --paid-color: var(--paid-youtube-7); }
+/* Twitch: tiers are YouTube's dollar steps × 100 bits (1: below 200,
+   2: 200+, 3: 500+, 4: 1,000+, 5: 2,000+, 6: 5,000+, 7: 10,000+), coloured
+   by the cheer colour they fall in */
 .msg--twitch.msg--tier-1 { --paid-color: var(--paid-twitch-1); }
-.msg--twitch.msg--tier-2 { --paid-color: var(--paid-twitch-2); }
-.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-3); }
-.msg--twitch.msg--tier-4 { --paid-color: var(--paid-twitch-4); }
-.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-5); }
+.msg--twitch.msg--tier-2,
+.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-2); }
+.msg--twitch.msg--tier-4,
+.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-3); }
+.msg--twitch.msg--tier-6 { --paid-color: var(--paid-twitch-4); }
+.msg--twitch.msg--tier-7 { --paid-color: var(--paid-twitch-5); }
 
 /* ---- moderation ---- */
 

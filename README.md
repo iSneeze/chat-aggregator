@@ -4,7 +4,7 @@
 
 Website and docs: <https://isneeze.github.io/chat-aggregator/>
 
-Aggregates live chat from Twitch, YouTube, Picarto, and Rplay (soon™️) into a single unified
+Aggregates live chat from Twitch, YouTube, Picarto, and Rplay (soon™️), plus StreamElements and Streamlabs tips, into a single unified
 message stream, exposed as a stylable HTML overlay for OBS/browser sources.
 Chat reactions turn chat into actions in other programs: `!bonk` throws an
 item at your model in Warudo, a big Super Chat puts a voice filter on your
@@ -27,6 +27,8 @@ moderation: deletes, bans, clears). How the pieces fit together, and why:
 | `chat-youtube` | YouTube gRPC live chat (`streamList`)       |
 | `chat-rplay`   | rplay — research in progress                |
 | `chat-picarto` | Picarto chat WebSocket (anonymous read)     |
+| `chat-streamelements` | StreamElements tips (Overlay Token)   |
+| `chat-streamlabs`     | Streamlabs tips (Socket API Token)    |
 | `chat-render`  | templates + CSS, emote replacement          |
 | `chat-server`  | HTTP: overlay page, SSE stream, JSON API    |
 | `chat-reactions` | chat reactions: rules, Warudo and OBS outputs |
@@ -187,6 +189,8 @@ from `about.toml`).
 - [x] Twitch IRC source
 - [x] YouTube gRPC source (OAuth login or API key; quota handling)
 - [x] Picarto source (chat, emotes, moderation)
+- [x] StreamElements tips
+- [x] Streamlabs tips (several accounts, by name)
 - [ ] rplay source
 - [x] hub (broadcast + replay history)
 - [x] HTML overlay + themes (SSE)

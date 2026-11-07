@@ -3,7 +3,8 @@
   Everything is HTML-escaped automatically; style it via overlay.css.
 
   Variables:
-    id, platform ("twitch" | "youtube" | "picarto" | "rplay")
+    id, platform ("twitch" | "youtube" | "picarto" | "rplay" | "streamelements"
+                 | "streamlabs")
     kind         "text" | "emote-only" | "donation" | "special"
                  | "membership" | "gift" | "notice"
     paid         true for donation and special
@@ -14,14 +15,22 @@
                    { type: "text",  text }  or
                    { type: "emote", code, url }
     amount       donation, special: "€5.00", "100 bits", "10 jewels"
-    tier         donation, special: how big the amount is on the platform's
-                 own scale, from 1 up, or none. Per platform:
-                   youtube  1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange,
-                            6 magenta, 7 red (YouTube's Super Chat colours)
-                   twitch   bits: 1 (1+), 2 (100+), 3 (1,000+), 4 (5,000+),
-                            5 (10,000+) (Twitch's cheer steps)
-                 so style it together with the platform, e.g.
-                 .msg--youtube.msg--tier-4
+    tier         donation, special: how big the amount is, from 1 to 7, or
+                 none. One scale on every platform, YouTube's Super Chat
+                 tiers:
+                   youtube  YouTube's own tier: 1 blue, 2 cyan, 3 teal,
+                            4 yellow, 5 orange, 6 magenta, 7 red (its top
+                            band may come as more than 7)
+                   twitch   bits, YouTube's dollar steps × 100: 1 (below
+                            200), 2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+),
+                            6 (5,000+), 7 (10,000+)
+                   streamelements, streamlabs  tips, from the streamer's
+                            own amounts (by default 2, 5, 10, 20, 50, 100 for
+                            tiers 2-7); a Streamlabs tip in another currency
+                            than the streamer's is 1
+                 Colours can still differ per platform, e.g.
+                 .msg--youtube.msg--tier-4 in yellow, Twitch's in its cheer
+                 colours
     count        gift: number of gifted subs/memberships
     months       membership: months as a member for a resub or milestone,
                  none for a new subscriber/member

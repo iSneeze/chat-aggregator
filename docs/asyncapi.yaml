@@ -12,8 +12,8 @@ info:
   title: chat-aggregator chat events
   version: 1.0.0
   description: |
-    Live chat from Twitch, YouTube and Picarto, merged into one stream of
-    JSON events.
+    Live chat from Twitch, YouTube and Picarto (and StreamElements and
+    Streamlabs tips), merged into one stream of JSON events.
     Connect a WebSocket and the server pushes one event per text frame.
     Consumers should ignore event and kind types they don't know: new ones
     may be added without a version bump. Renaming or removing anything
@@ -110,13 +110,15 @@ components:
               color: '#ff8906'
               badges: [subscriber]
               avatar_url: null
-            text: Cheer100 take my bits
+            text: Cheer500 take my bits
             emotes: []
             timestamp: '2026-09-25T18:41:02Z'
             kind:
               type: donation
-              amount: 100 bits
-              tier: 2
+              amount: 500 bits
+              tier: 3
+              value: 500
+              currency: null
         - name: delete
           summary: A moderator deleted a message.
           payload:

@@ -1022,6 +1022,8 @@ dependencies = [
  "chat-picarto",
  "chat-reactions",
  "chat-server",
+ "chat-streamelements",
+ "chat-streamlabs",
  "chat-twitch",
  "chat-youtube",
  "directories",
@@ -1122,6 +1124,40 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "chat-streamelements"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chat-core",
+ "futures-util",
+ "jiff",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "webpki-roots 1.0.11",
+]
+
+[[package]]
+name = "chat-streamlabs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chat-core",
+ "futures-util",
+ "jiff",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]

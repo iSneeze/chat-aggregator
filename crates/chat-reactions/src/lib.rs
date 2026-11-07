@@ -24,7 +24,7 @@ mod rules;
 mod warudo;
 
 pub use reactor::{OutputState, OutputStatus, ReactionRequest, ReactionStatus, RuleStatus, run};
-pub use rules::{Action, Guards, MAX_EFFECT_SECS, Role, Rule, Target, Trigger};
+pub use rules::{Action, Compare, Guards, MAX_EFFECT_SECS, Role, Rule, Target, Trigger};
 
 /// Warudo's own default: its "On WebSocket Action" blueprint node listens
 /// here.
@@ -142,6 +142,7 @@ impl ReactionSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chat_core::tiers::Amount;
 
     fn parse(text: &str) -> Result<ReactionSettings, toml::de::Error> {
         toml::from_str(text)
@@ -181,6 +182,17 @@ mod tests {
             name = "airhorn"
             trigger = { type = "command", command = "!horn" }
             action = { target = "obs_media", source = "Airhorn" }
+
+            [[rules]]
+            name = "nice"
+            trigger = { type = "paid_amount", amount = 69, compare = "exactly" }
+            guards = { platforms = ["streamelements"] }
+            action = { target = "obs_media", source = "Nice" }
+
+            [[rules]]
+            name = "big tip"
+            trigger = { type = "paid_amount", amount = 50.5 }
+            action = { target = "obs_media", source = "Wow" }
             "#,
         )
         .unwrap();
@@ -211,6 +223,21 @@ mod tests {
         assert!(!paid.enabled);
         assert_eq!(paid.guards, Guards::default(), "no guards: anyone, anytime");
         assert_eq!(paid.trigger, Trigger::Paid { min_tier: Some(4) });
+        assert_eq!(
+            settings.rules[5].trigger,
+            Trigger::PaidAmount {
+                amount: Amount::whole(69),
+                compare: Compare::Exactly,
+            }
+        );
+        assert_eq!(
+            settings.rules[6].trigger,
+            Trigger::PaidAmount {
+                amount: Amount::of(50.5).unwrap(),
+                compare: Compare::AtLeast,
+            },
+            "at least, unless said otherwise"
+        );
         assert_eq!(settings.obs.url, "ws://127.0.0.1:4456");
         assert_eq!(settings.obs.queue_secs, 10);
         assert_eq!(
@@ -310,6 +337,17 @@ mod tests {
             with(vec![rule("a", Trigger::Emote { emote: "".into() }, "x")]),
             with(vec![rule("a", command("!a"), "")]),
             with(vec![rule("a", Trigger::Gift { min_count: 0 }, "x")]),
+            // A tier no platform reaches (typed as an amount, once).
+            with(vec![rule("a", Trigger::Paid { min_tier: Some(20) }, "x")]),
+            with(vec![rule("a", Trigger::Paid { min_tier: Some(0) }, "x")]),
+            with(vec![rule(
+                "a",
+                Trigger::PaidAmount {
+                    amount: Amount::default(),
+                    compare: Compare::Exactly,
+                },
+                "x",
+            )]),
             with(vec![obs(Action::ObsFilter {
                 source: "Mic".into(),
                 filter: " ".into(),

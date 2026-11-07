@@ -43,7 +43,8 @@ pub(crate) type Reply<T> = oneshot::Sender<anyhow::Result<T>>;
 pub(crate) enum Command {
     /// The `bool`: start it right away.
     Add(SourceConfig, bool, Reply<SourceId>),
-    Remove(SourceId, Reply<()>),
+    /// Answers with the removed source's settings (to forget its secrets).
+    Remove(SourceId, Reply<Option<SourceConfig>>),
     Start(SourceId, Reply<()>),
     Stop(SourceId, Reply<()>),
     Update(SourceId, SourceConfig, Reply<()>),
@@ -312,10 +313,11 @@ impl<F: SourceFactory> Actor<F> {
                 let result = match self.slots.remove(&id) {
                     Some(slot) => {
                         info!(source = %slot.source.label(), "removed");
-                        if slot.source.config().is_some() {
+                        let config = slot.source.config().cloned();
+                        if config.is_some() {
                             self.save();
                         }
-                        Ok(()) // dropping the slot aborts its task
+                        Ok(config) // dropping the slot aborts its task
                     }
                     None => Err(unknown(id)),
                 };
@@ -457,6 +459,7 @@ impl<F: SourceFactory> Actor<F> {
             server,
             youtube,
             app,
+            tips,
             reactions,
         } = self.settings.borrow().clone();
         let sources = self
@@ -475,6 +478,7 @@ impl<F: SourceFactory> Actor<F> {
             server,
             youtube,
             app,
+            tips,
             reactions,
             sources,
         };
@@ -500,12 +504,19 @@ impl<F: SourceFactory> Actor<F> {
         if new == old {
             return Ok(());
         }
+        if new.tips != old.tips {
+            new.tips.check().map_err(|e| anyhow!(e))?;
+        }
         if new.reactions != old.reactions {
             new.reactions.check().map_err(|e| anyhow!(e))?;
         }
         let youtube_changed = self.controls.apply(&old, &new);
         if youtube_changed {
             self.factory.set_youtube(new.youtube.clone());
+        }
+        // The tip sources' copy; the reactor's goes through `controls`.
+        if new.tips != old.tips {
+            self.factory.set_tips(new.tips.clone());
         }
         // Published (and saved) before the caller gets its answer: whoever
         // awaited the change finds it in `settings()` and in the file.

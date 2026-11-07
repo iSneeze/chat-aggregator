@@ -52,15 +52,19 @@ enum NewSource {
     YouTubeOwn,
     YouTubeVideo,
     Picarto,
+    StreamElements,
+    Streamlabs,
     Demo,
 }
 
 impl NewSource {
-    const ALL: [NewSource; 5] = [
+    const ALL: [NewSource; 7] = [
         NewSource::Twitch,
         NewSource::YouTubeOwn,
         NewSource::YouTubeVideo,
         NewSource::Picarto,
+        NewSource::StreamElements,
+        NewSource::Streamlabs,
         NewSource::Demo,
     ];
 
@@ -70,6 +74,8 @@ impl NewSource {
             NewSource::YouTubeOwn => "YouTube (your broadcasts)",
             NewSource::YouTubeVideo => "YouTube (a video)",
             NewSource::Picarto => "Picarto",
+            NewSource::StreamElements => "StreamElements tips",
+            NewSource::Streamlabs => "Streamlabs tips",
             NewSource::Demo => "Demo",
         }
     }
@@ -80,7 +86,29 @@ impl NewSource {
             NewSource::Twitch => Some("channel name"),
             NewSource::YouTubeVideo => Some("video id (the part after watch?v=)"),
             NewSource::Picarto => Some("channel name or picarto.tv link"),
+            NewSource::StreamElements => Some("Account ID (StreamElements: your avatar → channel)"),
+            // Only for the app's list: the token doesn't say whose account
+            // it is, and a streamer may have one per persona.
+            NewSource::Streamlabs => Some("a name for this account, e.g. your username or a label"),
             NewSource::YouTubeOwn | NewSource::Demo => None,
+        }
+    }
+
+    /// Whether this kind needs a secret too (in a second, masked field):
+    /// it goes to the secret store, not into the source's settings. The
+    /// field's placeholder, and what to say when it's left empty.
+    fn needs_token(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            NewSource::StreamElements => Some((
+                "Overlay Token (same page)",
+                "Paste the Overlay Token too (same dashboard page).",
+            )),
+            NewSource::Streamlabs => Some((
+                "Socket API Token",
+                "Paste the Socket API Token too (Streamlabs dashboard: Settings → API Settings → \
+                 API Tokens → Your Socket API Token).",
+            )),
+            _ => None,
         }
     }
 
@@ -93,6 +121,8 @@ impl NewSource {
                 video_id: Some(text),
             },
             NewSource::Picarto => SourceConfig::Picarto { channel: text },
+            NewSource::StreamElements => SourceConfig::StreamElements { account: text },
+            NewSource::Streamlabs => SourceConfig::Streamlabs { label: text },
             NewSource::Demo => SourceConfig::Demo,
         }
     }
@@ -105,6 +135,8 @@ pub struct AppView {
     status: Status,
     new_source: NewSource,
     input: Entity<InputState>,
+    /// The second field, for kinds that need a secret (`needs_token`).
+    token: Entity<InputState>,
     form_error: Option<String>,
     /// Overlay theme folders found in the themes folder.
     themes: Vec<String>,
@@ -165,6 +197,11 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("channel name"));
+        let token = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Overlay Token (same page)")
+                .masked(true)
+        });
         let youtube = cx.new(|cx| YouTubePanel::new(engine.clone(), config.clone(), window, cx));
         let themes = themes::list(&config.read(cx).themes_dir());
         let settings = config.read(cx).settings();
@@ -213,8 +250,14 @@ impl AppView {
                     this.rescan_themes(window, cx);
                 }
             }),
-            // Enter in the text field adds the source.
+            // Enter in the text field adds the source...
             cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.add_source(window, cx);
+                }
+            }),
+            // ...and so does Enter in the token field.
+            cx.subscribe_in(&token, window, |this, _, event: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
                     this.add_source(window, cx);
                 }
@@ -242,6 +285,7 @@ impl AppView {
             status,
             new_source: NewSource::Twitch,
             input,
+            token,
             form_error: None,
             themes,
             theme_select,
@@ -503,14 +547,34 @@ impl AppView {
             cx.notify();
             return;
         }
+        let token = self.token.read(cx).value().trim().to_string();
+        if let Some((_, missing)) = self.new_source.needs_token()
+            && token.is_empty()
+        {
+            self.form_error = Some(missing.into());
+            cx.notify();
+            return;
+        }
         self.form_error = None;
         self.input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.token
+            .update(cx, |input, cx| input.set_value("", window, cx));
 
-        // The engine saves it (and every other change to the sources).
+        // The engine saves it (and every other change to the sources); a
+        // token goes to the secret store first.
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
-            if let Err(e) = engine.add_source(config).await {
+            let added = match &config {
+                SourceConfig::StreamElements { account } => {
+                    engine.add_streamelements_source(account, &token).await
+                }
+                SourceConfig::Streamlabs { label } => {
+                    engine.add_streamlabs_source(label, &token).await
+                }
+                _ => engine.add_source(config).await,
+            };
+            if let Err(e) = added {
                 let message = format!("Couldn't add the source: {e:#}");
                 let _ = this.update_in(cx, |_, window, cx| report(window, cx, message));
             }
@@ -987,6 +1051,11 @@ impl AppView {
                                 input.set_placeholder(placeholder, window, cx)
                             });
                         }
+                        if let Some((placeholder, _)) = kind.needs_token() {
+                            this.token.update(cx, |input, cx| {
+                                input.set_placeholder(placeholder, window, cx)
+                            });
+                        }
                         cx.notify();
                     }))
             }),
@@ -998,6 +1067,13 @@ impl AppView {
                 div()
                     .flex_1()
                     .child(Input::new(&self.input).id("new-source-text")),
+            );
+        }
+        if self.new_source.needs_token().is_some() {
+            row = row.child(
+                div()
+                    .flex_1()
+                    .child(Input::new(&self.token).id("new-source-token")),
             );
         }
         row = row.child(
@@ -1250,17 +1326,82 @@ mod tests {
             // Twitch (selected at start) needs a channel name...
             assert!(window.try_find("new-source-text").is_some());
             // ...Demo needs nothing...
-            window.click(("kind", 4usize), cx);
+            window.click(("kind", 6usize), cx);
             assert!(window.try_find("new-source-text").is_none());
             // ...a YouTube video needs its id...
             window.click(("kind", 2usize), cx);
             assert!(window.try_find("new-source-text").is_some());
-            // ...and Picarto a channel.
-            window.click(("kind", 4usize), cx);
+            // ...Picarto a channel...
+            window.click(("kind", 6usize), cx);
             window.click(("kind", 3usize), cx);
             assert!(window.try_find("new-source-text").is_some());
+            assert!(window.try_find("new-source-token").is_none());
+            // ...and StreamElements an account id and a token...
+            window.click(("kind", 4usize), cx);
+            assert!(window.try_find("new-source-text").is_some());
+            assert!(window.try_find("new-source-token").is_some());
+            // ...as Streamlabs a name and a token.
+            window.click(("kind", 5usize), cx);
+            assert!(window.try_find("new-source-text").is_some());
+            assert!(window.try_find("new-source-token").is_some());
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn streamlabs_needs_a_name_and_a_token(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let error =
+            |cx: &mut TestAppContext| ui.view.read_with(cx, |view, _| view.form_error.clone());
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click(("kind", 5usize), cx);
+            window.click("add", cx);
+        })
+        .unwrap();
+        let problem = error(cx).expect("a name is asked for");
+        assert!(problem.contains("name"), "{problem}");
+
+        // A name, but no token: nothing is added (no source could start).
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("new-source-text", cx);
+            window.input("Corpo", cx);
+            window.click("add", cx);
+        })
+        .unwrap();
+        let problem = error(cx).expect("the token is asked for");
+        assert!(problem.contains("Socket API Token"), "{problem}");
+        assert!(ui.engine.handle().status().borrow().sources.is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn streamelements_needs_an_account_id_and_a_token(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let error =
+            |cx: &mut TestAppContext| ui.view.read_with(cx, |view, _| view.form_error.clone());
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click(("kind", 4usize), cx);
+            window.click("new-source-text", cx);
+            window.input("your_channel", cx);
+            window.click("add", cx);
+        })
+        .unwrap();
+        let problem = error(cx).expect("a malformed account id is refused");
+        assert!(problem.contains("Account ID"), "{problem}");
+
+        // A good id, but no token: nothing is added (no source could start).
+        // The id replaces the refused one (typing would add to it).
+        let view = ui.view.clone();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            let input = view.read(cx).input.clone();
+            input.update(cx, |input, cx| {
+                input.set_value("0123456789abcdef01234567", window, cx)
+            });
+            window.click("add", cx);
+        })
+        .unwrap();
+        let problem = error(cx).expect("the token is asked for");
+        assert!(problem.contains("Overlay Token"), "{problem}");
+        assert!(ui.engine.handle().status().borrow().sources.is_empty());
     }
 
     #[gpui_kit::test]
@@ -1421,7 +1562,7 @@ mod tests {
                 .unwrap_or_default()
         };
         cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click(("kind", 4usize), cx); // Demo
+            window.click(("kind", 6usize), cx); // Demo
             window.click("add", cx);
         })
         .unwrap();

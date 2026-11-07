@@ -33,6 +33,21 @@ pub enum SourceConfig {
     Picarto {
         channel: String,
     },
+    /// Tips through StreamElements. `account` is the channel's "Account ID"
+    /// from the StreamElements dashboard; its Overlay Token is kept in the
+    /// secret store, not here (`EngineHandle::add_streamelements_source`).
+    #[serde(rename = "streamelements")]
+    StreamElements {
+        account: String,
+    },
+    /// Tips through Streamlabs. `label` is the streamer's own name for the
+    /// account ("Main", "Corpo"): a streamer with several personas adds one
+    /// source per account and switches each on or off. Its Socket API Token
+    /// is kept in the secret store under the label, not here
+    /// (`EngineHandle::add_streamlabs_source`).
+    Streamlabs {
+        label: String,
+    },
     /// Sample messages of every kind, for styling and testing.
     Demo,
 }
@@ -48,6 +63,10 @@ impl SourceConfig {
                 Err("the video id is empty".into())
             }
             SourceConfig::Picarto { channel } => chat_picarto::normalize_channel(channel).map(drop),
+            SourceConfig::StreamElements { account } => {
+                chat_streamelements::normalize_account(account).map(drop)
+            }
+            SourceConfig::Streamlabs { label } => chat_streamlabs::normalize_label(label).map(drop),
             SourceConfig::YouTube { .. } | SourceConfig::Demo => Ok(()),
         }
     }
@@ -59,7 +78,31 @@ impl SourceConfig {
             SourceConfig::YouTube { video_id: None } => "YouTube: your channel".into(),
             SourceConfig::YouTube { video_id: Some(id) } => format!("YouTube: video {id}"),
             SourceConfig::Picarto { channel } => format!("Picarto: {channel}"),
+            // The account id means nothing to the streamer: there's usually
+            // just the one.
+            SourceConfig::StreamElements { .. } => "StreamElements tips".into(),
+            SourceConfig::Streamlabs { label } => format!("Streamlabs: {label}"),
             SourceConfig::Demo => "Demo".into(),
+        }
+    }
+
+    /// The name of the secret (a token) this source reads from the secret
+    /// store, if it has one; `None` too for settings that could never have
+    /// stored one (they don't pass `validate`).
+    pub(crate) fn secret_name(&self) -> Option<String> {
+        match self {
+            SourceConfig::StreamElements { account } => {
+                chat_streamelements::normalize_account(account)
+                    .ok()
+                    .map(|account| chat_streamelements::token_secret_name(&account))
+            }
+            SourceConfig::Streamlabs { label } => chat_streamlabs::normalize_label(label)
+                .ok()
+                .map(|label| chat_streamlabs::token_secret_name(&label)),
+            SourceConfig::Twitch { .. }
+            | SourceConfig::YouTube { .. }
+            | SourceConfig::Picarto { .. }
+            | SourceConfig::Demo => None,
         }
     }
 }
@@ -157,6 +200,8 @@ mod tests {
                 { "type": "youtube" },
                 { "type": "youtube", "video_id": "abc123" },
                 { "type": "picarto", "channel": "your_channel" },
+                { "type": "streamelements", "account": "0123456789abcdef01234567" },
+                { "type": "streamlabs", "label": "Corpo" },
                 { "type": "demo" }
             ]
         }))
@@ -173,6 +218,12 @@ mod tests {
                 },
                 SourceConfig::Picarto {
                     channel: "your_channel".into()
+                },
+                SourceConfig::StreamElements {
+                    account: "0123456789abcdef01234567".into()
+                },
+                SourceConfig::Streamlabs {
+                    label: "Corpo".into()
                 },
                 SourceConfig::Demo,
             ]
@@ -216,6 +267,32 @@ mod tests {
             }
             .validate()
             .is_err()
+        );
+        assert!(
+            SourceConfig::StreamElements {
+                account: "0123456789abcdef01234567".into()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            SourceConfig::StreamElements {
+                account: "your_channel".into()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            SourceConfig::Streamlabs {
+                label: "Corpo".into()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            SourceConfig::Streamlabs { label: " ".into() }
+                .validate()
+                .is_err()
         );
     }
 

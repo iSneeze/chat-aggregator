@@ -292,12 +292,16 @@ mod tests {
             MessageKind::Donation {
                 amount: value.into(),
                 tier: Some(4),
+                value: None,
+                currency: None,
             },
             MessageKind::Special {
                 image_url: Some(value.into()),
                 amount: Some(value.into()),
                 info: Some(value.into()),
                 tier: Some(4),
+                value: None,
+                currency: None,
             },
             MessageKind::MembershipJoin {
                 info: value.into(),
@@ -377,6 +381,8 @@ mod tests {
         let donation = line(MessageKind::Donation {
             amount: "€5.00".into(),
             tier: Some(3),
+            value: None,
+            currency: None,
         });
         assert!(
             donation.contains(concat!(
@@ -464,6 +470,8 @@ mod tests {
             MessageKind::Donation {
                 amount: "€5.00".into(),
                 tier: Some(3),
+                value: None,
+                currency: None,
             },
         ));
         assert!(html.contains("msg--donation"), "{html}");
@@ -485,6 +493,8 @@ mod tests {
                 amount: Some("€2.00".into()),
                 info: Some("dancing cat".into()),
                 tier: None,
+                value: None,
+                currency: None,
             },
         ));
         assert!(html.contains("msg--special"), "{html}");

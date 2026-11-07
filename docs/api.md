@@ -1,6 +1,6 @@
 # Chat events API
 
-Live chat from Twitch, YouTube and Picarto, merged into one stream of JSON events,
+Live chat from Twitch, YouTube and Picarto (and StreamElements and Streamlabs tips), merged into one stream of JSON events,
 for programs that want to react to chat: games, bots, sound boards, custom
 overlays.
 
@@ -71,7 +71,7 @@ A chat message or a platform event (donation, sub, raid, ...).
 | field       | meaning |
 |-------------|---------|
 | `id`        | platform message id; `delete` events refer to it |
-| `platform`  | `"twitch"`, `"youtube"`, `"picarto"` (later `"rplay"`) |
+| `platform`  | `"twitch"`, `"youtube"`, `"picarto"`, `"streamelements"`, `"streamlabs"` (tips: every message is a `donation`), later `"rplay"` |
 | `author`    | `id` (platform user id), `name`, `color` (`#rrggbb`, Twitch and Picarto, else `null`), `badges` (e.g. `broadcaster`, `moderator`, `subscriber`, `member`, `vip`), `avatar_url` (YouTube and Picarto, else `null`) |
 | `text`      | what the user typed; **may be empty** (e.g. a raid). Event descriptions are in `kind` |
 | `emotes`    | emotes used in `text`, each listed once; in `text` they appear exactly as `code` |
@@ -84,23 +84,46 @@ A chat message or a platform event (donation, sub, raid, ...).
 |--------------|--------|----------|
 | `text`       | | normal chat |
 | `emote_only` | | only emotes (and spaces) |
-| `donation`   | `amount`, `tier` | Twitch bits, YouTube Super Chat: `"100 bits"`, `"€5.00"` |
-| `special`    | `image_url`, `amount`, `info`, `tier` (each may be `null`) | YouTube Super Sticker (`info` = sticker description), YouTube gift |
+| `donation`   | `amount`, `tier`, `value`, `currency` | Twitch bits, YouTube Super Chat, StreamElements or Streamlabs tip: `"500 bits"`, `"€5.00"`, `"10"` |
+| `special`    | `image_url`, `amount`, `info`, `tier`, `value`, `currency` (each may be `null`) | YouTube Super Sticker (`info` = sticker description), YouTube gift |
 | `membership` | `info`, `months` | new sub/member, resub, milestone; `months` = how long they've been a member (resub, milestone), `null` for a new one |
 | `gift`       | `count` | gifted subs (Twitch) or memberships (YouTube) |
 | `notice`     | `info` | raid, announcement, watch streak, new chatter, … (Twitch events without a kind of their own) |
 
 `amount` is a display string as the platform formats it (currency and all);
-it's meant for showing, not for arithmetic.
+it's meant for showing. StreamElements doesn't send the currency: a tip
+shows in the currency the streamer set in the app (`"€10.00"`), or as a
+plain number (`"10"`, `"2.50"`) if they set none. Streamlabs does: its tips
+show in the currency Streamlabs reports.
 
-`tier` says how big the amount is on the **platform's own scale**, from 1
-(the smallest) up, or `null` where the platform has none (YouTube jewel
-gifts). Compare tiers only within one platform:
+For arithmetic there's `value`, the amount as a number in the platform's
+unit, and `currency`, its ISO code (`null` for none):
+
+| platform | `value` | `currency` |
+|----------|---------|------------|
+| `twitch` | the bits (`500`) | `null` |
+| `youtube` | the Super Chat's or Sticker's amount (`5.0` for €5.00); a gift's jewels | the viewer's currency (`"EUR"`); `null` for jewels |
+| `streamelements` | the tip's amount (`10.0`) | the streamer's tip currency, if they set it |
+| `streamlabs` | the tip's amount (`10.0`) | the currency Streamlabs reports (`"EUR"`) |
+
+Nothing is converted: compare amounts only within one currency (or one
+platform). `value` and `currency` may be `null` (test messages, unknown
+amounts).
+
+`tier` says how big the amount is, from 1 (the smallest) to 7, or `null`
+where there's none (YouTube jewel gifts). **One scale for every platform**,
+YouTube's Super Chat tiers, so "tier 4 or more" means about the same
+everywhere:
 
 | platform | tiers |
 |----------|-------|
-| `youtube` | YouTube's Super Chat/Sticker tier, as YouTube reports it, whatever the currency: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange, 6 magenta, 7 red (its colour in YouTube's chat) |
-| `twitch`  | the cheer tier of the bits: 1 (1–99), 2 (100–999), 3 (1,000–4,999), 4 (5,000–9,999), 5 (10,000 and more) |
+| `youtube` | YouTube's Super Chat/Sticker tier, as YouTube reports it, whatever the currency: 1 ($1+, blue), 2 ($2+, cyan), 3 ($5+, teal), 4 ($10+, yellow), 5 ($20+, orange), 6 ($50+, magenta), 7 ($100+, red). Its top band may report more than 7 |
+| `twitch`  | YouTube's dollar steps × 100 bits: 1 (1–199), 2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+), 6 (5,000+), 7 (10,000+) |
+| `streamelements` | where the streamer set their tiers to start, in their tip currency; by default YouTube's steps: 1 (below 2), 2 (2+), 3 (5+), 4 (10+), 5 (20+), 6 (50+), 7 (100+) |
+| `streamlabs` | the same tiers as `streamelements`; a tip in another currency than the streamer's tip currency is 1 (nothing is converted, so its worth is unknown) |
+
+(Until 2026-11, Twitch bits had their own scale, 1–5 by Twitch's cheer
+colours.)
 
 ### `delete`, `clear_user`, `clear_all`
 

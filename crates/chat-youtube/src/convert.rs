@@ -96,6 +96,8 @@ pub fn convert(
                 // YouTube's own tier (the colour in its chat), already
                 // worked out across currencies: no exchange rates needed.
                 tier: sc.tier,
+                value: money(sc.amount_micros),
+                currency: sc.currency,
             },
             sc.user_comment.unwrap_or_default(),
         ),
@@ -105,6 +107,8 @@ pub fn convert(
                 amount: d.amount_display_string,
                 info: d.super_sticker_metadata.and_then(|m| m.alt_text),
                 tier: d.tier,
+                value: money(d.amount_micros),
+                currency: d.currency,
             },
             String::new(),
         ),
@@ -114,6 +118,8 @@ pub fn convert(
                 amount: gift.jewels_amount.map(|j| format!("{j} jewels")),
                 info: gift.gift_name.or(gift.alt_text),
                 tier: None, // jewel gifts have no tiers
+                value: gift.jewels_amount.map(|j| j as f64),
+                currency: None, // jewels, not money
             },
             String::new(),
         ),
@@ -203,6 +209,12 @@ pub fn convert(
     }))
 }
 
+/// A Super Chat's or Sticker's amount from YouTube's millionths
+/// (`amount_micros`: 2,000,000 for €2.00).
+fn money(micros: Option<u64>) -> Option<f64> {
+    micros.map(|m| m as f64 / 1_000_000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,9 +274,10 @@ mod tests {
                 displayed_content: Some(DisplayedContent::SuperChatDetails(
                     pb::LiveChatSuperChatDetails {
                         amount_display_string: Some("€2.00".into()),
+                        amount_micros: Some(2_000_000),
+                        currency: Some("EUR".into()),
                         user_comment: Some("WOO".into()),
                         tier: Some(2),
-                        ..Default::default()
                     },
                 )),
                 ..Default::default()
@@ -277,10 +290,19 @@ mod tests {
         };
 
         let msg = convert_msg(item, &EmojiMap::default());
-        assert!(matches!(
-            msg.kind,
-            MessageKind::Donation { tier: Some(2), .. }
-        ));
+        let MessageKind::Donation {
+            tier,
+            value,
+            currency,
+            ..
+        } = &msg.kind
+        else {
+            panic!("not a donation: {:?}", msg.kind);
+        };
+        assert_eq!(*tier, Some(2));
+        // The number, for amount rules: in the viewer's currency.
+        assert_eq!(*value, Some(2.0));
+        assert_eq!(currency.as_deref(), Some("EUR"));
         // Only the user's own words; the amount lives in the kind.
         assert_eq!(msg.text, "WOO");
     }

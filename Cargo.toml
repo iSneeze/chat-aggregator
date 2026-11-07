@@ -13,6 +13,8 @@ default-members = [
     "crates/chat-render",
     "crates/chat-rplay",
     "crates/chat-server",
+    "crates/chat-streamelements",
+    "crates/chat-streamlabs",
     "crates/chat-twitch",
     "crates/chat-youtube",
 ]

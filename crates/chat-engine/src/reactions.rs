@@ -60,7 +60,7 @@ impl EngineHandle {
         Ok(stored.is_some())
     }
 
-    fn secret_store(&self) -> anyhow::Result<chat_core::secrets::SecretStore> {
+    pub(crate) fn secret_store(&self) -> anyhow::Result<chat_core::secrets::SecretStore> {
         self.secrets
             .clone()
             .ok_or_else(|| anyhow!("this engine keeps no secrets"))

@@ -11,17 +11,19 @@
 use std::collections::HashMap;
 
 use chat_core::ChatPlatform;
+use chat_core::tiers::{Amount, TipSettings};
 use chat_engine::{
-    Action, EngineHandle, Guards, Health, MAX_QUEUE_SECS, ObsSettings, OutputState, ReactionStatus,
-    Role, Rule, Target, Trigger, WarudoSettings,
+    Action, Compare, EngineHandle, Guards, Health, MAX_QUEUE_SECS, ObsSettings, OutputState,
+    ReactionStatus, Role, Rule, Target, Trigger, WarudoSettings,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex,
-    scroll::ScrollableElement, v_flex,
+    ActiveTheme, Disableable, IconName, IndexPath, Selectable, Sizable, StyledExt, WindowExt,
+    h_flex, scroll::ScrollableElement, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -29,6 +31,7 @@ use gpui_kit::*;
 use crate::app_config::{AppConfig, edit_settings};
 use crate::app_view::{card, light, report, segmented};
 use crate::manual_window::labelled;
+use crate::paid;
 
 /// What fires a rule, as picked in the form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +64,15 @@ impl TriggerKind {
             TriggerKind::Gift => "Gift",
         }
     }
+}
+
+/// What a paid trigger looks at, as picked in the form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaidBy {
+    /// The tier (`Trigger::Paid`).
+    Tier,
+    /// The amount as a number (`Trigger::PaidAmount`).
+    Amount,
 }
 
 /// What a rule does, as picked in the form.
@@ -100,10 +112,12 @@ const ROLES: [(Role, &str); 5] = [
 ];
 
 /// The platforms a rule can be limited to (those the app reads chat from).
-const PLATFORMS: [(ChatPlatform, &str); 3] = [
+const PLATFORMS: [(ChatPlatform, &str); 5] = [
     (ChatPlatform::Twitch, "Twitch"),
     (ChatPlatform::YouTube, "YouTube"),
     (ChatPlatform::Picarto, "Picarto"),
+    (ChatPlatform::StreamElements, "StreamElements"),
+    (ChatPlatform::Streamlabs, "Streamlabs"),
 ];
 
 /// Everything the form holds, as typed and picked. Compared with what was
@@ -115,7 +129,11 @@ struct Form {
     command: String,
     keyword: String,
     emote: String,
-    min_tier: String,
+    paid_by: PaidBy,
+    /// Picked from the tier list; `None`: any amount.
+    min_tier: Option<u32>,
+    amount: String,
+    compare: Compare,
     min_count: String,
     role: Role,
     /// The ticked ones; all ticked is the same as no platform guard.
@@ -138,7 +156,10 @@ impl Form {
             command: String::new(),
             keyword: String::new(),
             emote: String::new(),
-            min_tier: String::new(),
+            paid_by: PaidBy::Tier,
+            min_tier: None,
+            amount: String::new(),
+            compare: Compare::AtLeast,
             min_count: "1".into(),
             role: Role::Everyone,
             platforms: all_platforms(),
@@ -173,7 +194,13 @@ impl Form {
                 TriggerKind::Emote
             }
             Trigger::Paid { min_tier } => {
-                form.min_tier = optional(*min_tier);
+                form.min_tier = *min_tier;
+                TriggerKind::Paid
+            }
+            Trigger::PaidAmount { amount, compare } => {
+                form.paid_by = PaidBy::Amount;
+                form.amount = amount.to_string();
+                form.compare = *compare;
                 TriggerKind::Paid
             }
             Trigger::Membership => TriggerKind::Membership,
@@ -250,8 +277,16 @@ impl Form {
             TriggerKind::Emote => Trigger::Emote {
                 emote: text(&self.emote, "the emote's code")?,
             },
-            TriggerKind::Paid => Trigger::Paid {
-                min_tier: optional_number(&self.min_tier, "The minimum tier")?,
+            TriggerKind::Paid => match self.paid_by {
+                PaidBy::Tier => Trigger::Paid {
+                    min_tier: self.min_tier,
+                },
+                PaidBy::Amount => Trigger::PaidAmount {
+                    amount: text(&self.amount, "the amount, e.g. 69")?
+                        .parse::<Amount>()
+                        .map_err(|e| capitalized(&format!("the amount: {e}")))?,
+                    compare: self.compare,
+                },
             },
             TriggerKind::Membership => Trigger::Membership,
             TriggerKind::Gift => Trigger::Gift {
@@ -340,7 +375,7 @@ struct Inputs {
     command: Entity<InputState>,
     keyword: Entity<InputState>,
     emote: Entity<InputState>,
-    min_tier: Entity<InputState>,
+    amount: Entity<InputState>,
     min_count: Entity<InputState>,
     cooldown: Entity<InputState>,
     user_cooldown: Entity<InputState>,
@@ -361,7 +396,7 @@ impl Inputs {
             command: input("e.g. !bonk"),
             keyword: input("a word or phrase, e.g. hype"),
             emote: input("e.g. Kappa or :_hypeWave:"),
-            min_tier: input("empty: any amount"),
+            amount: input("e.g. 69 or 4.20"),
             min_count: input("1"),
             cooldown: input("0"),
             user_cooldown: input("0"),
@@ -382,7 +417,7 @@ impl Inputs {
             command: text(&self.command),
             keyword: text(&self.keyword),
             emote: text(&self.emote),
-            min_tier: text(&self.min_tier),
+            amount: text(&self.amount),
             min_count: text(&self.min_count),
             cooldown: text(&self.cooldown),
             user_cooldown: text(&self.user_cooldown),
@@ -404,7 +439,7 @@ impl Inputs {
         set(&self.command, &form.command);
         set(&self.keyword, &form.keyword);
         set(&self.emote, &form.emote);
-        set(&self.min_tier, &form.min_tier);
+        set(&self.amount, &form.amount);
         set(&self.min_count, &form.min_count);
         set(&self.cooldown, &form.cooldown);
         set(&self.user_cooldown, &form.user_cooldown);
@@ -441,6 +476,11 @@ pub struct ReactionsWindow {
     /// rule.
     editing: Option<String>,
     inputs: Inputs,
+    /// The paid trigger's tier list: "Any amount", then tier 1 to 7, with
+    /// what each means on every platform (so it follows the tip settings).
+    tier_select: Entity<SelectState<Vec<SharedString>>>,
+    /// The tip settings the list was made with.
+    tier_labels_for: TipSettings,
     /// The form's current choices (trigger, role, platforms, action).
     picked: Form,
     /// The form as loaded or last saved: anything else is unsaved.
@@ -462,8 +502,12 @@ impl ReactionsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let settings = config.read(cx).settings().reactions;
+        let all_settings = config.read(cx).settings();
+        let settings = all_settings.reactions;
+        let tips = all_settings.tips;
         let inputs = Inputs::new(window, cx);
+        let tier_select =
+            cx.new(|cx| SelectState::new(tier_items(&tips), Some(IndexPath::new(0)), window, cx));
         let mut field = |value: String, placeholder: &'static str, masked: bool| {
             cx.new(|cx| {
                 InputState::new(window, cx)
@@ -482,8 +526,21 @@ impl ReactionsWindow {
 
         let subscriptions = vec![
             // Settings changed (a switch here, the pause in the main
-            // window): redraw.
-            cx.observe(&config, |_, _, cx| cx.notify()),
+            // window, new tip amounts in Settings): redraw.
+            cx.observe_in(&config, window, |this, _, window, cx| {
+                this.relabel_tiers(window, cx);
+                cx.notify();
+            }),
+            // A tier picked: index 0 is "Any amount", index n is tier n.
+            cx.subscribe_in(
+                &tier_select,
+                window,
+                |this, select, _: &SelectEvent<Vec<SharedString>>, _, cx| {
+                    let index = select.read(cx).selected_index(cx).map_or(0, |i| i.row);
+                    this.picked.min_tier = (index > 0).then_some(index as u32);
+                    cx.notify();
+                },
+            ),
         ];
         Self::watch_status(&engine, window, cx);
         Self::ask_before_closing(window, cx);
@@ -494,6 +551,8 @@ impl ReactionsWindow {
             status: ReactionStatus::default(),
             editing: None,
             inputs,
+            tier_select,
+            tier_labels_for: tips,
             picked: Form::blank(),
             loaded: Form::blank(),
             form_error: None,
@@ -615,11 +674,34 @@ impl ReactionsWindow {
             .and_then(|name| self.rules(cx).into_iter().find(|r| r.name == *name));
         let form = rule.as_ref().map_or_else(Form::blank, Form::of);
         self.inputs.fill(&form, window, cx);
+        self.show_tier(form.min_tier, window, cx);
         self.editing = rule.map(|r| r.name);
         self.picked = form.clone();
         self.loaded = form;
         self.form_error = None;
         cx.notify();
+    }
+
+    /// Selects `tier` in the tier list (`None`: "Any amount").
+    fn show_tier(&self, tier: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
+        let index = IndexPath::new(tier.map_or(0, |t| t as usize));
+        self.tier_select.update(cx, |select, cx| {
+            select.set_selected_index(Some(index), window, cx);
+        });
+    }
+
+    /// New tip settings: the tier list says the new amounts, and keeps the
+    /// picked tier (its labels changed, so the list would drop it).
+    fn relabel_tiers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tips = self.config.read(cx).settings().tips;
+        if tips == self.tier_labels_for {
+            return;
+        }
+        self.tier_select.update(cx, |select, cx| {
+            select.set_items(tier_items(&tips), window, cx);
+        });
+        self.tier_labels_for = tips;
+        self.show_tier(self.picked.min_tier, window, cx);
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -975,6 +1057,85 @@ impl ReactionsWindow {
             )
     }
 
+    /// The paid trigger: by tier (picked from the list) or by amount (at
+    /// least or exactly).
+    fn paid_fields(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let muted = cx.theme().muted_foreground;
+        let p = &self.picked;
+        let by = segmented(
+            cx,
+            [(PaidBy::Tier, "Tier"), (PaidBy::Amount, "Amount")]
+                .into_iter()
+                .enumerate()
+                .map(|(n, (by, label))| {
+                    choice(("paid-by", n), label, by == p.paid_by).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.picked.paid_by = by;
+                            cx.notify();
+                        },
+                    ))
+                }),
+        );
+        let detail = match p.paid_by {
+            PaidBy::Tier => labelled(
+                "At least",
+                Select::new(&self.tier_select).id("rule-tier").small(),
+                cx,
+            )
+            .into_any_element(),
+            PaidBy::Amount => {
+                let compare = segmented(
+                    cx,
+                    [
+                        (Compare::AtLeast, "At least"),
+                        (Compare::Exactly, "Exactly"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, (compare, label))| {
+                        choice(("compare", n), label, compare == p.compare).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                this.picked.compare = compare;
+                                cx.notify();
+                            },
+                        ))
+                    }),
+                );
+                // What the number is compared with, so "69" isn't a
+                // surprise on another platform.
+                let hint = match self.config.read(cx).settings().tips.currency() {
+                    Some(code) => {
+                        format!("Tips and Super Chats in {code}, Twitch in bits. No conversion.")
+                    }
+                    None => "Tips as sent, Twitch in bits. Super Chats count once a tip \
+                             currency is set (⚙ Settings → Paid messages)."
+                        .into(),
+                };
+                v_flex()
+                    .gap_2()
+                    .child(labelled(
+                        "",
+                        h_flex().gap_2().items_center().child(compare).child(
+                            div()
+                                .w(px(110.))
+                                .child(input(&self.inputs.amount, "rule-amount")),
+                        ),
+                        cx,
+                    ))
+                    .child(labelled(
+                        "",
+                        div().text_sm().text_color(muted).child(hint),
+                        cx,
+                    ))
+                    .into_any_element()
+            }
+        };
+        v_flex()
+            .gap_2()
+            .child(labelled("Paid", by, cx))
+            .child(detail)
+    }
+
     fn render_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let p = &self.picked;
@@ -1005,9 +1166,7 @@ impl ReactionsWindow {
             TriggerKind::Emote => {
                 labelled("Emote", input(&i.emote, "rule-emote"), cx).into_any_element()
             }
-            TriggerKind::Paid => {
-                labelled("Min. tier", input(&i.min_tier, "rule-min-tier"), cx).into_any_element()
-            }
+            TriggerKind::Paid => self.paid_fields(cx).into_any_element(),
             TriggerKind::Membership => labelled(
                 "",
                 div()
@@ -1293,6 +1452,14 @@ impl Render for ReactionsWindow {
     }
 }
 
+/// The paid trigger's tier list: "Any amount", then every tier.
+fn tier_items(tips: &TipSettings) -> Vec<SharedString> {
+    std::iter::once("Any amount".to_string())
+        .chain(paid::all().map(|tier| paid::tier_label(tier, tips)))
+        .map(SharedString::from)
+        .collect()
+}
+
 /// A text field with an id the tests can find it by.
 fn input(state: &Entity<InputState>, id: &'static str) -> Input {
     Input::new(state).id(id)
@@ -1319,6 +1486,14 @@ fn summary(rule: &Rule) -> String {
         Trigger::Paid {
             min_tier: Some(tier),
         } => format!("paid, tier {tier}+"),
+        Trigger::PaidAmount {
+            amount,
+            compare: Compare::AtLeast,
+        } => format!("paid, {amount}+"),
+        Trigger::PaidAmount {
+            amount,
+            compare: Compare::Exactly,
+        } => format!("paid, exactly {amount}"),
         Trigger::Membership => "membership".into(),
         Trigger::Gift { min_count: 1 } => "gift".into(),
         Trigger::Gift { min_count } => format!("{min_count}+ gifts"),
@@ -1372,14 +1547,16 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    use chat_core::tiers::Amount;
     use chat_engine::{
-        Action, ConfigFile, Engine, EngineConfig, Guards, Rule, SecretStore, Settings, Trigger,
+        Action, Compare, ConfigFile, Engine, EngineConfig, Guards, Rule, SecretStore, Settings,
+        Trigger,
     };
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
 
-    use super::{ReactionsWindow, Tested};
+    use super::{ReactionsWindow, Tested, summary};
     use crate::app_config::AppConfig;
 
     struct Ui {
@@ -1423,6 +1600,10 @@ mod tests {
         let mut config = EngineConfig::default();
         config.settings.server.port = 0;
         config.settings.reactions.rules = rules.iter().map(|name| rule(name)).collect();
+        // Port 1, where nothing listens: Warudo's usual port may have the
+        // real Warudo behind it on a developer's machine, and then a test
+        // press would really reach it.
+        config.settings.reactions.warudo.url = "ws://127.0.0.1:1".into();
         config.save_to = Some(dir.join("config.toml"));
         // A folder, not the real keyring.
         config.secrets = Some(SecretStore::Dir(dir.join("secrets")));
@@ -1548,7 +1729,9 @@ mod tests {
             saved.guards.platforms,
             [
                 chat_core::ChatPlatform::Twitch,
-                chat_core::ChatPlatform::Picarto
+                chat_core::ChatPlatform::Picarto,
+                chat_core::ChatPlatform::StreamElements,
+                chat_core::ChatPlatform::Streamlabs
             ]
         );
         assert_eq!(
@@ -1565,6 +1748,78 @@ mod tests {
         // And in the file.
         let file = ConfigFile::load(&ui.dir.join("config.toml")).unwrap();
         assert_eq!(file.reactions.rules.len(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn a_paid_rule_by_amount_or_by_tier(cx: &mut TestAppContext) {
+        let ui = open(cx, &[]);
+        type_into(cx, &ui, "rule-name", "nice");
+        act(cx, &ui, |window, cx| window.click(("trigger", 3usize), cx)); // Paid
+        act(cx, &ui, |window, cx| window.click(("paid-by", 1usize), cx)); // Amount
+        act(cx, &ui, |window, cx| window.click(("compare", 1usize), cx)); // Exactly
+        type_into(cx, &ui, "rule-amount", "69");
+        type_into(cx, &ui, "rule-warudo-action", "nice");
+        act(cx, &ui, |window, cx| window.click("rule-save", cx));
+        run_until(cx, |_| !names(&ui).is_empty());
+        let saved = settings(&ui).reactions.rules[0].clone();
+        assert_eq!(
+            saved.trigger,
+            Trigger::PaidAmount {
+                amount: Amount::whole(69),
+                compare: Compare::Exactly,
+            }
+        );
+        assert_eq!(summary(&saved), "paid, exactly 69 → Warudo nice");
+
+        // By tier: what picking "Tier 5 or more" in the list does.
+        act(cx, &ui, |window, cx| window.click(("paid-by", 0usize), cx));
+        ui.view.update(cx, |view, cx| {
+            view.picked.min_tier = Some(5);
+            cx.notify();
+        });
+        act(cx, &ui, |window, cx| window.click("rule-save", cx));
+        run_until(cx, |_| {
+            settings(&ui).reactions.rules[0].trigger == Trigger::Paid { min_tier: Some(5) }
+        });
+        // Opened again, the list shows it.
+        let view = ui.view.clone();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            view.update(cx, |view, cx| view.load(Some("nice".into()), window, cx));
+        })
+        .unwrap();
+        let shown = ui.view.read_with(cx, |view, cx| {
+            view.tier_select.read(cx).selected_index(cx).map(|i| i.row)
+        });
+        assert_eq!(shown, Some(5));
+    }
+
+    #[gpui_kit::test]
+    fn the_tier_list_follows_the_tip_settings(cx: &mut TestAppContext) {
+        let ui = open(cx, &[]);
+        let label = |cx: &mut TestAppContext| {
+            ui.view.read_with(cx, |view, cx| {
+                view.tier_select.read(cx).selected_value().cloned()
+            })
+        };
+        ui.view.update(cx, |view, cx| {
+            view.picked.min_tier = Some(4);
+            cx.notify();
+        });
+        let view = ui.view.clone();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            view.update(cx, |view, cx| view.show_tier(Some(4), window, cx));
+        })
+        .unwrap();
+        assert!(label(cx).is_some_and(|l| l.contains("tips 10+")));
+        let edit = ui
+            .engine
+            .handle()
+            .edit_settings(|s| s.tips.currency = "EUR".into());
+        ui._runtime.block_on(edit).unwrap();
+        run_until(cx, |cx| label(cx).is_some_and(|l| l.contains("€10.00+")));
+        // Still tier 4, under its new label.
+        let picked = ui.view.read_with(cx, |view, _| view.picked.min_tier);
+        assert_eq!(picked, Some(4));
     }
 
     #[gpui_kit::test]
