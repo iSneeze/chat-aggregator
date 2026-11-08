@@ -1,14 +1,12 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chat_websocket::Socket;
+use chat_websocket::tungstenite::Message;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// Prints everything StreamElements' event gateway (Astro) sends for a
 /// channel as raw JSON frames, before anything is decoded or filtered. For
@@ -68,7 +66,6 @@ async fn main() -> anyhow::Result<()> {
         None => room_from_token(&token).await?,
     };
     probe_tips(&token, &room).await;
-    let tls = tls_config()?;
 
     // An error before the first connection most likely means no network:
     // stop and say so. Later errors are retried, waiting longer after each
@@ -79,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     loop {
         // `take` empties `resume`: a reconnect token is used once.
         let resuming = resume.take();
-        match connect(&tls, resuming.as_deref()).await {
+        match connect(resuming.as_deref()).await {
             Ok(socket) => {
                 connected_once = true;
                 delay = RETRY_FIRST;
@@ -132,8 +129,6 @@ const RETRY_MAX: Duration = Duration::from_secs(120);
 /// JWT claims that are safe to print. Anything else stays hidden: a
 /// StreamElements JWT may carry further secrets in its claims.
 const SAFE_CLAIMS: &[&str] = &["channel", "role", "provider", "iss", "aud", "iat", "exp"];
-
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// The dashboard token and the name Astro's `token_type` field uses for it.
 struct Token {
@@ -378,16 +373,14 @@ fn field_names(value: &Value, prefix: &str, names: &mut Vec<String>) {
 
 /// Opens the WebSocket: a new session, or the old one again with the
 /// reconnect token Astro handed out before shutting down.
-async fn connect(tls: &Arc<rustls::ClientConfig>, resume: Option<&str>) -> anyhow::Result<Socket> {
+async fn connect(resume: Option<&str>) -> anyhow::Result<Socket> {
     let url = match resume {
         Some(reconnect_token) => format!("{ASTRO}/?reconnect_token={reconnect_token}"),
         None => ASTRO.to_owned(),
     };
-    let connector = Connector::Rustls(Arc::clone(tls));
-    let (socket, _response) =
-        tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector))
-            .await
-            .context("connecting to Astro")?;
+    let socket = chat_websocket::connect(url)
+        .await
+        .context("connecting to Astro")?;
     let how = if resume.is_some() {
         "resumed session"
     } else {
@@ -515,19 +508,4 @@ fn line(label: &str, text: &str) {
         "{} [{label}] {text}",
         jiff::Zoned::now().strftime("%H:%M:%S%.3f")
     );
-}
-
-/// TLS for the WebSocket, with the crypto backend chosen explicitly (see
-/// chat-rplay's raw_rplay: with both rustls backends in a build, the
-/// process-wide default panics). We take aws-lc-rs, which reqwest uses
-/// anyway.
-fn tls_config() -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(Arc::new(config))
 }

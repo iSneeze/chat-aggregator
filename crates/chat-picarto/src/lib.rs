@@ -12,16 +12,16 @@ mod connection;
 mod emotes;
 mod frames;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use chat_core::{Activity, ChatEvent, ChatSource, Reporter, SetupError};
+use chat_core::{Activity, ChatEvent, ChatSource, Reporter};
+use chat_websocket::Ended;
+use chat_websocket::tungstenite::Message;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 pub use emotes::{Body, ChannelEmote, SiteEmotes};
 
@@ -34,10 +34,6 @@ const PING_EVERY: Duration = Duration::from_secs(30);
 /// dead without either side having noticed (a sleeping laptop, a dropped
 /// route).
 const SILENT_FOR: Duration = Duration::from_secs(75);
-const RETRY_FIRST: Duration = Duration::from_secs(3);
-const RETRY_MAX: Duration = Duration::from_secs(120);
-/// A connection that lasted this long worked: the wait starts over.
-const STABLE_AFTER: Duration = Duration::from_secs(60);
 
 pub struct PicartoSource {
     /// A name that passed [`normalize_channel`].
@@ -84,19 +80,10 @@ pub fn normalize_channel(input: &str) -> Result<String, String> {
     }
 }
 
-/// Why a connection ended without an error.
-enum Ended {
-    /// Picarto closed it; connect again.
-    Closed,
-    /// Nobody listens to our events anymore: stop.
-    ReceiverGone,
-}
-
 impl ChatSource for PicartoSource {
     async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
         activity.set(Activity::Connecting);
         let http = connection::http_client()?;
-        let tls = connection::tls_config()?;
         // Once per source, not per connection: the script is 1.4 MB.
         // Without it only channel emotes become images; chat still works.
         let emotes = match SiteEmotes::fetch(&http).await {
@@ -107,38 +94,17 @@ impl ChatSource for PicartoSource {
             }
         };
 
+        // The channel in every log line from here on (as
+        // `picarto{channel=…}`): with several channels, the log says whose.
+        let span = info_span!("picarto", channel = %self.channel);
         // Reconnects by itself instead of returning an error for the engine
         // to restart: a restart builds a new source, which would download
         // the emote tables again.
-        let mut delay = RETRY_FIRST;
-        loop {
-            let started = Instant::now();
-            let problem = match self.read(&http, &tls, &emotes, &tx, &activity).await {
-                Ok(Ended::ReceiverGone) => return Ok(()),
-                Ok(Ended::Closed) => {
-                    info!(channel = %self.channel, "Picarto closed the chat connection");
-                    "connection closed by Picarto".to_owned()
-                }
-                // A wrong name stays wrong: the engine shows it to the user.
-                Err(e) if e.is::<SetupError>() => return Err(e),
-                Err(e) => {
-                    warn!(channel = %self.channel, "Picarto chat: {e:#}");
-                    format!("connection problem: {e:#}")
-                }
-            };
-            // Waits longer after each quick failure in a row, so a server
-            // that keeps refusing isn't hammered.
-            if started.elapsed() >= STABLE_AFTER {
-                delay = RETRY_FIRST;
-            }
-            activity.set(Activity::Degraded(format!(
-                "{problem}; reconnecting in {} s",
-                delay.as_secs()
-            )));
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(RETRY_MAX);
-            activity.set(Activity::Connecting);
-        }
+        chat_websocket::keep_connected("Picarto", &activity, || {
+            self.read(&http, &emotes, &tx, &activity)
+        })
+        .instrument(span)
+        .await
     }
 }
 
@@ -147,14 +113,13 @@ impl PicartoSource {
     async fn read(
         &self,
         http: &reqwest::Client,
-        tls: &Arc<rustls::ClientConfig>,
         emotes: &SiteEmotes,
         tx: &mpsc::Sender<ChatEvent>,
         activity: &Reporter,
     ) -> anyhow::Result<Ended> {
         let channel = connection::lookup(http, &self.channel).await?;
-        let mut socket = connection::open(http, tls, &channel.name).await?;
-        info!(channel = %channel.name, "connected to Picarto chat");
+        let mut socket = connection::open(http, &channel.name).await?;
+        info!("connected to Picarto chat");
         activity.set(live_state(channel.online));
 
         let cx = FrameContext {

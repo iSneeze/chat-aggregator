@@ -15,19 +15,17 @@
 
 mod frames;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use chat_core::tiers::TipSettings;
 use chat_core::{Activity, ChatEvent, ChatSource, Reporter, SetupError};
+use chat_websocket::tungstenite::Message;
+use chat_websocket::{Ended, Socket};
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use frames::Frame;
 
@@ -36,10 +34,6 @@ const ASTRO: &str = "wss://astro.streamelements.com";
 /// dead without either side having noticed (a sleeping laptop, a dropped
 /// route).
 const SILENT_FOR: Duration = Duration::from_secs(75);
-const RETRY_FIRST: Duration = Duration::from_secs(3);
-const RETRY_MAX: Duration = Duration::from_secs(120);
-/// A connection that lasted this long worked: the wait starts over.
-const STABLE_AFTER: Duration = Duration::from_secs(60);
 
 pub struct StreamElementsSource {
     /// An id that passed [`normalize_account`].
@@ -76,62 +70,11 @@ fn token_refused(why: &str) -> SetupError {
     ))
 }
 
-/// Why a connection ended without an error.
-enum Ended {
-    /// StreamElements closed it; connect again after a pause.
-    Closed,
-    /// StreamElements announced a restart of its server: connect again
-    /// right away (to another one).
-    Restarting,
-    /// Nobody listens to our events anymore: stop.
-    ReceiverGone,
-}
-
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
 impl ChatSource for StreamElementsSource {
     async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
         activity.set(Activity::Connecting);
-        let tls = tls_config()?;
-        // Reconnects by itself, like the Picarto source: a network hiccup
-        // isn't worth a restart by the engine.
-        let mut delay = RETRY_FIRST;
-        loop {
-            let started = Instant::now();
-            let problem = match self.read(&tls, &tx, &activity).await {
-                Ok(Ended::ReceiverGone) => return Ok(()),
-                // Astro's reconnect token would resume the old session, but
-                // a fresh one is simpler and only a moment away. A tip in
-                // that moment is missed, as with any reconnect.
-                Ok(Ended::Restarting) => {
-                    info!("StreamElements is restarting its server; reconnecting");
-                    activity.set(Activity::Connecting);
-                    continue;
-                }
-                Ok(Ended::Closed) => {
-                    info!("StreamElements closed the connection");
-                    "connection closed by StreamElements".to_owned()
-                }
-                // A wrong token stays wrong: the engine shows it to the user.
-                Err(e) if e.is::<SetupError>() => return Err(e),
-                Err(e) => {
-                    warn!("StreamElements: {e:#}");
-                    format!("connection problem: {e:#}")
-                }
-            };
-            // Waits longer after each quick failure in a row, so a server
-            // that keeps refusing isn't hammered.
-            if started.elapsed() >= STABLE_AFTER {
-                delay = RETRY_FIRST;
-            }
-            activity.set(Activity::Degraded(format!(
-                "{problem}; reconnecting in {} s",
-                delay.as_secs()
-            )));
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(RETRY_MAX);
-            activity.set(Activity::Connecting);
-        }
+        chat_websocket::keep_connected("StreamElements", &activity, || self.read(&tx, &activity))
+            .await
     }
 }
 
@@ -139,15 +82,12 @@ impl StreamElementsSource {
     /// One connection: from connecting until it ends.
     async fn read(
         &self,
-        tls: &Arc<rustls::ClientConfig>,
         tx: &mpsc::Sender<ChatEvent>,
         activity: &Reporter,
     ) -> anyhow::Result<Ended> {
-        let connector = Connector::Rustls(Arc::clone(tls));
-        let (mut socket, _response) =
-            tokio_tungstenite::connect_async_tls_with_config(ASTRO, None, false, Some(connector))
-                .await
-                .context("connecting to StreamElements")?;
+        let mut socket = chat_websocket::connect(ASTRO)
+            .await
+            .context("connecting to StreamElements")?;
         debug!("connected to StreamElements");
 
         let mut heard = Instant::now();
@@ -182,6 +122,10 @@ impl StreamElementsSource {
                                     return Ok(Ended::ReceiverGone);
                                 }
                             }
+                            // Astro's reconnect token would resume the old
+                            // session, but a fresh one is simpler and only
+                            // a moment away. A tip in that moment is
+                            // missed, as with any reconnect.
                             Frame::Reconnect => return Ok(Ended::Restarting),
                             Frame::Ignored => {}
                         },
@@ -208,22 +152,6 @@ impl StreamElementsSource {
             .await
             .context("subscribing to StreamElements' activity feed")
     }
-}
-
-/// TLS for the WebSocket, with the crypto backend chosen explicitly.
-/// Otherwise tungstenite asks rustls for the process-wide default, which
-/// panics when rustls was built with both of its backends (`ring` from
-/// chat-youtube's gRPC, `aws-lc-rs` from reqwest), as in the app. We take
-/// aws-lc-rs, which reqwest uses anyway.
-fn tls_config() -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(Arc::new(config))
 }
 
 #[cfg(test)]

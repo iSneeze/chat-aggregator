@@ -1048,16 +1048,14 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chat-core",
+ "chat-websocket",
  "futures-util",
  "jiff",
  "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
  "tracing",
- "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -1094,14 +1092,12 @@ name = "chat-rplay"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chat-websocket",
  "futures-util",
  "jiff",
  "reqwest",
- "rustls",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
- "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -1133,15 +1129,13 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chat-core",
+ "chat-websocket",
  "futures-util",
  "jiff",
  "reqwest",
- "rustls",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
  "tracing",
- "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -1150,14 +1144,12 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "chat-core",
+ "chat-websocket",
  "futures-util",
  "jiff",
- "rustls",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
  "tracing",
- "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -1170,6 +1162,19 @@ dependencies = [
  "rustls",
  "tokio",
  "twitch-irc",
+]
+
+[[package]]
+name = "chat-websocket"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chat-core",
+ "rustls",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]

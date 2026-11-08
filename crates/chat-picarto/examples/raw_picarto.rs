@@ -1,17 +1,15 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chat_picarto::{ChannelEmote, SiteEmotes};
+use chat_websocket::Socket;
+use chat_websocket::tungstenite::Message;
+use chat_websocket::tungstenite::client::IntoClientRequest;
+use chat_websocket::tungstenite::http::{HeaderValue, header};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Map, Value, json};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::{HeaderValue, header};
-use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// Prints everything Picarto's chat sends for a channel as raw JSON frames,
 /// before anything is decoded or filtered. For collecting real messages and
@@ -47,7 +45,6 @@ async fn main() -> anyhow::Result<()> {
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(15))
         .build()?;
-    let tls = tls_config()?;
     // Without them only channel emotes resolve; the capture goes on.
     let emotes = match SiteEmotes::fetch(&http).await {
         Ok(emotes) => {
@@ -73,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     let mut connected_once = false;
     let mut delay = RETRY_FIRST;
     loop {
-        match connect(&http, &tls, &channel).await {
+        match connect(&http, &channel).await {
             Ok(socket) => {
                 connected_once = true;
                 delay = RETRY_FIRST;
@@ -126,17 +123,11 @@ const CHANNEL_FIELDS: &[&str] = &[
     "last_live",
 ];
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
 /// Does what Picarto's web page does: get a token, open the WebSocket.
 /// Looks the channel up in the public API first, so the log shows how the
 /// channel changes (live, offline, ...) and a wrong name gets a clear
 /// error: the token request just returns nothing for it.
-async fn connect(
-    http: &reqwest::Client,
-    tls: &Arc<rustls::ClientConfig>,
-    channel: &str,
-) -> anyhow::Result<Socket> {
+async fn connect(http: &reqwest::Client, channel: &str) -> anyhow::Result<Socket> {
     let info = get_json(http, &format!("{PUBLIC_API}/channel/name/{channel}"))
         .await
         .context("looking up the channel")?;
@@ -154,11 +145,9 @@ async fn connect(
     request
         .headers_mut()
         .insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
-    let connector = Connector::Rustls(Arc::clone(tls));
-    let (socket, _response) =
-        tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
-            .await
-            .context("connecting to the chat server")?;
+    let socket = chat_websocket::connect(request)
+        .await
+        .context("connecting to the chat server")?;
     line("connected", &format!("{CHAT}…"));
     Ok(socket)
 }
@@ -334,21 +323,4 @@ fn line(label: &str, text: &str) {
         "{} [{label}] {text}",
         jiff::Zoned::now().strftime("%H:%M:%S%.3f")
     );
-}
-
-/// TLS for the WebSocket, with the crypto backend chosen explicitly.
-/// Otherwise tungstenite asks rustls for the process-wide default, which
-/// panics when rustls was built with both of its backends: `ring` (from
-/// chat-youtube's gRPC) and `aws-lc-rs` (from reqwest). That happens in any
-/// build that contains both crates (`--workspace` now, the app later). We
-/// take aws-lc-rs, which reqwest uses anyway.
-fn tls_config() -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(Arc::new(config))
 }

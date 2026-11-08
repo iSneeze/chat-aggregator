@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 chat-core = { path = "../chat-core" }
+# The chat is a plain WebSocket (wss://).
+chat-websocket = { path = "../chat-websocket" }
 anyhow.workspace = true
 jiff.workspace = true
 # `sink`: the source writes to the socket too (keepalive pings).
@@ -17,10 +19,6 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-# The chat is a plain WebSocket (wss://). Same versions as chat-rplay.
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
-webpki-roots = "1"
 
 [dev-dependencies]
 # Reading the chat token's claims (a JWT) in the raw_picarto example.

@@ -1,13 +1,12 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::Context;
+use chat_websocket::Socket;
+use chat_websocket::tungstenite::{self, Message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::net::TcpStream;
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::{self, Message};
-use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// Prints everything Streamlabs' Socket API sends for an account as raw
 /// frames, before anything is decoded or filtered. For collecting real
@@ -55,14 +54,13 @@ async fn main() -> anyhow::Result<()> {
     // From here on, `line` blanks it out of everything it prints.
     let _ = SECRET.set(token.clone());
     line("token", &format!("{} characters", token.len()));
-    let tls = tls_config()?;
 
     // An error before the first connection most likely means no network
     // (or a refused token): stop and say so. Later errors are retried.
     let mut connected_once = false;
     let mut delay = RETRY_FIRST;
     loop {
-        match connect(&tls, &token).await {
+        match connect(&token).await {
             Ok(socket) => {
                 connected_once = true;
                 delay = RETRY_FIRST;
@@ -95,8 +93,6 @@ const PING_TIMEOUT: Duration = Duration::from_secs(60);
 /// well quote the URL it failed on, and the token is in that URL.
 static SECRET: OnceLock<String> = OnceLock::new();
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
 /// Streamlabs answered with a socket.io error (a wrong token): its reason.
 #[derive(Debug)]
 struct Refused(String);
@@ -113,7 +109,7 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-async fn connect(tls: &Arc<rustls::ClientConfig>, token: &str) -> anyhow::Result<Socket> {
+async fn connect(token: &str) -> anyhow::Result<Socket> {
     // The token goes into the address (as in Streamlabs' own example);
     // `EIO=3` asks for Engine.IO 3, `transport=websocket` skips the long
     // polling socket.io starts with otherwise.
@@ -121,10 +117,8 @@ async fn connect(tls: &Arc<rustls::ClientConfig>, token: &str) -> anyhow::Result
         "{SOCKETS}?token={}&EIO=3&transport=websocket",
         percent_encoded(token)
     );
-    let connector = Connector::Rustls(Arc::clone(tls));
-    match tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector)).await
-    {
-        Ok((socket, _response)) => {
+    match chat_websocket::connect(url).await {
+        Ok(socket) => {
             line("connected", SOCKETS);
             Ok(socket)
         }
@@ -322,17 +316,4 @@ fn line(label: &str, text: &str) {
         "{} [{label}] {text}",
         jiff::Zoned::now().strftime("%H:%M:%S%.3f")
     );
-}
-
-/// TLS for the WebSocket, with the crypto backend chosen explicitly (see
-/// chat-streamelements' `tls_config`).
-fn tls_config() -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(Arc::new(config))
 }

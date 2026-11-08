@@ -45,9 +45,9 @@ connect *out* to programs the streamer names, on this computer by default.)
 chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ──→ chat-core
                          ├─→ chat-twitch ─────────────────→ chat-core
                          ├─→ chat-youtube ────────────────→ chat-core
-                         ├─→ chat-picarto ────────────────→ chat-core
-                         ├─→ chat-streamelements ─────────→ chat-core
-                         ├─→ chat-streamlabs ─────────────→ chat-core
+                         ├─→ chat-picarto ────────┐
+                         ├─→ chat-streamelements ─┼─→ chat-websocket ─→ chat-core
+                         ├─→ chat-streamlabs ─────┘
                          └─→ chat-reactions ──────────────→ chat-core
 ```
 
@@ -64,6 +64,7 @@ chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ─�
 | `chat-picarto` | Picarto chat over the website's WebSocket (anonymous, read-only), its emotes, converted to `ChatEvent`s |
 | `chat-streamelements` | tips through StreamElements (its Astro event gateway, with the streamer's Overlay Token), converted to donation `ChatEvent`s |
 | `chat-streamlabs` | tips through Streamlabs (its Socket API, socket.io 2 by hand, with the account's Socket API Token), converted to donation `ChatEvent`s |
+| `chat-websocket` | what the WebSocket sources share: `connect` (a `wss://` connection with one TLS setup for the whole app) and `keep_connected` (reconnecting with growing pauses, the status while waiting, giving up on a `SetupError`) |
 | `chat-reactions` | chat reactions: rules (trigger, guards, cooldowns) and outputs to other programs (Warudo, OBS) |
 
 Why so many crates? Each one has one job and only knows what it must.
@@ -247,10 +248,19 @@ for the user), get an anonymous token from the
 site's GraphQL API, open the chat WebSocket. Frames are compact JSON and
 read loosely (`serde_json::Value`): the format is undocumented, so a
 message missing what we need is skipped instead of failing the connection.
-Unlike the other sources it reconnects by itself rather than letting the
+Like the tip services, it reconnects by itself rather than letting the
 engine restart it: a restart builds a new source, and each one downloads
 the site's 1.4 MB script once for the emote tables (Picarto's own emotes
-are `data:` images in it, emoji names map to unicode). It pings every 30 s
+are `data:` images in it, emoji names map to unicode). The reconnecting is
+chat-websocket's `keep_connected`, shared by all three WebSocket sources:
+3 s after a connection ends, twice as long after each quick failure in a
+row (up to 2 minutes), back to 3 s once a connection lasted a minute, the
+reason and the wait in the source's status, and a `SetupError` ends it.
+Their TLS comes from there too (`connect`): rustls with its aws-lc-rs
+backend chosen explicitly (the process-wide default panics when both
+backends are built in, as in the app), set up once for the whole app.
+Picarto's and Streamlabs' log lines carry the channel or label (a tracing
+span), as several can run at once. It pings every 30 s
 as the site does; 75 s without any frame counts as a dead connection. In a
 multistream the channels share one chat, and all of it is shown, as on
 Picarto; only the configured channel's own streamer gets the
@@ -285,7 +295,8 @@ store under the account id, never in `config.toml`:
 the factory reads it at every start (a missing one is a `SetupError`), and
 removing the last source of that account deletes it. A refused token is a
 `SetupError` and waits for the user. Like Picarto, it reconnects by
-itself; 75 s without a frame (Astro pings every 30 s) is a dead
+itself (`keep_connected`), right away when Astro announces a server
+restart; 75 s without a frame (Astro pings every 30 s) is a dead
 connection.
 
 **Streamlabs** is a tipping service too. Its Socket API is socket.io 2
@@ -311,7 +322,9 @@ differs between them, where a token is kept and what it's called, is in
 `SourceConfig::token`). A wrong token is
 answered with `44"Authentication error"` and the connection stays open: the
 source turns it into a `SetupError` and waits for the user. The server
-speaks only TLS 1.2, hence rustls' `tls12` feature.
+speaks only TLS 1.2, hence rustls' `tls12` feature (in chat-websocket,
+whose TLS setup all WebSocket sources share). The token is blanked out of
+connection errors, which could quote the address it's in.
 
 **Demo** sends sample messages of every kind, for styling themes without a
 live chat. **Manual** is fed by the app's test window; it exists exactly as

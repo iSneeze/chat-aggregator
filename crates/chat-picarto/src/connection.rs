@@ -3,16 +3,14 @@
 //! get an anonymous token from the website's GraphQL API, open the chat
 //! WebSocket with it.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use chat_core::SetupError;
+use chat_websocket::Socket;
+use chat_websocket::tungstenite::client::IntoClientRequest;
+use chat_websocket::tungstenite::http::{HeaderValue, header};
 use serde_json::{Value, json};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::{HeaderValue, header};
-use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// Sent with every request, the WebSocket's included: Picarto's chat server
 /// refuses a handshake without a `User-Agent` (403), and tungstenite sends
@@ -25,8 +23,6 @@ const CHAT: &str = "wss://chat.picarto.tv/chat/token=";
 /// without a login.
 const TOKEN_QUERY: &str = "query generateToken($channelName: String) { \
     generateJwtToken(channel_name: $channelName) { key } }";
-
-pub(crate) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// What the public API says about the channel, as far as the source needs
 /// it.
@@ -79,11 +75,7 @@ pub(crate) async fn lookup(http: &reqwest::Client, name: &str) -> anyhow::Result
 }
 
 /// Gets a fresh anonymous token and opens the chat WebSocket with it.
-pub(crate) async fn open(
-    http: &reqwest::Client,
-    tls: &Arc<rustls::ClientConfig>,
-    channel: &str,
-) -> anyhow::Result<Socket> {
+pub(crate) async fn open(http: &reqwest::Client, channel: &str) -> anyhow::Result<Socket> {
     let token = chat_token(http, channel).await?;
     // The token goes into the URL itself, so the URL is a secret too: it's
     // never logged, and tungstenite's errors don't include it.
@@ -91,12 +83,9 @@ pub(crate) async fn open(
     request
         .headers_mut()
         .insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
-    let connector = Connector::Rustls(Arc::clone(tls));
-    let (socket, _response) =
-        tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
-            .await
-            .context("connecting to Picarto's chat server")?;
-    Ok(socket)
+    chat_websocket::connect(request)
+        .await
+        .context("connecting to Picarto's chat server")
 }
 
 /// The website's GraphQL request for an anonymous chat token.
@@ -120,20 +109,4 @@ async fn chat_token(http: &reqwest::Client, channel: &str) -> anyhow::Result<Str
         .as_str()
         .map(str::to_owned)
         .context("Picarto returned no chat token for this channel")
-}
-
-/// TLS for the WebSocket, with the crypto backend chosen explicitly.
-/// Otherwise tungstenite asks rustls for the process-wide default, which
-/// panics when rustls was built with both of its backends: `ring` (from
-/// chat-youtube's gRPC) and `aws-lc-rs` (from reqwest), as in any build with
-/// both crates. We take aws-lc-rs, which reqwest uses anyway.
-pub(crate) fn tls_config() -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(Arc::new(config))
 }

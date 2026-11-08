@@ -1,17 +1,15 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use chat_websocket::Socket;
+use chat_websocket::tungstenite::Message;
+use chat_websocket::tungstenite::client::IntoClientRequest;
 use futures_util::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use reqwest::Url;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde_json::{Map, Value, json};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// Prints everything RPlay's chat sends for a channel as raw JSON frames,
 /// before anything is decoded or filtered. For collecting real messages and
@@ -53,7 +51,6 @@ async fn main() -> anyhow::Result<()> {
         .user_agent(concat!("chat-aggregator/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(15))
         .build()?;
-    let tls = tls_config()?;
 
     let mut tool = match std::env::var("RPLAY_TOOLKEY") {
         Ok(value) if !value.trim().is_empty() => {
@@ -91,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
         seen: HashSet::new(),
     };
     loop {
-        match connect(&http, &tls, &creator, tool.as_mut()).await {
+        match connect(&http, &creator, tool.as_mut()).await {
             Ok(socket) => {
                 connected_once = true;
                 delay = RETRY_FIRST;
@@ -151,14 +148,11 @@ const TOKEN_FIELDS: &[&str] = &[
     "tokenExpirationTime",
 ];
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
 /// Does what RPlay's web page does: look up the channel's chat server, get a
 /// token, open the WebSocket. Fetches both again on every reconnect, so the
 /// log also shows how the channel changes (live, offline, ...).
 async fn connect(
     http: &reqwest::Client,
-    tls: &Arc<rustls::ClientConfig>,
     creator: &str,
     tool: Option<&mut ToolSession>,
 ) -> anyhow::Result<Socket> {
@@ -192,11 +186,9 @@ async fn connect(
     request
         .headers_mut()
         .insert("Sec-WebSocket-Protocol", secret_header(token)?);
-    let connector = Connector::Rustls(Arc::clone(tls));
-    let (socket, _response) =
-        tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
-            .await
-            .context("connecting to the chat server")?;
+    let socket = chat_websocket::connect(request)
+        .await
+        .context("connecting to the chat server")?;
     line("connected", chat_url);
     Ok(socket)
 }
@@ -581,21 +573,4 @@ fn line(label: &str, text: &str) {
         "{} [{label}] {text}",
         jiff::Zoned::now().strftime("%H:%M:%S%.3f")
     );
-}
-
-/// TLS for the WebSocket, with the crypto backend chosen explicitly.
-/// Otherwise tungstenite asks rustls for the process-wide default, which
-/// panics when rustls was built with both of its backends: `ring` (from
-/// chat-youtube's gRPC) and `aws-lc-rs` (from reqwest). That happens in any
-/// build that contains both crates (`--workspace` now, the app later). We
-/// take aws-lc-rs, which reqwest uses anyway.
-fn tls_config() -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(Arc::new(config))
 }

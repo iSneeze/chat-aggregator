@@ -18,26 +18,19 @@
 
 mod frames;
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use anyhow::{Context, bail};
 use chat_core::tiers::TipSettings;
 use chat_core::{Activity, ChatEvent, ChatSource, Reporter, SetupError};
+use chat_websocket::Ended;
+use chat_websocket::tungstenite::{self, Message};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
-use tokio_tungstenite::Connector;
-use tokio_tungstenite::tungstenite::{self, Message};
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, info_span};
 
 use frames::Frame;
 
 const SOCKETS: &str = "wss://sockets.streamlabs.com/socket.io/";
-const RETRY_FIRST: Duration = Duration::from_secs(3);
-const RETRY_MAX: Duration = Duration::from_secs(120);
-/// A connection that lasted this long worked: the wait starts over.
-const STABLE_AFTER: Duration = Duration::from_secs(60);
 /// The longest label: it's shown in the app's source list.
 const LABEL_MAX: usize = 40;
 
@@ -81,50 +74,15 @@ fn token_refused(why: &str) -> SetupError {
     ))
 }
 
-/// Why a connection ended without an error.
-enum Ended {
-    /// Streamlabs closed it; connect again after a pause.
-    Closed,
-    /// Nobody listens to our events anymore: stop.
-    ReceiverGone,
-}
-
 impl ChatSource for StreamlabsSource {
     async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
         activity.set(Activity::Connecting);
-        let tls = tls_config()?;
-        // Reconnects by itself, like the StreamElements source: a network
-        // hiccup isn't worth a restart by the engine.
-        let mut delay = RETRY_FIRST;
-        loop {
-            let started = Instant::now();
-            let problem = match self.read(&tls, &tx, &activity).await {
-                Ok(Ended::ReceiverGone) => return Ok(()),
-                Ok(Ended::Closed) => {
-                    info!("Streamlabs closed the connection");
-                    "connection closed by Streamlabs".to_owned()
-                }
-                // A wrong token stays wrong: the engine shows it to the user.
-                Err(e) if e.is::<SetupError>() => return Err(e),
-                Err(e) => {
-                    let problem = self.without_token(&format!("{e:#}"));
-                    warn!("Streamlabs ({}): {problem}", self.label);
-                    format!("connection problem: {problem}")
-                }
-            };
-            // Waits longer after each quick failure in a row, so a server
-            // that keeps refusing isn't hammered.
-            if started.elapsed() >= STABLE_AFTER {
-                delay = RETRY_FIRST;
-            }
-            activity.set(Activity::Degraded(format!(
-                "{problem}; reconnecting in {} s",
-                delay.as_secs()
-            )));
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(RETRY_MAX);
-            activity.set(Activity::Connecting);
-        }
+        // The label in every log line from here on (as
+        // `streamlabs{label=…}`): with two accounts, the log says whose.
+        let span = info_span!("streamlabs", label = %self.label);
+        chat_websocket::keep_connected("Streamlabs", &activity, || self.read(&tx, &activity))
+            .instrument(span)
+            .await
     }
 }
 
@@ -132,7 +90,6 @@ impl StreamlabsSource {
     /// One connection: from connecting until it ends.
     async fn read(
         &self,
-        tls: &Arc<rustls::ClientConfig>,
         tx: &mpsc::Sender<ChatEvent>,
         activity: &Reporter,
     ) -> anyhow::Result<Ended> {
@@ -143,27 +100,23 @@ impl StreamlabsSource {
             "{SOCKETS}?token={}&EIO=3&transport=websocket",
             percent_encoded(&self.token)
         );
-        let connector = Connector::Rustls(Arc::clone(tls));
-        let mut socket = match tokio_tungstenite::connect_async_tls_with_config(
-            url,
-            None,
-            false,
-            Some(connector),
-        )
-        .await
-        {
-            Ok((socket, _response)) => socket,
-            // Only the status: the address (with the token in it) stays
-            // out of the error, which ends up in the log and the app.
+        // The errors end up in the log and the app: only the status of a
+        // refused handshake, and any other error without the token, in
+        // case it quotes the address.
+        let mut socket = match chat_websocket::connect(url).await {
+            Ok(socket) => socket,
             Err(tungstenite::Error::Http(response)) => {
                 bail!(
                     "Streamlabs refused the connection: HTTP {}",
                     response.status()
                 )
             }
-            Err(e) => return Err(e).context("connecting to Streamlabs"),
+            Err(e) => bail!(
+                "connecting to Streamlabs: {}",
+                self.without_token(&e.to_string())
+            ),
         };
-        debug!("connected to Streamlabs ({})", self.label);
+        debug!("connected to Streamlabs");
 
         let mut ping_interval = frames::PING_INTERVAL;
         let mut ping_timeout = frames::PING_TIMEOUT;
@@ -184,7 +137,7 @@ impl StreamlabsSource {
                                 next_ping = Instant::now() + ping_interval;
                             }
                             Frame::Connected => {
-                                info!("reading Streamlabs donations ({})", self.label);
+                                info!("reading Streamlabs donations");
                                 activity.set(Activity::Receiving);
                             }
                             Frame::Refused(why) => return Err(token_refused(&why).into()),
@@ -249,21 +202,6 @@ fn percent_encoded(text: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
-}
-
-/// TLS for the WebSocket, with the crypto backend chosen explicitly (see
-/// chat-streamelements' `tls_config` for why). The safe defaults include
-/// TLS 1.2, which sockets.streamlabs.com needs, thanks to rustls' `tls12`
-/// feature (Cargo.toml).
-fn tls_config() -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(Arc::new(config))
 }
 
 #[cfg(test)]

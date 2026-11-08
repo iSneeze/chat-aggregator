@@ -16,6 +16,7 @@ default-members = [
     "crates/chat-streamelements",
     "crates/chat-streamlabs",
     "crates/chat-twitch",
+    "crates/chat-websocket",
     "crates/chat-youtube",
 ]
 
