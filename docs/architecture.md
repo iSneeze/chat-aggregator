@@ -271,7 +271,12 @@ reactions). Amounts come without a currency, in the one the streamer set
 for their tip page: the streamer's tip settings (`TipSettings`: currency,
 tier starts) say both, read from a `watch` channel for every tip, so a
 change in Settings applies to the next tip without a reconnect (the source
-factory holds the sender, `SourceFactory::set_tips`). The token lives in the secret
+factory holds the sender, `SourceFactory::set_tips`). The frame parser
+doesn't see those settings: it gives a `Tip` (`chat_core::tiers`) with
+what StreamElements sent, and the source turns it into a donation
+message with the settings of the moment (`Tip::into_message`, which uses
+`TipSettings::donation`, the one place that decides a tip's amount text,
+tier and currency for both tip services and the test window). The token lives in the secret
 store under the account id, never in `config.toml`:
 `EngineHandle::add_source_with_token` stores it and adds the source,
 the factory reads it at every start (a missing one is a `SetupError`), and
@@ -291,8 +296,9 @@ only `type: "donation"` from the tip page (`for: "streamlabs"`, or none).
 Test donations from the dashboard (`isTest`) count like real ones; the
 alert box editor's previews (`isPreview`, a fake alert every ~18 s while
 it's open) never do. Unlike StreamElements, Streamlabs reports each tip's
-currency: tiers come from the same `TipSettings`, but a tip in another
-currency than the tip currency gets tier 1 (nothing is converted). A
+currency: tiers come from the same `TipSettings` (through the same
+`Tip`), but a tip in another currency than the tip currency gets tier 1
+(nothing is converted). A
 streamer can have several accounts (a VTuber with a corporate and an indie
 persona), and the token doesn't say whose account it is, so each source has
 a **label** the streamer picks: the token lives in the secret store under

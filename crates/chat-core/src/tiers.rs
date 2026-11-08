@@ -15,6 +15,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::{Author, ChatMessage, ChatPlatform, MessageKind};
+
 /// The highest tier. YouTube's top band may report more (bigger Super
 /// Chats stay pinned longer); those count as 7 and above.
 pub const TOP_TIER: u32 = 7;
@@ -194,6 +196,63 @@ impl TipSettings {
     pub fn display(&self, amount: Amount) -> String {
         display_amount(amount, self.currency())
     }
+
+    /// A tip of `amount` as a donation: shown in its currency, with its
+    /// tier. `currency`: the tip's, if the service reports one (Streamlabs
+    /// does); `None` (StreamElements): the tip page's, which is the tip
+    /// currency set here. The tiers are in the tip currency, so a tip in
+    /// another one gets tier 1: it's a donation, but what it's worth would
+    /// take a conversion (decided 2026-11-07). While no tip currency is
+    /// set, the tiers are taken as they are.
+    pub fn donation(&self, amount: Amount, currency: Option<String>) -> MessageKind {
+        let currency = currency.or_else(|| self.currency().map(str::to_owned));
+        let tier = match (self.currency(), currency.as_deref()) {
+            (Some(ours), Some(theirs)) if ours != theirs => 1,
+            _ => self.tier(amount),
+        };
+        MessageKind::Donation {
+            amount: display_amount(amount, currency.as_deref()),
+            tier: Some(tier),
+            value: Some(amount.as_f64()),
+            currency,
+        }
+    }
+}
+
+/// A tip as a tip service (StreamElements, Streamlabs) reported it: what
+/// its source read from the service, before the streamer's tip settings
+/// give it a tier and a currency. Those can change while the source runs,
+/// so they're applied as each tip goes out ([`Tip::into_message`]), and the
+/// services' frame parsers don't need the settings at all.
+#[derive(Debug, Clone)]
+pub struct Tip {
+    pub id: String,
+    pub platform: ChatPlatform,
+    pub author: Author,
+    /// The tipper's message; empty if they wrote none.
+    pub text: String,
+    pub timestamp: jiff::Timestamp,
+    pub amount: Amount,
+    /// The tip's currency (an ISO code) if the service reports one; `None`:
+    /// the tip page's (see [`TipSettings::donation`]).
+    pub currency: Option<String>,
+}
+
+impl Tip {
+    /// The tip as a donation message, with the settings as they are now.
+    /// Takes `self` by value (an `into_…` method, by Rust's naming
+    /// convention): the tip's strings move into the message, uncopied.
+    pub fn into_message(self, tips: &TipSettings) -> ChatMessage {
+        ChatMessage {
+            id: self.id,
+            platform: self.platform,
+            author: self.author,
+            text: self.text,
+            emotes: Vec::new(),
+            timestamp: self.timestamp,
+            kind: tips.donation(self.amount, self.currency),
+        }
+    }
 }
 
 /// An amount for display: "€10.00" with a currency (an ISO code), "10"
@@ -288,6 +347,99 @@ mod tests {
         assert_eq!(tips.display(ten), "10.00 CHF");
         tips.currency = "JPY".into();
         assert_eq!(tips.display(Amount::whole(500)), "¥500");
+    }
+
+    /// A donation's amount as shown, tier, value and currency.
+    fn parts(kind: MessageKind) -> (String, Option<u32>, Option<f64>, Option<String>) {
+        match kind {
+            MessageKind::Donation {
+                amount,
+                tier,
+                value,
+                currency,
+            } => (amount, tier, value, currency),
+            other => panic!("not a donation: {other:?}"),
+        }
+    }
+
+    /// Tip tiers that aren't YouTube's steps, in euros.
+    fn in_euros() -> TipSettings {
+        TipSettings {
+            currency: "EUR".into(),
+            tiers: [3, 6, 9, 69, 100, 420].map(Amount::whole),
+        }
+    }
+
+    #[test]
+    fn tips_become_donations_in_the_tip_currency() {
+        let eur = Some("EUR".to_string());
+        // No currency anywhere (StreamElements while none is set): a plain
+        // number, tiers from the table.
+        assert_eq!(
+            parts(TipSettings::default().donation(Amount::whole(10), None)),
+            ("10".into(), Some(4), Some(10.0), None)
+        );
+        // None reported (StreamElements): the tip currency.
+        let nice = ("€69.00".into(), Some(5), Some(69.0), eur.clone());
+        assert_eq!(parts(in_euros().donation(Amount::whole(69), None)), nice);
+        // Reported, and the tip currency (Streamlabs): the same.
+        assert_eq!(
+            parts(in_euros().donation(Amount::whole(69), eur.clone())),
+            nice
+        );
+    }
+
+    #[test]
+    fn a_tip_in_another_currency_gets_tier_1() {
+        let usd = Some("USD".to_string());
+        // Shown in its own currency; its worth would take a conversion.
+        assert_eq!(
+            parts(in_euros().donation(Amount::whole(69), usd.clone())),
+            ("$69.00".into(), Some(1), Some(69.0), usd.clone())
+        );
+        // No tip currency set: nothing to compare with, the tiers as they
+        // are.
+        let unset = TipSettings {
+            currency: String::new(),
+            ..in_euros()
+        };
+        assert_eq!(
+            parts(unset.donation(Amount::whole(69), usd.clone())),
+            ("$69.00".into(), Some(5), Some(69.0), usd)
+        );
+    }
+
+    #[test]
+    fn a_tip_message_keeps_what_the_service_said() {
+        let tip = Tip {
+            id: "t1".into(),
+            platform: ChatPlatform::Streamlabs,
+            author: Author {
+                id: "viewer42".into(),
+                name: "Viewer42".into(),
+                color: None,
+                badges: Vec::new(),
+                avatar_url: None,
+            },
+            text: "Hello!".into(),
+            timestamp: jiff::Timestamp::UNIX_EPOCH,
+            amount: Amount::of(2.5).unwrap(),
+            currency: None,
+        };
+        let message = tip.into_message(&in_euros());
+        assert_eq!(message.id, "t1");
+        assert_eq!(message.platform, ChatPlatform::Streamlabs);
+        assert_eq!(
+            (message.author.id.as_str(), message.author.name.as_str()),
+            ("viewer42", "Viewer42")
+        );
+        assert_eq!(message.text, "Hello!");
+        assert_eq!(message.timestamp, jiff::Timestamp::UNIX_EPOCH);
+        assert!(message.emotes.is_empty());
+        assert_eq!(
+            parts(message.kind),
+            ("€2.50".into(), Some(1), Some(2.5), Some("EUR".into()))
+        );
     }
 
     #[test]

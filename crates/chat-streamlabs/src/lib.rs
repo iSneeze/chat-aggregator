@@ -177,34 +177,32 @@ impl StreamlabsSource {
                     };
                     heard = Instant::now();
                     match frame.context("reading from Streamlabs")? {
-                        Message::Text(text) => {
-                            // Decoded before the `match`, not in its head: the
-                            // settings' read lock from `borrow` would live
-                            // through the whole `match`, across the `.await`
-                            // below, and a lock held across an `.await` makes
-                            // the task unsendable between threads.
-                            let frame = frames::decode(&text, &self.tips.borrow());
-                            match frame {
-                                Frame::Open { interval, timeout } => {
-                                    ping_interval = interval;
-                                    ping_timeout = timeout;
-                                    next_ping = Instant::now() + ping_interval;
-                                }
-                                Frame::Connected => {
-                                    info!("reading Streamlabs donations ({})", self.label);
-                                    activity.set(Activity::Receiving);
-                                }
-                                Frame::Refused(why) => return Err(token_refused(&why).into()),
-                                Frame::Donations(messages) => {
-                                    for message in messages {
-                                        if tx.send(ChatEvent::Message(message)).await.is_err() {
-                                            return Ok(Ended::ReceiverGone);
-                                        }
+                        Message::Text(text) => match frames::decode(&text) {
+                            Frame::Open { interval, timeout } => {
+                                ping_interval = interval;
+                                ping_timeout = timeout;
+                                next_ping = Instant::now() + ping_interval;
+                            }
+                            Frame::Connected => {
+                                info!("reading Streamlabs donations ({})", self.label);
+                                activity.set(Activity::Receiving);
+                            }
+                            Frame::Refused(why) => return Err(token_refused(&why).into()),
+                            Frame::Donations(donations) => {
+                                for tip in donations {
+                                    // The tip settings as they are now. In a
+                                    // statement of its own: `borrow`'s read
+                                    // lock ends with it, and a lock held
+                                    // across the `.await` below would make
+                                    // the task unsendable between threads.
+                                    let message = tip.into_message(&self.tips.borrow());
+                                    if tx.send(ChatEvent::Message(message)).await.is_err() {
+                                        return Ok(Ended::ReceiverGone);
                                     }
                                 }
-                                Frame::Ignored => {}
                             }
-                        }
+                            Frame::Ignored => {}
+                        },
                         Message::Close(close) => {
                             debug!(?close, "Streamlabs said goodbye");
                             return Ok(Ended::Closed);

@@ -100,13 +100,13 @@ const PLATFORMS: [(ChatPlatform, &str); 4] = [
 ];
 
 /// A test donation of `amount` on `platform`, as that platform's source
-/// would send it: (amount as shown, tier, currency). The tier comes from
-/// the amount, on the scale every platform shares (`chat_core::tiers`).
+/// would send it. The tier comes from the amount, on the scale every
+/// platform shares (`chat_core::tiers`).
 fn donation(
     platform: ChatPlatform,
     amount: Amount,
     tips: &TipSettings,
-) -> Result<(String, u32, Option<String>), String> {
+) -> Result<MessageKind, String> {
     Ok(match platform {
         ChatPlatform::Twitch => {
             let bits = amount.as_f64();
@@ -115,24 +115,26 @@ fn donation(
             }
             // Whole and at most 1e13 (see `Amount::of`): the cast is exact.
             let bits = bits as u64;
-            (format!("{bits} bits"), tiers::bits_tier(bits), None)
+            MessageKind::Donation {
+                amount: format!("{bits} bits"),
+                tier: Some(tiers::bits_tier(bits)),
+                value: Some(bits as f64),
+                currency: None,
+            }
         }
         // In the tip currency if one is set, so amount rules can be tried
         // with Super Chats too; otherwise in dollars, YouTube's tier unit.
         ChatPlatform::YouTube => {
-            let currency = tips.currency().unwrap_or("USD").to_owned();
-            let shown = TipSettings {
-                currency: currency.clone(),
-                ..TipSettings::default()
+            let currency = tips.currency().unwrap_or("USD");
+            MessageKind::Donation {
+                amount: tiers::display_amount(amount, Some(currency)),
+                tier: Some(tiers::youtube_tier(amount)),
+                value: Some(amount.as_f64()),
+                currency: Some(currency.to_owned()),
             }
-            .display(amount);
-            (shown, tiers::youtube_tier(amount), Some(currency))
         }
-        _ => (
-            tips.display(amount),
-            tips.tier(amount),
-            tips.currency().map(str::to_owned),
-        ),
+        // The tip services: exactly what their sources make of a tip.
+        _ => tips.donation(amount, None),
     })
 }
 
@@ -249,13 +251,15 @@ impl ManualWindow {
                     .parse()
                     .map_err(|e| format!("the amount: {e}"))?;
                 let tips = self.engine.settings().borrow().tips.clone();
-                let (shown, tier, currency) = donation(self.platform, amount, &tips)?;
-                MessageKind::Donation {
-                    amount: shown,
-                    tier: self.tiered.then_some(tier),
-                    value: Some(amount.as_f64()),
-                    currency,
+                let mut kind = donation(self.platform, amount, &tips)?;
+                // "none": a theme's look without a tier (like a YouTube
+                // jewel gift's).
+                if !self.tiered
+                    && let MessageKind::Donation { tier, .. } = &mut kind
+                {
+                    *tier = None;
                 }
+                kind
             }
             Kind::Membership => MessageKind::MembershipJoin {
                 info: non_empty(value(&self.info), "a description")?,

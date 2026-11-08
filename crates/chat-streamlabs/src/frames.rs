@@ -10,8 +10,8 @@
 
 use std::time::Duration;
 
-use chat_core::tiers::{Amount, TipSettings, display_amount};
-use chat_core::{Author, ChatMessage, ChatPlatform, MessageKind};
+use chat_core::tiers::{Amount, Tip};
+use chat_core::{Author, ChatPlatform};
 use serde_json::Value;
 
 /// Engine.IO 3's own defaults, until the open packet says otherwise
@@ -33,15 +33,15 @@ pub(crate) enum Frame {
     /// `44"…"`: the token was refused (seen: "Authentication error"). Only
     /// the user can fix it.
     Refused(String),
-    /// Donations, as messages: `message` is a list in every event.
-    Donations(Vec<ChatMessage>),
+    /// Donations, as Streamlabs sent them (the source applies the
+    /// streamer's tip settings): `message` is a list in every event.
+    Donations(Vec<Tip>),
     /// Anything else: pongs, settings, statistics, previews, the
     /// platforms' relayed events.
     Ignored,
 }
 
-/// `tips`: the streamer's tip settings, for a donation's tier.
-pub(crate) fn decode(text: &str, tips: &TipSettings) -> Frame {
+pub(crate) fn decode(text: &str) -> Frame {
     let mut chars = text.chars();
     match chars.next() {
         Some('0') => {
@@ -54,13 +54,13 @@ pub(crate) fn decode(text: &str, tips: &TipSettings) -> Frame {
                 timeout: ms("pingTimeout", PING_TIMEOUT),
             }
         }
-        Some('4') => socket_io(chars.as_str(), tips),
+        Some('4') => socket_io(chars.as_str()),
         _ => Frame::Ignored,
     }
 }
 
 /// A socket.io packet: what follows Engine.IO's `4`.
-fn socket_io(packet: &str, tips: &TipSettings) -> Frame {
+fn socket_io(packet: &str) -> Frame {
     let mut chars = packet.chars();
     match chars.next() {
         Some('0') => Frame::Connected,
@@ -75,7 +75,7 @@ fn socket_io(packet: &str, tips: &TipSettings) -> Frame {
                 return Frame::Ignored;
             };
             match (parts.first().and_then(Value::as_str), parts.get(1)) {
-                (Some("event"), Some(event)) => donations(event, tips),
+                (Some("event"), Some(event)) => donations(event),
                 // `donationPageSettings` and anything else that isn't an
                 // "event".
                 _ => Frame::Ignored,
@@ -85,7 +85,7 @@ fn socket_io(packet: &str, tips: &TipSettings) -> Frame {
     }
 }
 
-fn donations(event: &Value, tips: &TipSettings) -> Frame {
+fn donations(event: &Value) -> Frame {
     // The tip page's own donations. The docs give them `for: "streamlabs"`,
     // their sample has no `for` at all: both are taken. Every other `for`
     // (`twitch_account`, `youtube_account`) is a platform's event relayed,
@@ -97,14 +97,11 @@ fn donations(event: &Value, tips: &TipSettings) -> Frame {
     let Some(entries) = event["message"].as_array() else {
         return Frame::Ignored;
     };
-    let messages: Vec<_> = entries
-        .iter()
-        .filter_map(|entry| donation(entry, tips))
-        .collect();
-    if messages.is_empty() {
+    let donations: Vec<_> = entries.iter().filter_map(donation).collect();
+    if donations.is_empty() {
         Frame::Ignored
     } else {
-        Frame::Donations(messages)
+        Frame::Donations(donations)
     }
 }
 
@@ -113,12 +110,14 @@ fn donations(event: &Value, tips: &TipSettings) -> Frame {
 /// usable amount or id. Tests from the dashboard's buttons (`isTest`) are
 /// kept on purpose (decided 2026-11-07): that's how a streamer checks the
 /// overlay and the reactions before going live.
-fn donation(entry: &Value, tips: &TipSettings) -> Option<ChatMessage> {
+fn donation(entry: &Value) -> Option<Tip> {
     if entry["isPreview"] == true {
         return None;
     }
     let id = text(&entry["_id"])?;
     // A number in the capture, a string ("13.37") in Streamlabs' docs.
+    // Shown with our own formatting rather than Streamlabs'
+    // `formattedAmount`, so its tips look like StreamElements'.
     let amount = entry["amount"]
         .as_f64()
         .or_else(|| entry["amount"].as_str()?.trim().parse().ok())
@@ -133,7 +132,7 @@ fn donation(entry: &Value, tips: &TipSettings) -> Option<ChatMessage> {
     // name typed on the tip page is all there is, as with StreamElements.
     let author_id = name.to_lowercase();
 
-    Some(ChatMessage {
+    Some(Tip {
         id,
         platform: ChatPlatform::Streamlabs,
         author: Author {
@@ -144,29 +143,14 @@ fn donation(entry: &Value, tips: &TipSettings) -> Option<ChatMessage> {
             avatar_url: None,
         },
         text: text(&entry["message"]).unwrap_or_default(),
-        emotes: Vec::new(),
         // Donation events carry no time of their own.
         timestamp: jiff::Timestamp::now(),
-        kind: MessageKind::Donation {
-            // Our own formatting rather than Streamlabs' `formattedAmount`:
-            // StreamElements tips look the same then.
-            amount: display_amount(amount, currency.as_deref()),
-            tier: Some(tier(amount, currency.as_deref(), tips)),
-            value: Some(amount.as_f64()),
-            currency,
-        },
+        amount,
+        // Unlike StreamElements, Streamlabs says each tip's currency: one
+        // in another than the tip currency gets tier 1
+        // (`TipSettings::donation`).
+        currency,
     })
-}
-
-/// The tier from the streamer's tip tiers, which are in their tip currency.
-/// A donation in another currency is still a donation, but how much it's
-/// worth would take a conversion: tier 1 (decided 2026-11-07). While no tip
-/// currency is set, the tiers are taken as they are.
-fn tier(amount: Amount, currency: Option<&str>, tips: &TipSettings) -> u32 {
-    match (tips.currency(), currency) {
-        (Some(ours), Some(theirs)) if ours != theirs => 1,
-        _ => tips.tier(amount),
-    }
 }
 
 /// A non-empty string field.
@@ -217,106 +201,63 @@ mod tests {
         })
     }
 
-    fn decoded(frame: &str, tips: &TipSettings) -> Vec<ChatMessage> {
-        match decode(frame, tips) {
-            Frame::Donations(messages) => messages,
+    fn decoded(frame: &str) -> Vec<Tip> {
+        match decode(frame) {
+            Frame::Donations(donations) => donations,
             other => panic!("expected donations, got {other:?}"),
         }
     }
 
-    fn donation_of(entry: Value, tips: &TipSettings) -> ChatMessage {
-        let mut messages = decoded(&event("donation", Some("streamlabs"), entry), tips);
-        assert_eq!(messages.len(), 1);
-        messages.remove(0)
+    fn donation_of(entry: Value) -> Tip {
+        let mut donations = decoded(&event("donation", Some("streamlabs"), entry));
+        assert_eq!(donations.len(), 1);
+        donations.remove(0)
     }
 
     #[test]
-    fn a_donation_becomes_a_donation_message() {
-        let message = donation_of(entry(json!(9)), &TipSettings::default());
-        assert_eq!(message.id, "00000000000000000000000000000001");
-        assert_eq!(message.platform, ChatPlatform::Streamlabs);
-        assert_eq!(
-            message.author.name, "Viewer42",
-            "the donor, not the streamer"
-        );
-        assert_eq!(message.author.id, "viewer42");
-        assert_eq!(message.text, "Hello!");
-        let MessageKind::Donation {
-            amount,
-            tier,
-            value,
-            currency,
-        } = message.kind
-        else {
-            panic!("not a donation: {:?}", message.kind);
-        };
-        assert_eq!(amount, "€9.00");
-        assert_eq!(tier, Some(3), "YouTube's steps: 5 ≤ 9 < 10");
-        assert_eq!(value, Some(9.0));
-        assert_eq!(currency.as_deref(), Some("EUR"));
+    fn a_donation_is_read() {
+        let tip = donation_of(entry(json!(9)));
+        assert_eq!(tip.id, "00000000000000000000000000000001");
+        assert_eq!(tip.platform, ChatPlatform::Streamlabs);
+        assert_eq!(tip.author.name, "Viewer42", "the donor, not the streamer");
+        assert_eq!(tip.author.id, "viewer42");
+        assert_eq!(tip.text, "Hello!");
+        assert_eq!(tip.amount, Amount::whole(9));
+        assert_eq!(tip.currency.as_deref(), Some("EUR"));
     }
 
     #[test]
     fn test_donations_count_and_previews_never_do() {
-        let tips = TipSettings::default();
         let mut test = entry(json!(12));
         test["isTest"] = json!(true);
-        assert_eq!(donation_of(test, &tips).text, "Hello!");
+        assert_eq!(donation_of(test).text, "Hello!");
 
         let mut preview = entry(json!(78));
         preview["isPreview"] = json!(true);
         preview["previewAction"] = json!("initial");
-        let frame = decode(&event("donation", Some("streamlabs"), preview), &tips);
+        let frame = decode(&event("donation", Some("streamlabs"), preview));
         assert!(matches!(frame, Frame::Ignored), "{frame:?}");
     }
 
     #[test]
     fn amounts_come_as_numbers_or_text() {
-        let tips = TipSettings::default();
-        let message = donation_of(entry(json!("13.37")), &tips);
-        assert!(matches!(
-            message.kind,
-            MessageKind::Donation {
-                value: Some(13.37),
-                tier: Some(4),
-                ..
-            }
-        ));
+        let tip = donation_of(entry(json!("13.37")));
+        assert_eq!(tip.amount, Amount::of(13.37).unwrap());
         for amount in [json!(null), json!("lots"), json!(-5)] {
-            let frame = decode(
-                &event("donation", Some("streamlabs"), entry(amount.clone())),
-                &tips,
-            );
+            let frame = decode(&event(
+                "donation",
+                Some("streamlabs"),
+                entry(amount.clone()),
+            ));
             assert!(matches!(frame, Frame::Ignored), "{amount}: {frame:?}");
         }
     }
 
     #[test]
-    fn tiers_follow_the_tip_settings_in_their_currency() {
-        let tips = TipSettings {
-            currency: "EUR".into(),
-            tiers: [3, 6, 9, 69, 100, 420].map(Amount::whole),
-        };
-        let tier_of = |currency: &str| {
-            let mut donation = entry(json!(69));
-            donation["currency"] = json!(currency);
-            match donation_of(donation, &tips).kind {
-                MessageKind::Donation { tier, .. } => tier,
-                other => panic!("not a donation: {other:?}"),
-            }
-        };
-        assert_eq!(tier_of("EUR"), Some(5));
-        // Another currency: a donation of unknown worth, the lowest tier.
-        assert_eq!(tier_of("USD"), Some(1));
-        // No tip currency set: the tiers as they are.
-        let unset = TipSettings {
-            currency: String::new(),
-            ..tips.clone()
-        };
-        assert!(matches!(
-            donation_of(entry(json!(69)), &unset).kind,
-            MessageKind::Donation { tier: Some(5), .. }
-        ));
+    fn currencies_are_read_in_capitals() {
+        let mut donation = entry(json!(5));
+        donation["currency"] = json!("usd");
+        assert_eq!(donation_of(donation).currency.as_deref(), Some("USD"));
     }
 
     #[test]
@@ -324,28 +265,21 @@ mod tests {
         let mut donation = entry(json!(1));
         donation["from"] = json!(null);
         donation["message"] = json!("  ");
-        let message = donation_of(donation, &TipSettings::default());
+        let tip = donation_of(donation);
         // Without `from`, `name` is the best there is.
-        assert_eq!(message.author.name, "your_channel");
-        assert_eq!(message.text, "");
+        assert_eq!(tip.author.name, "your_channel");
+        assert_eq!(tip.text, "");
 
         let mut nameless = entry(json!(1));
         nameless["from"] = json!(null);
         nameless["name"] = json!(null);
-        assert_eq!(
-            donation_of(nameless, &TipSettings::default()).author.name,
-            "Anonymous"
-        );
+        assert_eq!(donation_of(nameless).author.name, "Anonymous");
     }
 
     #[test]
     fn only_the_tip_pages_donations_are_kept() {
-        let tips = TipSettings::default();
         // The docs' sample: no `for`.
-        assert_eq!(
-            decoded(&event("donation", None, entry(json!(5))), &tips).len(),
-            1
-        );
+        assert_eq!(decoded(&event("donation", None, entry(json!(5)))).len(), 1);
         for (kind, service) in [
             ("donation", Some("twitch_account")),
             ("superchat", Some("youtube_account")),
@@ -355,11 +289,11 @@ mod tests {
             ("streamlabels", None),
             ("alertBoxSettingsUpdate", None),
         ] {
-            let frame = decode(&event(kind, service, entry(json!(5))), &tips);
+            let frame = decode(&event(kind, service, entry(json!(5))));
             assert!(matches!(frame, Frame::Ignored), "{kind}: {frame:?}");
         }
         let settings = r#"42["donationPageSettings",{"amount_minimum":"1"}]"#;
-        assert!(matches!(decode(settings, &tips), Frame::Ignored));
+        assert!(matches!(decode(settings), Frame::Ignored));
     }
 
     #[test]
@@ -371,10 +305,7 @@ mod tests {
             json!(["event", { "type": "donation", "for": "streamlabs",
                               "message": [entry(json!(1)), second] }])
         );
-        let ids: Vec<_> = decoded(&frame, &TipSettings::default())
-            .into_iter()
-            .map(|message| message.id)
-            .collect();
+        let ids: Vec<_> = decoded(&frame).into_iter().map(|tip| tip.id).collect();
         assert_eq!(
             ids,
             [
@@ -386,28 +317,27 @@ mod tests {
 
     #[test]
     fn connection_frames() {
-        let tips = TipSettings::default();
         let open = r#"0{"sid":"x","upgrades":[],"pingInterval":10000,"pingTimeout":20000,"maxPayload":1000000}"#;
         assert!(matches!(
-            decode(open, &tips),
+            decode(open),
             Frame::Open { interval, timeout }
                 if interval == Duration::from_secs(10) && timeout == Duration::from_secs(20)
         ));
         // An open packet without timing: Engine.IO 3's defaults.
         assert!(matches!(
-            decode("0{}", &tips),
+            decode("0{}"),
             Frame::Open {
                 interval: PING_INTERVAL,
                 timeout: PING_TIMEOUT
             }
         ));
-        assert!(matches!(decode("40", &tips), Frame::Connected));
+        assert!(matches!(decode("40"), Frame::Connected));
         assert!(matches!(
-            decode(r#"44"Authentication error""#, &tips),
+            decode(r#"44"Authentication error""#),
             Frame::Refused(ref why) if why == "Authentication error"
         ));
         for other in ["3", "", "6", "41", "42not json", "not a packet"] {
-            assert!(matches!(decode(other, &tips), Frame::Ignored), "{other:?}");
+            assert!(matches!(decode(other), Frame::Ignored), "{other:?}");
         }
     }
 }

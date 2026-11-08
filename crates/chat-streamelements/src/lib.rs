@@ -159,15 +159,7 @@ impl StreamElementsSource {
                     };
                     heard = Instant::now();
                     match frame.context("reading from StreamElements")? {
-                        Message::Text(text) => {
-                            // Decoded before the `match`, not in its head: a
-                            // value made there (the settings' read lock from
-                            // `borrow`) would live through the whole `match`,
-                            // across the `.await`s below, and a lock held
-                            // across an `.await` makes the task unsendable
-                            // between threads.
-                            let frame = frames::decode(&text, &self.tips.borrow());
-                            match frame {
+                        Message::Text(text) => match frames::decode(&text) {
                             // Astro's own examples wait for the welcome
                             // before subscribing.
                             Frame::Welcome => self.subscribe(&mut socket).await?,
@@ -179,15 +171,20 @@ impl StreamElementsSource {
                             Frame::Failed(why) => {
                                 bail!("StreamElements refused the subscription: {why}")
                             }
-                            Frame::Tip(message) => {
-                                if tx.send(ChatEvent::Message(*message)).await.is_err() {
+                            Frame::Tip(tip) => {
+                                // The tip settings as they are now. In a
+                                // statement of its own: `borrow`'s read lock
+                                // ends with it, and a lock held across the
+                                // `.await` below would make the task
+                                // unsendable between threads.
+                                let message = tip.into_message(&self.tips.borrow());
+                                if tx.send(ChatEvent::Message(message)).await.is_err() {
                                     return Ok(Ended::ReceiverGone);
                                 }
                             }
                             Frame::Reconnect => return Ok(Ended::Restarting),
                             Frame::Ignored => {}
-                            }
-                        }
+                        },
                         Message::Close(close) => {
                             debug!(?close, "StreamElements said goodbye");
                             return Ok(Ended::Closed);
