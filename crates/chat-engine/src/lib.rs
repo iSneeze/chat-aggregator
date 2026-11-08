@@ -34,11 +34,10 @@ mod factory;
 mod reactions;
 mod settings;
 mod status;
-mod streamelements;
-mod streamlabs;
 mod tokens;
 mod youtube;
 
+pub use chat_core::SetupError;
 pub use chat_core::secrets::SecretStore;
 pub use chat_reactions::{
     Action, Compare, DEFAULT_OBS_URL, DEFAULT_WARUDO_URL, Guards, MAX_EFFECT_SECS, MAX_QUEUE_SECS,
@@ -46,7 +45,7 @@ pub use chat_reactions::{
     Rule, RuleStatus, Target, Trigger, WarudoSettings,
 };
 pub use chat_server::{ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource};
-pub use config::{SetupError, SourceConfig, YouTubeSettings};
+pub use config::{SourceConfig, SourceToken, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, Settings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
 pub use youtube::{YouTubeAccount, YouTubeLogin};

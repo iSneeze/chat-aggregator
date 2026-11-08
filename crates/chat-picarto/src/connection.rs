@@ -3,11 +3,11 @@
 //! get an anonymous token from the website's GraphQL API, open the chat
 //! WebSocket with it.
 
-use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use chat_core::SetupError;
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -27,19 +27,6 @@ const TOKEN_QUERY: &str = "query generateToken($channelName: String) { \
     generateJwtToken(channel_name: $channelName) { key } }";
 
 pub(crate) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-/// The channel doesn't exist on Picarto: only the user can fix that (a
-/// typo, a renamed channel), so the engine doesn't retry it.
-#[derive(Debug)]
-pub struct ChannelNotFound(pub String);
-
-impl fmt::Display for ChannelNotFound {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "there is no Picarto channel named {:?}", self.0)
-    }
-}
-
-impl std::error::Error for ChannelNotFound {}
 
 /// What the public API says about the channel, as far as the source needs
 /// it.
@@ -69,7 +56,9 @@ pub(crate) async fn lookup(http: &reqwest::Client, name: &str) -> anyhow::Result
         .await
         .context("looking up the Picarto channel")?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(ChannelNotFound(name.to_owned()).into());
+        // Only the user can fix that (a typo, a renamed channel): a
+        // `SetupError`, which the engine doesn't retry.
+        return Err(SetupError(format!("there is no Picarto channel named {name:?}")).into());
     }
     let info: Value = response
         .error_for_status()

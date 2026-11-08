@@ -242,8 +242,8 @@ the total isn't counted twice.
 
 **Picarto** has no public chat API, so the source does what Picarto's
 website does for a logged-out visitor: look the
-channel up in the public API (a wrong name is a `ChannelNotFound`, which
-waits for the user like a setup error), get an anonymous token from the
+channel up in the public API (a wrong name is a `SetupError`, which waits
+for the user), get an anonymous token from the
 site's GraphQL API, open the chat WebSocket. Frames are compact JSON and
 read loosely (`serde_json::Value`): the format is undocumented, so a
 message missing what we need is skipped instead of failing the connection.
@@ -273,10 +273,10 @@ tier starts) say both, read from a `watch` channel for every tip, so a
 change in Settings applies to the next tip without a reconnect (the source
 factory holds the sender, `SourceFactory::set_tips`). The token lives in the secret
 store under the account id, never in `config.toml`:
-`EngineHandle::add_streamelements_source` stores it and adds the source,
+`EngineHandle::add_source_with_token` stores it and adds the source,
 the factory reads it at every start (a missing one is a `SetupError`), and
 removing the last source of that account deletes it. A refused token is a
-`TokenRefused` and waits for the user. Like Picarto, it reconnects by
+`SetupError` and waits for the user. Like Picarto, it reconnects by
 itself; 75 s without a frame (Astro pings every 30 s) is a dead
 connection.
 
@@ -296,10 +296,12 @@ currency than the tip currency gets tier 1 (nothing is converted). A
 streamer can have several accounts (a VTuber with a corporate and an indie
 persona), and the token doesn't say whose account it is, so each source has
 a **label** the streamer picks: the token lives in the secret store under
-it (`EngineHandle::add_streamlabs_source`; the shared token handling for
-both tip services is in chat-engine's `tokens.rs`). A wrong token is
+it (the same `add_source_with_token`: the token handling is one piece of
+code for both tip services, in chat-engine's `tokens.rs`, and all that
+differs between them, where a token is kept and what it's called, is in
+`SourceConfig::token`). A wrong token is
 answered with `44"Authentication error"` and the connection stays open: the
-source turns it into its `TokenRefused` and waits for the user. The server
+source turns it into a `SetupError` and waits for the user. The server
 speaks only TLS 1.2, hence rustls' `tls12` feature.
 
 **Demo** sends sample messages of every kind, for styling themes without a
@@ -634,8 +636,12 @@ every window reads the current ones instead of keeping a copy.
 - A source that fails is restarted with **exponential backoff**: 2 s,
   doubling up to 5 minutes; after 60 s of running fine the counter resets.
 - Errors only the user can fix (`SetupError` such as an invalid channel
-  name, `LoginRequired`) are **not** retried: the source waits in
-  *NeedsAttention* until the settings change.
+  name or a refused token, `LoginRequired`) are **not** retried: the
+  source waits in *NeedsAttention* until the settings change.
+  `SetupError` lives in `chat-core`: the engine recognises it by its type
+  (`anyhow::Error::is`, a check at run time), so every source has to
+  return that same type, from a crate both sides depend on, instead of
+  a type of its own that the engine would have to list.
 - Each start/stop bumps a **generation** number. Messages from an older run
   (a late "ended", a stale retry timer) carry the old number and are
   ignored, so a quick stop/start can't be undone by leftovers.

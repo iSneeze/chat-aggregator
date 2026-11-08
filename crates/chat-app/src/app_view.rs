@@ -547,8 +547,9 @@ impl AppView {
             cx.notify();
             return;
         }
+        let needs_token = self.new_source.needs_token();
         let token = self.token.read(cx).value().trim().to_string();
-        if let Some((_, missing)) = self.new_source.needs_token()
+        if let Some((_, missing)) = needs_token
             && token.is_empty()
         {
             self.form_error = Some(missing.into());
@@ -565,14 +566,9 @@ impl AppView {
         // token goes to the secret store first.
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let added = match &config {
-                SourceConfig::StreamElements { account } => {
-                    engine.add_streamelements_source(account, &token).await
-                }
-                SourceConfig::Streamlabs { label } => {
-                    engine.add_streamlabs_source(label, &token).await
-                }
-                _ => engine.add_source(config).await,
+            let added = match needs_token {
+                Some(_) => engine.add_source_with_token(config, &token).await,
+                None => engine.add_source(config).await,
             };
             if let Err(e) = added {
                 let message = format!("Couldn't add the source: {e:#}");

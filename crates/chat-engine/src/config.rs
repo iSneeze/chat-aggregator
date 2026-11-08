@@ -4,6 +4,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use chat_core::SetupError;
 use chat_youtube::oauth::OAuthApp;
 
 /// One source, described by its settings. The engine builds the actual
@@ -35,7 +36,7 @@ pub enum SourceConfig {
     },
     /// Tips through StreamElements. `account` is the channel's "Account ID"
     /// from the StreamElements dashboard; its Overlay Token is kept in the
-    /// secret store, not here (`EngineHandle::add_streamelements_source`).
+    /// secret store, not here (see [`SourceConfig::token`]).
     #[serde(rename = "streamelements")]
     StreamElements {
         account: String,
@@ -43,8 +44,8 @@ pub enum SourceConfig {
     /// Tips through Streamlabs. `label` is the streamer's own name for the
     /// account ("Main", "Corpo"): a streamer with several personas adds one
     /// source per account and switches each on or off. Its Socket API Token
-    /// is kept in the secret store under the label, not here
-    /// (`EngineHandle::add_streamlabs_source`).
+    /// is kept in the secret store under the label, not here (see
+    /// [`SourceConfig::token`]).
     Streamlabs {
         label: String,
     },
@@ -86,25 +87,51 @@ impl SourceConfig {
         }
     }
 
-    /// The name of the secret (a token) this source reads from the secret
-    /// store, if it has one; `None` too for settings that could never have
-    /// stored one (they don't pass `validate`).
-    pub(crate) fn secret_name(&self) -> Option<String> {
+    /// The token this source reads from the secret store, if it has one;
+    /// `None` too for settings that could never have stored one (they don't
+    /// pass `validate`). Everything that differs between the tip services'
+    /// tokens is here, so storing, loading and deleting them is the same
+    /// code for both (`tokens.rs`).
+    pub fn token(&self) -> Option<SourceToken> {
+        // The names are the ones tokens were always stored under: changing
+        // them would lose the tokens streamers have stored. `.ok()?`: a
+        // malformed id or label ends the function with `None`.
         match self {
-            SourceConfig::StreamElements { account } => {
-                chat_streamelements::normalize_account(account)
-                    .ok()
-                    .map(|account| chat_streamelements::token_secret_name(&account))
-            }
-            SourceConfig::Streamlabs { label } => chat_streamlabs::normalize_label(label)
-                .ok()
-                .map(|label| chat_streamlabs::token_secret_name(&label)),
+            SourceConfig::StreamElements { account } => Some(SourceToken {
+                secret_name: format!(
+                    "streamelements:{}",
+                    chat_streamelements::normalize_account(account).ok()?
+                ),
+                what: "StreamElements Overlay Token",
+                headless_flag: "--streamelements-token",
+            }),
+            SourceConfig::Streamlabs { label } => Some(SourceToken {
+                secret_name: format!(
+                    "streamlabs:{}",
+                    chat_streamlabs::normalize_label(label).ok()?
+                ),
+                what: "Streamlabs Socket API Token",
+                headless_flag: "--streamlabs-token",
+            }),
             SourceConfig::Twitch { .. }
             | SourceConfig::YouTube { .. }
             | SourceConfig::Picarto { .. }
             | SourceConfig::Demo => None,
         }
     }
+}
+
+/// A source's token in the secret store (see [`SourceConfig::token`]):
+/// never in `config.toml`, which gets pasted into bug reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceToken {
+    /// Its name in the secret store: the service and the account id (or
+    /// the streamer's label), so each account has its own token.
+    pub secret_name: String,
+    /// What the token is called on the service's dashboard, for messages.
+    pub what: &'static str,
+    /// The headless `run` example's flag that stores it.
+    pub headless_flag: &'static str,
 }
 
 /// YouTube settings shared by all YouTube sources: the streamer's own
@@ -169,19 +196,6 @@ impl fmt::Debug for YouTubeSettings {
             .finish()
     }
 }
-
-/// A problem only the user can fix (a missing setting, an unreadable file).
-/// Sources failing with it are not restarted automatically.
-#[derive(Debug)]
-pub struct SetupError(pub String);
-
-impl fmt::Display for SetupError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for SetupError {}
 
 #[cfg(test)]
 mod tests {

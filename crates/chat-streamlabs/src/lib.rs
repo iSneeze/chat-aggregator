@@ -18,13 +18,12 @@
 
 mod frames;
 
-use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use chat_core::tiers::TipSettings;
-use chat_core::{Activity, ChatEvent, ChatSource, Reporter};
+use chat_core::{Activity, ChatEvent, ChatSource, Reporter, SetupError};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -47,19 +46,12 @@ pub struct StreamlabsSource {
     /// a streamer with two personas has two accounts, and the token doesn't
     /// say whose it is.
     pub label: String,
-    /// The account's Socket API Token (from the secret store, see
-    /// [`token_secret_name`]).
+    /// The account's Socket API Token (the engine keeps it in the secret
+    /// store under the label, never in `config.toml`).
     pub token: String,
     /// The streamer's tip settings (currency, tiers), watched: a change in
     /// the app applies to the next donation, without reconnecting.
     pub tips: watch::Receiver<TipSettings>,
-}
-
-/// Where the Socket API Token for the account labelled `label` is kept in
-/// the secret store: never in `config.toml`, which gets pasted into bug
-/// reports.
-pub fn token_secret_name(label: &str) -> String {
-    format!("streamlabs:{label}")
 }
 
 /// The label as typed, checked: it names the account in the app and keys
@@ -78,24 +70,16 @@ pub fn normalize_label(input: &str) -> Result<String, String> {
     Ok(label.to_owned())
 }
 
-/// Streamlabs refused the token: only the user can fix that (copy the token
-/// again), so the source isn't restarted.
-#[derive(Debug)]
-pub struct TokenRefused(pub String);
-
-impl fmt::Display for TokenRefused {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Streamlabs refused the Socket API Token ({}): copy it again from the Streamlabs \
-             dashboard (Settings → API Settings → API Tokens), then remove this source and add \
-             it again",
-            self.0
-        )
-    }
+/// Streamlabs refused the token (its reason in `why`): only the user can
+/// fix that (copy the token again), so it's a `SetupError`, and the source
+/// isn't restarted.
+fn token_refused(why: &str) -> SetupError {
+    SetupError(format!(
+        "Streamlabs refused the Socket API Token ({why}): copy it again from the Streamlabs \
+         dashboard (Settings → API Settings → API Tokens), then remove this source and add it \
+         again"
+    ))
 }
-
-impl std::error::Error for TokenRefused {}
 
 /// Why a connection ended without an error.
 enum Ended {
@@ -121,7 +105,7 @@ impl ChatSource for StreamlabsSource {
                     "connection closed by Streamlabs".to_owned()
                 }
                 // A wrong token stays wrong: the engine shows it to the user.
-                Err(e) if e.is::<TokenRefused>() => return Err(e),
+                Err(e) if e.is::<SetupError>() => return Err(e),
                 Err(e) => {
                     let problem = self.without_token(&format!("{e:#}"));
                     warn!("Streamlabs ({}): {problem}", self.label);
@@ -210,7 +194,7 @@ impl StreamlabsSource {
                                     info!("reading Streamlabs donations ({})", self.label);
                                     activity.set(Activity::Receiving);
                                 }
-                                Frame::Refused(why) => return Err(TokenRefused(why).into()),
+                                Frame::Refused(why) => return Err(token_refused(&why).into()),
                                 Frame::Donations(messages) => {
                                     for message in messages {
                                         if tx.send(ChatEvent::Message(message)).await.is_err() {
@@ -295,14 +279,6 @@ mod tests {
         for input in ["", "   ", "two\nlines", &"x".repeat(LABEL_MAX + 1)] {
             assert!(normalize_label(input).is_err(), "{input:?}");
         }
-    }
-
-    #[test]
-    fn a_refused_token_tells_the_user_what_to_do() {
-        let message = TokenRefused("Authentication error".into()).to_string();
-        assert!(message.contains("Authentication error"), "{message}");
-        assert!(message.contains("API Tokens"), "{message}");
-        assert!(message.contains("add it again"), "{message}");
     }
 
     #[test]

@@ -16,14 +16,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use chat_core::{Activity, ChatEvent, ChatSource, Reporter};
+use chat_core::{Activity, ChatEvent, ChatSource, Reporter, SetupError};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
-pub use connection::ChannelNotFound;
 pub use emotes::{Body, ChannelEmote, SiteEmotes};
 
 use frames::{Context as FrameContext, Frame};
@@ -121,7 +120,7 @@ impl ChatSource for PicartoSource {
                     "connection closed by Picarto".to_owned()
                 }
                 // A wrong name stays wrong: the engine shows it to the user.
-                Err(e) if e.is::<ChannelNotFound>() => return Err(e),
+                Err(e) if e.is::<SetupError>() => return Err(e),
                 Err(e) => {
                     warn!(channel = %self.channel, "Picarto chat: {e:#}");
                     format!("connection problem: {e:#}")

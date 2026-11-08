@@ -16,8 +16,8 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::EngineHandle;
 use crate::actor::Command;
-use crate::config::SetupError;
 use crate::factory::is_login_required;
+use chat_core::SetupError;
 
 /// Who's logged in to YouTube.
 #[derive(Debug, Clone, PartialEq, Eq)]

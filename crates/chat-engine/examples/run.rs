@@ -97,19 +97,37 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if args.first().map(String::as_str) == Some("--obs-password") {
-        return obs_password().await;
+        return ask_secret(
+            OBS_PASSWORD,
+            "OBS WebSocket password",
+            "in OBS: Tools → WebSocket Server Settings → Show Connect Info",
+            "a running engine uses it at its next connection attempt",
+        )
+        .await;
     }
     if args.first().map(String::as_str) == Some("--streamelements-token") {
         let account = args
             .get(1)
             .context("--streamelements-token needs the Account ID")?;
-        return streamelements_token(account).await;
+        let source = SourceConfig::StreamElements {
+            account: account.clone(),
+        };
+        let start = format!("--streamelements {account}");
+        return ask_token(source, "dashboard: your avatar → your channel", &start).await;
     }
     if args.first().map(String::as_str) == Some("--streamlabs-token") {
         let label = args
             .get(1)
             .context("--streamlabs-token needs a name for the account")?;
-        return streamlabs_token(label).await;
+        let source = SourceConfig::Streamlabs {
+            label: label.clone(),
+        };
+        let found = format!(
+            "for \"{label}\"; dashboard: Settings → API Settings → API Tokens → Your Socket API \
+             Token"
+        );
+        let start = format!("--streamlabs \"{label}\"");
+        return ask_token(source, &found, &start).await;
     }
 
     let config = build_config(&args)?;
@@ -339,70 +357,33 @@ async fn youtube_login(app: &OAuthApp) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Asks for the OBS WebSocket password and keeps it in the system keyring
-/// (where the engine's OBS output looks for it), or removes it.
-async fn obs_password() -> anyhow::Result<()> {
-    println!(
-        "OBS WebSocket password (in OBS: Tools → WebSocket Server Settings → Show Connect Info)."
-    );
+/// Asks for a secret (`what`, found where `found` says) and keeps it in
+/// the system keyring under `name`, where the engine looks for it, or
+/// removes it. `then`: what to do once it's stored.
+async fn ask_secret(name: &str, what: &str, found: &str, then: &str) -> anyhow::Result<()> {
+    println!("{what} ({found}).");
     println!("What you type is visible. Leave it empty to remove a stored one:");
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    let password = line.trim();
-    if password.is_empty() {
-        SecretStore::System.delete(OBS_PASSWORD).await?;
-        println!("removed the OBS password");
+    let secret = line.trim();
+    if secret.is_empty() {
+        SecretStore::System.delete(name).await?;
+        println!("removed the {what}");
     } else {
-        SecretStore::System.save(OBS_PASSWORD, password).await?;
-        println!(
-            "stored the OBS password; a running engine uses it at its next connection attempt"
-        );
+        SecretStore::System.save(name, secret).await?;
+        println!("stored the {what}; {then}");
     }
     Ok(())
 }
 
-/// Asks for the StreamElements Overlay Token of `account` and keeps it in
-/// the system keyring (where the engine looks for it), or removes it.
-async fn streamelements_token(account: &str) -> anyhow::Result<()> {
-    let account = chat_streamelements::normalize_account(account).map_err(anyhow::Error::msg)?;
-    let name = chat_streamelements::token_secret_name(&account);
-    println!("StreamElements Overlay Token (dashboard: your avatar → your channel).");
-    println!("What you type is visible. Leave it empty to remove a stored one:");
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let token = line.trim();
-    if token.is_empty() {
-        SecretStore::System.delete(&name).await?;
-        println!("removed the StreamElements token");
-    } else {
-        SecretStore::System.save(&name, token).await?;
-        println!("stored the StreamElements token; start with --streamelements {account}");
-    }
-    Ok(())
-}
-
-/// Asks for the Streamlabs Socket API Token of the account named `label`
-/// and keeps it in the system keyring (where the engine looks for it), or
-/// removes it.
-async fn streamlabs_token(label: &str) -> anyhow::Result<()> {
-    let label = chat_streamlabs::normalize_label(label).map_err(anyhow::Error::msg)?;
-    let name = chat_streamlabs::token_secret_name(&label);
-    println!(
-        "Streamlabs Socket API Token for \"{label}\" (dashboard: Settings → API Settings → API \
-         Tokens → Your Socket API Token)."
-    );
-    println!("What you type is visible. Leave it empty to remove a stored one:");
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let token = line.trim();
-    if token.is_empty() {
-        SecretStore::System.delete(&name).await?;
-        println!("removed the Streamlabs token for \"{label}\"");
-    } else {
-        SecretStore::System.save(&name, token).await?;
-        println!("stored the Streamlabs token; start with --streamlabs \"{label}\"");
-    }
-    Ok(())
+/// Asks for the token of a tip service's `source` (see `ask_secret`),
+/// stored under the name its source reads it from. `start`: the flag that
+/// starts the source.
+async fn ask_token(source: SourceConfig, found: &str, start: &str) -> anyhow::Result<()> {
+    source.validate().map_err(anyhow::Error::msg)?;
+    let token = source.token().context("this source takes no token")?;
+    let then = format!("start with {start}");
+    ask_secret(&token.secret_name, token.what, found, &then).await
 }
 
 /// The argument following a flag, e.g. the channel after --twitch.

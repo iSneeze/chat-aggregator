@@ -28,6 +28,25 @@ pub trait ChatSource {
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
+/// A problem only the user can fix: a missing setting, an unreadable file,
+/// a channel that doesn't exist, a refused token. A source failing with it
+/// isn't restarted automatically, and a source's own reconnect loop gives
+/// up on it too.
+///
+/// One type for every source, here in chat-core: the engine recognises it
+/// by its type (`anyhow::Error::is`, a check at run time), so it has to be
+/// the same type on both sides, in a crate both depend on.
+#[derive(Debug)]
+pub struct SetupError(pub String);
+
+impl std::fmt::Display for SetupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SetupError {}
+
 // JSON format: every type below is part of the public WebSocket API
 // (docs/api.md). serde attributes decide the exact JSON; renaming a field or
 // variant here is a breaking change for API consumers, and the contract test
