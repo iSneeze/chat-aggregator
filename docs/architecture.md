@@ -270,8 +270,11 @@ dashboard are kept too (they're how streamers rehearse alerts and
 reactions). Amounts come without a currency, in the one the streamer set
 for their tip page: the streamer's tip settings (`TipSettings`: currency,
 tier starts) say both, read from a `watch` channel for every tip, so a
-change in Settings applies to the next tip without a reconnect (the source
-factory holds the sender, `SourceFactory::set_tips`). The frame parser
+change in Settings applies to the next tip without a reconnect. It's one
+channel for everything that reads the tip settings: `Engine::start_with`
+creates it, builds the source factory with its receiver (each tip source
+gets a copy) and gives the reactor's amount rules another, and the
+actor's `Controls` sends every change. The frame parser
 doesn't see those settings: it gives a `Tip` (`chat_core::tiers`) with
 what StreamElements sent, and the source turns it into a donation
 message with the settings of the moment (`Tip::into_message`, which uses

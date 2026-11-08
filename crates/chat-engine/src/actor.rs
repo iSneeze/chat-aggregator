@@ -514,10 +514,6 @@ impl<F: SourceFactory> Actor<F> {
         if youtube_changed {
             self.factory.set_youtube(new.youtube.clone());
         }
-        // The tip sources' copy; the reactor's goes through `controls`.
-        if new.tips != old.tips {
-            self.factory.set_tips(new.tips.clone());
-        }
         // Published (and saved) before the caller gets its answer: whoever
         // awaited the change finds it in `settings()` and in the file.
         self.settings.send_replace(new);

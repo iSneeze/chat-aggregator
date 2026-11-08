@@ -39,10 +39,6 @@ pub(crate) trait SourceFactory: Send + Sync + 'static {
 
     /// New YouTube settings (client, API key, emojis) for future builds.
     fn set_youtube(&self, _settings: YouTubeSettings) {}
-
-    /// New tip settings (currency, tiers): for future builds, and for the
-    /// running tip sources, which apply them to their next tip.
-    fn set_tips(&self, _tips: TipSettings) {}
 }
 
 /// Errors not worth retrying automatically: the user has to act. Every
@@ -97,9 +93,10 @@ pub(crate) struct Production {
     emoji_cache: Option<PathBuf>,
     /// See `EngineConfig::secrets`: the tip services' tokens.
     secrets: Option<SecretStore>,
-    /// Every tip source watches this (`subscribe`), so a change reaches
-    /// the running ones without a reconnect.
-    tips: watch::Sender<TipSettings>,
+    /// The tip settings, watched: every tip source gets a copy of this
+    /// receiver, so a change reaches the running ones without a reconnect.
+    /// The same channel the reactor's amount rules read (`Engine::start`).
+    tips: watch::Receiver<TipSettings>,
 }
 
 impl Production {
@@ -107,14 +104,14 @@ impl Production {
         youtube: YouTubeSettings,
         emoji_cache: Option<PathBuf>,
         secrets: Option<SecretStore>,
-        tips: TipSettings,
+        tips: watch::Receiver<TipSettings>,
     ) -> Self {
         Self {
             youtube: std::sync::Mutex::new(youtube),
             login: tokio::sync::Mutex::new(None),
             emoji_cache,
             secrets,
-            tips: watch::Sender::new(tips),
+            tips,
         }
     }
 
@@ -177,13 +174,13 @@ impl SourceFactory for Production {
                 SourceSpec::StreamElements(StreamElementsSource {
                     account: chat_streamelements::normalize_account(account).map_err(SetupError)?,
                     token: self.stored_token(config).await?,
-                    tips: self.tips.subscribe(),
+                    tips: self.tips.clone(),
                 })
             }
             SourceConfig::Streamlabs { label } => SourceSpec::Streamlabs(StreamlabsSource {
                 label: chat_streamlabs::normalize_label(label).map_err(SetupError)?,
                 token: self.stored_token(config).await?,
-                tips: self.tips.subscribe(),
+                tips: self.tips.clone(),
             }),
             SourceConfig::Demo => SourceSpec::Demo(DemoSource::default()),
             SourceConfig::YouTube { video_id } => {
@@ -233,10 +230,6 @@ impl SourceFactory for Production {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = settings;
     }
-
-    fn set_tips(&self, tips: TipSettings) {
-        self.tips.send_replace(tips);
-    }
 }
 
 #[cfg(test)]
@@ -263,7 +256,7 @@ mod tests {
             YouTubeSettings::default(),
             None,
             Some(store.clone()),
-            TipSettings::default(),
+            watch::channel(TipSettings::default()).1,
         );
         let streamelements = SourceConfig::StreamElements {
             account: "0123456789abcdef01234567".into(),

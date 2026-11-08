@@ -33,8 +33,9 @@ pub(crate) struct Controls {
     /// The chat reactions' rules and outputs: the reactor applies a change
     /// right away (and reconnects an output whose address changed).
     pub(crate) reactions: watch::Sender<ReactionSettings>,
-    /// The tip currency, for the reactor's amount rules. (The tip sources
-    /// get theirs from the source factory, see `SourceFactory::set_tips`.)
+    /// The tip settings: one channel for everything that reads them, the
+    /// reactor's amount rules (the tip currency) and the tip sources
+    /// (through the source factory, see `Engine::start`).
     pub(crate) tips: watch::Sender<TipSettings>,
     /// Where theme names in the settings are looked up.
     pub(crate) themes_dir: Option<PathBuf>,
@@ -83,7 +84,7 @@ impl Controls {
         if new.reactions != old.reactions {
             self.reactions.send_replace(new.reactions.clone());
         }
-        // Read for the next message: no restart of anything.
+        // Read for the next message or tip: no restart of anything.
         if new.tips != old.tips {
             self.tips.send_replace(new.tips.clone());
         }
@@ -172,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn new_tip_settings_reach_the_reactor() {
+    fn new_tip_settings_are_sent_without_a_restart() {
         let (controls, server) = controls();
         let old = Settings::default();
         let mut new = old.clone();

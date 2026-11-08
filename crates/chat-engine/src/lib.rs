@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use chat_core::Hub;
+use chat_core::tiers::TipSettings;
 use chat_reactions::ReactionRequest;
 use chat_server::{ApiOrigins, Avatars, Connections, ServerState};
 use tokio::net::TcpListener;
@@ -249,19 +250,24 @@ pub struct Engine {
 
 impl Engine {
     pub async fn start(config: EngineConfig) -> anyhow::Result<Self> {
-        let factory = Production::new(
-            config.settings.youtube.clone(),
-            config.emoji_cache_dir.clone(),
-            config.secrets.clone(),
-            config.settings.tips.clone(),
-        );
-        Self::start_with(config, factory).await
+        let youtube = config.settings.youtube.clone();
+        let emoji_cache = config.emoji_cache_dir.clone();
+        let secrets = config.secrets.clone();
+        Self::start_with(config, |tips| {
+            Production::new(youtube, emoji_cache, secrets, tips)
+        })
+        .await
     }
 
     /// `start` with any source factory; tests use scripted sources.
+    /// `factory` builds it from the tip settings' channel, which only
+    /// exists in here: the tip sources (through the factory) and the
+    /// reactor's amount rules read the same one. An `FnOnce` closure, called
+    /// once: it can move what it captured (`start`'s settings) into the
+    /// factory instead of copying it.
     async fn start_with<F: SourceFactory>(
         config: EngineConfig,
-        factory: F,
+        factory: impl FnOnce(watch::Receiver<TipSettings>) -> F,
     ) -> anyhow::Result<Self> {
         let server = &config.settings.server;
         // Localhost only: nothing else on the network can reach it. Bound
@@ -291,7 +297,10 @@ impl Engine {
         // The reactor reads the rules; the actor changes them (`Controls`)
         // and shows the reactor's report in the status.
         let (reactions_tx, reactions_rx) = watch::channel(config.settings.reactions.clone());
+        // The tip settings: read by the tip sources and the reactor's
+        // amount rules, changed by the actor (`Controls`).
         let (tips_tx, tips_rx) = watch::channel(config.settings.tips.clone());
+        let factory = factory(tips_rx.clone());
         let (reaction_status_tx, reaction_status_rx) = watch::channel(Default::default());
         let state = ServerState {
             hub: hub.clone(),
@@ -643,6 +652,37 @@ mod tests {
         engine.shutdown().await;
     }
 
+    /// The tip sources read the tip settings from the channel the factory
+    /// was built with (each gets a copy of its receiver), and a change in
+    /// the settings reaches it: no second copy for the factory to keep up
+    /// to date.
+    #[tokio::test]
+    async fn new_tip_settings_reach_the_source_factory() {
+        let mut given = None;
+        let engine = Engine::start_with(
+            EngineConfig {
+                settings: local(),
+                ..EngineConfig::default()
+            },
+            |tips| {
+                given = Some(tips);
+                Arc::new(Scripted::default())
+            },
+        )
+        .await
+        .unwrap();
+        let tips = given.expect("the factory is built with the channel");
+        assert_eq!(tips.borrow().currency(), None);
+
+        engine
+            .handle()
+            .edit_settings(|s| s.tips.currency = "EUR".into())
+            .await
+            .unwrap();
+        assert_eq!(tips.borrow().currency(), Some("EUR"));
+        engine.shutdown().await;
+    }
+
     /// An amount rule counts a Super Chat only in the tip currency, and a
     /// new currency set while running reaches the reactor for the next
     /// message.
@@ -829,7 +869,7 @@ mod tests {
                 settings: local(),
                 ..EngineConfig::default()
             },
-            factory.clone(),
+            |_| factory.clone(),
         )
         .await
         .unwrap();
@@ -1075,7 +1115,7 @@ mod tests {
                 settings: local(),
                 ..EngineConfig::default()
             },
-            factory.clone(),
+            |_| factory.clone(),
         )
         .await
         .unwrap();
@@ -1119,7 +1159,7 @@ mod tests {
                 settings: local(),
                 ..EngineConfig::default()
             },
-            factory.clone(),
+            |_| factory.clone(),
         )
         .await
         .unwrap();
@@ -1214,7 +1254,7 @@ mod tests {
                 save_to: Some(path.clone()),
                 ..EngineConfig::default()
             },
-            Arc::new(Scripted::default()),
+            |_| Arc::new(Scripted::default()),
         )
         .await
         .unwrap();
