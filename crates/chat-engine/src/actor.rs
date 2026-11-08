@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::anyhow;
-use chat_core::{Activity, ChatEvent, ChatSource, Hub, Reporter};
+use chat_core::{Activity, ChatEvent, ChatSource, Hub, Reporter, SetupError};
 use chat_reactions::ReactionStatus;
 use chat_server::Connections;
 use chat_youtube::oauth::OAuthApp;
@@ -413,6 +413,23 @@ impl<F: SourceFactory> Actor<F> {
                         source: SlotSource::Manual(_),
                         ..
                     }) => Err(anyhow!("the test messages source has no settings")),
+                    // A tip service's token is stored under the account or
+                    // name (`SourceConfig::token`). Settings with another
+                    // one, or another kind of source, would leave the old
+                    // token behind unused and find no token for the new.
+                    Some(Slot {
+                        source: SlotSource::Configured(old),
+                        ..
+                    }) if old.token().map(|token| token.secret_name)
+                        != config.token().map(|token| token.secret_name) =>
+                    {
+                        Err(SetupError(
+                            "a tip source's token is stored under its account or name, so those \
+                             can't change: remove the source and add it again with its token"
+                                .into(),
+                        )
+                        .into())
+                    }
                     Some(slot) => {
                         let was_stopped = slot.state == SourceState::Stopped;
                         stop(slot);

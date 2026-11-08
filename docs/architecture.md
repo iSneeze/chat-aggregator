@@ -293,7 +293,9 @@ tier and currency for both tip services and the test window). The token lives in
 store under the account id, never in `config.toml`:
 `EngineHandle::add_source_with_token` stores it and adds the source,
 the factory reads it at every start (a missing one is a `SetupError`), and
-removing the last source of that account deletes it. A refused token is a
+removing the last source of that account deletes it. An update can't move
+a source to another account (`update_source` refuses with a
+`SetupError`): its token would stay behind unused. A refused token is a
 `SetupError` and waits for the user. Like Picarto, it reconnects by
 itself (`keep_connected`), right away when Astro announces a server
 restart; 75 s without a frame (Astro pings every 30 s) is a dead

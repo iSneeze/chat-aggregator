@@ -85,7 +85,7 @@ mod tests {
     use chat_core::SetupError;
     use chat_core::secrets::SecretStore;
 
-    use crate::{Engine, EngineConfig, SourceConfig};
+    use crate::{Engine, EngineConfig, SourceConfig, SourceId};
 
     /// An engine that keeps its secrets in a folder of its own (`name`
     /// keeps tests apart), with that folder's store.
@@ -148,6 +148,51 @@ mod tests {
         assert_eq!(stored(INDIE).await.as_deref(), Some("t0ken-indie"));
         handle.remove_source(ids[1]).await.unwrap();
         assert_eq!(stored(SE).await, None, "the last one is gone");
+
+        engine.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_update_cant_change_which_token_a_source_uses() {
+        let (engine, store, dir) = engine_with_secrets("tokens-update").await;
+        let handle = engine.handle();
+        let main = SourceConfig::Streamlabs {
+            label: "Main".into(),
+        };
+        let twitch = SourceConfig::Twitch {
+            channel: "your_channel".into(),
+        };
+        handle.store_token(&main, "t0ken").await.unwrap();
+        let tips = handle.add_stopped_source(main.clone()).await.unwrap();
+        let chat = handle.add_stopped_source(twitch.clone()).await.unwrap();
+        handle
+            .status()
+            .wait_for(|status| status.sources.len() == 2)
+            .await
+            .unwrap();
+
+        // Another name, another kind of source either way: refused.
+        let other = SourceConfig::Streamlabs {
+            label: "Corpo".into(),
+        };
+        for (id, config) in [(tips, other), (tips, twitch.clone()), (chat, main.clone())] {
+            let refused = handle.update_source(id, config.clone()).await.unwrap_err();
+            assert!(refused.is::<SetupError>(), "{config:?}: {refused:#}");
+        }
+        // Both left as they were, the token too.
+        let config_of = |id: SourceId| handle.status().borrow().source(id)?.config.clone();
+        assert_eq!(config_of(tips), Some(main));
+        assert_eq!(config_of(chat), Some(twitch));
+        let token = || async { store.load("streamlabs:Main").await.unwrap() };
+        assert_eq!(token().await.as_deref(), Some("t0ken"));
+
+        // The same name, written differently: the same token, so fine.
+        let spaced = SourceConfig::Streamlabs {
+            label: " Main ".into(),
+        };
+        handle.update_source(tips, spaced).await.unwrap();
+        assert_eq!(token().await.as_deref(), Some("t0ken"));
 
         engine.shutdown().await;
         let _ = std::fs::remove_dir_all(dir);

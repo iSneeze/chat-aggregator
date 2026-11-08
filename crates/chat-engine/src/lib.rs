@@ -154,7 +154,11 @@ impl EngineHandle {
     }
 
     /// Changes a source's settings and restarts it (unless it's stopped).
-    /// The test window's source has none: that's an error.
+    /// The test window's source has none: that's an error. So is changing
+    /// which token a source uses (a tip source's account or name, or the
+    /// kind of source), a `SetupError`: the token is stored under it, so
+    /// the old one would stay behind unused (remove the source and add it
+    /// again instead).
     pub async fn update_source(&self, id: SourceId, config: SourceConfig) -> anyhow::Result<()> {
         self.call(|reply| Command::Update(id, config, reply)).await
     }
