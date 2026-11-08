@@ -14,7 +14,7 @@ use std::time::Duration;
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use chat_core::ChatEvent;
 use tokio::sync::broadcast::error::RecvError;
@@ -74,14 +74,36 @@ pub(crate) async fn ws(
         debug!(?origin, ?refusal, "refused an API client");
         return (StatusCode::FORBIDDEN, refusal.message()).into_response();
     }
-    upgrade.on_upgrade(move |socket| client(socket, state, params.history, origin))
+    let widget = is_own_page(origin.as_deref(), headers.get(header::HOST));
+    upgrade.on_upgrade(move |socket| client(socket, state, params.history, origin, widget))
+}
+
+/// Whether the client is a page this server served itself: its origin is
+/// the very address it connects to (`http://127.0.0.1:7878` asking
+/// `127.0.0.1:7878`). Of the pages served here only widgets use the API
+/// (the overlay has its own stream), so that's a widget.
+fn is_own_page(origin: Option<&str>, host: Option<&HeaderValue>) -> bool {
+    let host = host.and_then(|host| host.to_str().ok());
+    match (origin.and_then(|o| o.strip_prefix("http://")), host) {
+        (Some(origin), Some(host)) => origin.eq_ignore_ascii_case(host),
+        _ => false,
+    }
 }
 
 /// Serves one connected client until it leaves or the server shuts down.
-/// `origin`: the page it came from, if any (see `ws`).
-async fn client(mut socket: WebSocket, state: ServerState, history: bool, origin: Option<String>) {
+/// `origin`: the page it came from, if any (see `ws`); `widget`: whether
+/// that's one of our widgets (`is_own_page`).
+async fn client(
+    mut socket: WebSocket,
+    state: ServerState,
+    history: bool,
+    origin: Option<String>,
+    widget: bool,
+) {
     // Counted as connected until this function returns, however it returns.
     let _connected = state.connections.api_client();
+    // `Some(guard)` for a widget: counted the same way, dropped with it.
+    let _widget = widget.then(|| state.connections.widget());
     let (snapshot, mut rx) = state.hub.subscribe();
     if history {
         for msg in snapshot {
@@ -321,7 +343,7 @@ mod tests {
     /// Connects the way a browser page does: with its `Origin`.
     async fn connect_from(
         addr: std::net::SocketAddr,
-        origin: &'static str,
+        origin: &str,
     ) -> Result<Client, tokio_tungstenite::tungstenite::Error> {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -331,7 +353,7 @@ mod tests {
             .unwrap();
         request
             .headers_mut()
-            .insert("origin", HeaderValue::from_static(origin));
+            .insert("origin", HeaderValue::from_str(origin).unwrap());
         connect_async(request).await.map(|(client, _)| client)
     }
 
@@ -370,6 +392,28 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{origin}: {e}"));
             sync(&server, &mut client).await;
         }
+    }
+
+    #[tokio::test]
+    async fn pages_this_server_served_count_as_widgets() {
+        let server = start(None).await;
+        // A widget's page comes from the server's own address.
+        let own_page = format!("http://{}", server.addr);
+        let mut widget = connect_from(server.addr, &own_page).await.unwrap();
+        sync(&server, &mut widget).await;
+        // A program, and a page served from elsewhere on this computer.
+        let mut program = connect(server.addr, "").await;
+        sync(&server, &mut program).await;
+        let mut other_page = connect_from(server.addr, "http://localhost:8080")
+            .await
+            .unwrap();
+        sync(&server, &mut other_page).await;
+        assert_eq!(server.connections.api_clients(), 3);
+        assert_eq!(server.connections.widgets(), 1);
+
+        drop(widget);
+        crate::tests::eventually(|| server.connections.api_clients() == 2).await;
+        assert_eq!(server.connections.widgets(), 0);
     }
 
     const GAME: &str = "https://game.example";

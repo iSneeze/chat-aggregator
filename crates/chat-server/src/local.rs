@@ -57,7 +57,7 @@ pub(crate) async fn only_local_hosts(request: Request, next: Next) -> Response {
 
 /// Whether `host` (`name` or `name:port`) is this computer: `localhost`,
 /// `127.0.0.1` or `[::1]`, on any port.
-fn is_loopback_host(host: &str) -> bool {
+pub(crate) fn is_loopback_host(host: &str) -> bool {
     // Cut off the port. IPv6 addresses have colons of their own, which is
     // why they're in brackets (`[::1]:7878`): there, what follows the last
     // colon isn't all digits unless it's the port.

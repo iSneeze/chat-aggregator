@@ -10,6 +10,7 @@
 //! | `/events`      | SSE: replay history, then live chat as rendered HTML     |
 //! | `/avatar/<key>` | a chatter's profile picture, downloaded once (`avatars`) |
 //! | `/api/v1/ws`   | WebSocket: live events as JSON (see `api`, docs/api.md)  |
+//! | `/widgets/<name>` | a widget: a page that reads the JSON API (`widgets`) |
 
 use std::convert::Infallible;
 use std::path::{Component, Path, PathBuf};
@@ -44,6 +45,7 @@ mod connections;
 mod hide;
 mod local;
 mod stagger;
+pub mod widgets;
 
 // Part of this crate's API (`ServerState::theme`), so users of the server
 // don't need chat-render as a dependency of their own just to name them.
@@ -105,8 +107,7 @@ static OVERLAY_CSP: LazyLock<String> = LazyLock::new(|| {
         .and_then(|(_, rest)| rest.split_once("</script>"))
         .map(|(script, _)| script)
         .expect("overlay.html has its script inline");
-    let hash = base64::engine::general_purpose::STANDARD
-        .encode(<sha2::Sha256 as sha2::Digest>::digest(script.as_bytes()));
+    let hash = script_hash(script);
     format!(
         "default-src 'none'; script-src 'sha256-{hash}'; \
          style-src 'self' 'unsafe-inline' https:; img-src 'self' https: data:; \
@@ -114,6 +115,13 @@ static OVERLAY_CSP: LazyLock<String> = LazyLock::new(|| {
          connect-src 'self'; base-uri 'none'; form-action 'none'"
     )
 });
+
+/// What a CSP's `'sha256-…'` needs for an inline script: the SHA-256 of its
+/// exact text, in base64. Shared by the overlay and the widgets.
+fn script_hash(script: &str) -> String {
+    base64::engine::general_purpose::STANDARD
+        .encode(<sha2::Sha256 as sha2::Digest>::digest(script.as_bytes()))
+}
 
 /// Stops the browser from guessing a file's type: a theme file is only ever
 /// used as what we declare (e.g. never run as script).
@@ -147,6 +155,10 @@ pub struct ServerState {
     /// overlays that pick their own with `?theme=<name>`. Fixed for the
     /// server's lifetime; `None`: every overlay uses the app's theme.
     pub themes_dir: Option<PathBuf>,
+    /// The folder of imported widgets (`widgets/` next to `config.toml`),
+    /// served at `/widgets/<name>` after the built-in ones. Fixed for the
+    /// server's lifetime; `None`: only the built-in widgets.
+    pub widgets_dir: Option<PathBuf>,
     pub connections: Arc<Connections>,
     /// Which web sites may use the JSON API, and the questions about new
     /// ones waiting for the streamer's answer.
@@ -249,6 +261,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/events", get(events))
         .route("/avatar/{key}", get(avatars::avatar))
         .route("/api/v1/ws", get(api::ws))
+        .route("/widgets/{name}", get(widgets::page))
         .with_state(state)
         // Runs before every route: requests for another host never reach
         // them (see `local`).
@@ -559,6 +572,20 @@ mod tests {
         themes_dir: Option<PathBuf>,
         origins: ApiOrigins,
     ) -> TestServer {
+        start_full(theme_dir, themes_dir, None, origins).await
+    }
+
+    /// With a widgets folder (`widgets_dir`) as well.
+    pub(crate) async fn start_with_widgets(widgets_dir: PathBuf) -> TestServer {
+        start_full(None, None, Some(widgets_dir), ApiOrigins::new([], false)).await
+    }
+
+    async fn start_full(
+        theme_dir: Option<PathBuf>,
+        themes_dir: Option<PathBuf>,
+        widgets_dir: Option<PathBuf>,
+        origins: ApiOrigins,
+    ) -> TestServer {
         let origins = Arc::new(origins);
         // Port 0: the OS picks a free port, so tests can run in parallel.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -583,6 +610,7 @@ mod tests {
             newest: newest_rx,
             hide: hide_rx,
             themes_dir,
+            widgets_dir,
             connections: connections.clone(),
             origins: origins.clone(),
             avatars: avatars.clone(),

@@ -147,6 +147,16 @@ queue_secs = 0
 # guards = { platforms = ["streamelements"] }
 # action = { target = "obs_media", source = "Nice" }
 
+# Widgets: pages that show chat their own way, at
+# http://127.0.0.1:7878/widgets/<name> (the built-in live-emoji, and the
+# ones imported in the app, kept in the "widgets" folder next to this
+# file). The values picked in the app's Widgets window, one table per
+# widget, only those that differ from the widget's defaults; the app puts
+# them into the widget's URL ("Copy URL"):
+# [widgets.live-emoji]
+# mode = "calm"
+# size = 72
+
 # One [[sources]] block per chat to read. Add `enabled = false` to keep a
 # source listed in the app but switched off.
 

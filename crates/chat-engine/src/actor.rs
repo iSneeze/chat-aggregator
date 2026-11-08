@@ -478,6 +478,7 @@ impl<F: SourceFactory> Actor<F> {
             app,
             tips,
             reactions,
+            widgets,
         } = self.settings.borrow().clone();
         let sources = self
             .slots
@@ -497,6 +498,7 @@ impl<F: SourceFactory> Actor<F> {
             app,
             tips,
             reactions,
+            widgets,
             sources,
         };
         self.save_error = match file.save(path) {
@@ -704,6 +706,7 @@ impl<F: SourceFactory> Actor<F> {
             .collect::<Vec<_>>();
         let overlays = self.connections.overlays();
         let api_clients = self.connections.api_clients();
+        let widgets = self.connections.widgets();
         let api_requests = self.api_requests.borrow().clone();
         let save_error = self.save_error.clone();
         let reactions = self.reactions.borrow().clone();
@@ -711,12 +714,14 @@ impl<F: SourceFactory> Actor<F> {
             let unchanged = status.sources == sources
                 && status.overlays_connected == overlays
                 && status.api_clients == api_clients
+                && status.widgets_connected == widgets
                 && status.api_requests == api_requests
                 && status.save_error == save_error
                 && status.reactions == reactions;
             status.sources = sources;
             status.overlays_connected = overlays;
             status.api_clients = api_clients;
+            status.widgets_connected = widgets;
             status.api_requests = api_requests;
             status.save_error = save_error;
             status.reactions = reactions;

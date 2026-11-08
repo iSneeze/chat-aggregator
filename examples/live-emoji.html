@@ -1,38 +1,45 @@
 <!doctype html>
 <!--
-  Live emoji: a JSON API demo for chat-aggregator.
+  Live emoji: a widget for chat-aggregator.
 
   Every emote and emoji sent in chat floats up from the bottom of the
   screen and fades away. "hype hype hype" with three emotes sends up three.
   Emotes in donations (bits, Super Chats, tips) float up twice as big,
   stickers and gifts three times as big, near the middle.
 
-  Two moods:
+  Two moods (the "mode" setting):
 
     party (default)  for karaoke and hype moments: emotes sway and pop in,
                      big ones glow and trail sparkles, and the busier chat
                      gets, the brighter the stage light glowing up from the
                      bottom and the more light motes drift through it.
-    calm             (?mode=calm) for talking streams: emotes just float
-                     up and fade, a quiet reaction to a story.
-
-  Use it as an OBS browser source ("Local file"), sized like your canvas.
-  The page background is transparent.
+    calm             for talking streams: emotes float up with a gentle
+                     sway and fade, a quiet reaction to a story.
 
   Needs the JSON API switched on (app: ⚙ Settings → Connection → JSON API;
-  headless: `--api`). Everything else is optional, via the URL query:
+  headless: `--api`). Use it as an OBS browser source sized like your
+  canvas (the page background is transparent), in one of two ways:
 
-    ?mode=calm     just the basics (see above)
+    from the app   its Widgets window: pick the settings, Copy URL, and
+                   paste it into a browser source's URL field. The
+                   settings travel in the URL query:
+                   http://127.0.0.1:7878/widgets/live-emoji?mode=calm&size=72
+    as a file      "Local file", this file picked. OBS takes no URL query
+                   there, so change the defaults in the settings block
+                   below instead.
+
+  The settings are described in the JSON block below (`<script
+  type="application/json" id="widget">`): chat-aggregator reads it to learn
+  which settings this widget has, and the page takes its defaults from it.
+  A value in the URL query wins over the default (switches as 1 or 0:
+  ?glow=0).
+
+  For testing, also in the URL query:
+
     ?demo=1        fake chatters (try it without a stream)
-    ?size=56       emote size in px (donations 2×, stickers 3×)
-    ?life=3        seconds until an emote has faded away
-    ?margin=50     px kept free at the left and right edges
-    ?unicode=0     only platform emotes, no plain emoji like 😂
-    ?glow=0        party mode without the stage light at the bottom
-    ?sticker=🎉    stand-in for stickers without a picture (YouTube's API
-                   sends none for Super Stickers); ?sticker= for nothing
-    ?bg=%23202030  page background (for testing outside OBS)
-    ?ws=ws://127.0.0.1:7878/api/v1/ws   API address (other port)
+    ?bg=%23202030  page background
+    ?ws=ws://127.0.0.1:7878/api/v1/ws   API address (default: the app the
+                   page came from, else port 7878)
 
   Keys for testing: 1 chat emotes, 2 emoji, 3 donation, 4 sticker,
   H a burst of hype.
@@ -46,6 +53,56 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Live Emoji</title>
+<script type="application/json" id="widget">
+{
+  "title": "Live Emoji",
+  "description": "Every emote and emoji in chat floats up from the bottom of the screen and fades away. Emotes in donations float up bigger, stickers and gifts the biggest.",
+  "settings": [
+    {
+      "name": "mode", "label": "Mood", "type": "choice", "default": "party",
+      "options": ["party", "calm"],
+      "help": "party: emotes sway and sparkle, and a stage light glows up as chat gets busy (karaoke, hype). calm: emotes float up with a gentle sway and fade (talking streams)."
+    },
+    {
+      "name": "size", "label": "Emote size", "type": "number", "default": 56,
+      "min": 8, "max": 512, "step": 4, "unit": "px",
+      "help": "Emotes in donations twice as big, stickers three times."
+    },
+    {
+      "name": "life", "label": "Time on screen", "type": "number", "default": 3,
+      "min": 0.5, "max": 20, "step": 0.5, "unit": "s",
+      "help": "Until an emote has faded away."
+    },
+    {
+      "name": "margin", "label": "Side margin", "type": "number", "default": 50,
+      "min": 0, "max": 2000, "step": 10, "unit": "px",
+      "help": "Kept free at the left and right edges."
+    },
+    {
+      "name": "height_min", "label": "Lowest height", "type": "number", "default": 40,
+      "min": 5, "max": 100, "step": 5, "unit": "%",
+      "help": "How far up the screen emotes float before they have faded: each one picks a height between the lowest and the highest. Stickers and gifts stop in the lower half of that range."
+    },
+    {
+      "name": "height_max", "label": "Highest height", "type": "number", "default": 90,
+      "min": 5, "max": 100, "step": 5, "unit": "%",
+      "help": "Below the lowest height works too: the two are swapped."
+    },
+    {
+      "name": "unicode", "label": "Plain emoji too", "type": "bool", "default": true,
+      "help": "Off: only platform emotes, no emoji like 😂."
+    },
+    {
+      "name": "glow", "label": "Stage light", "type": "bool", "default": true,
+      "help": "Party mood: the coloured glow rising from the bottom as chat gets busy."
+    },
+    {
+      "name": "sticker", "label": "Sticker stand-in", "type": "text", "default": "✨",
+      "help": "Floats up for stickers without a picture (YouTube's API sends none for Super Stickers). Empty: nothing."
+    }
+  ]
+}
+</script>
 <style>
   html, body {
     margin: 0;
@@ -80,20 +137,56 @@
 // ---------------------------------------------------------------- settings
 
 const params = new URLSearchParams(location.search);
-function num(name, fallback, min, max) {
-  const v = parseFloat(params.get(name));
-  return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+
+/** Each setting of the widget block: the URL's value if it's a valid one,
+ *  else the block's default. */
+function settingsFrom(widget, query) {
+  const values = {};
+  for (const s of widget.settings) {
+    const raw = query.get(s.name);
+    let value = s.default;
+    if (raw !== null) {
+      if (s.type === "number") {
+        const v = parseFloat(raw);
+        if (Number.isFinite(v)) value = Math.min(s.max, Math.max(s.min, v));
+      } else if (s.type === "bool") {
+        if (raw === "1" || raw === "true") value = true;
+        else if (raw === "0" || raw === "false") value = false;
+      } else if (s.type === "choice") {
+        if (s.options.includes(raw)) value = raw;
+      } else {
+        value = raw;
+      }
+    }
+    values[s.name] = value;
+  }
+  return values;
 }
+const SETTINGS = settingsFrom(JSON.parse(document.getElementById("widget").textContent), params);
+
+// Served by chat-aggregator (`/widgets/…`), the API is at the same address,
+// whatever the port. Anywhere else (OBS "Local file" pages come from a
+// made-up `http://absolute`) it's at the default one.
+function defaultWsUrl() {
+  const served = location.protocol === "http:" && location.pathname.startsWith("/widgets/");
+  return served ? `ws://${location.host}/api/v1/ws` : "ws://127.0.0.1:7878/api/v1/ws";
+}
+
 const CONFIG = {
-  wsUrl: params.get("ws") || "ws://127.0.0.1:7878/api/v1/ws",
+  wsUrl: params.get("ws") || defaultWsUrl(),
   demo: params.get("demo") === "1",
-  party: params.get("mode") !== "calm",
-  size: num("size", 56, 8, 512),
-  life: num("life", 3, 0.5, 20),
-  margin: num("margin", 50, 0, 2000),
-  unicode: params.get("unicode") !== "0",
-  glow: params.get("glow") !== "0",
-  sticker: params.has("sticker") ? params.get("sticker").trim() : "✨",
+  party: SETTINGS.mode !== "calm",
+  size: SETTINGS.size,
+  life: SETTINGS.life,
+  margin: SETTINGS.margin,
+  // Fractions of the page height, the lower first: the settings block
+  // can't say that one must be below the other, so a reversed pair is
+  // simply swapped.
+  heightMin: Math.min(SETTINGS.height_min, SETTINGS.height_max) / 100,
+  heightMax: Math.max(SETTINGS.height_min, SETTINGS.height_max) / 100,
+  unicode: SETTINGS.unicode,
+  glow: SETTINGS.glow,
+  sticker: SETTINGS.sticker.trim(),
 };
 const bg = params.get("bg");
 if (bg && CSS.supports("color", bg)) document.body.style.background = bg;
@@ -340,18 +433,30 @@ function spawn(sprite, scale, delay) {
     age: -delay, // waits while negative
     wait: 0,     // how long it has waited for its image to load
     x: null,     // picked when it appears (its width is known by then)
-    // Each one rises a different distance in the same time, so they end at
-    // different heights. Stickers stop around the middle.
-    rise: scale === STICKER ? 0.45 + Math.random() * 0.2 : 0.4 + Math.random() * 0.5,
-    sway: party ? (0.12 + Math.random() * 0.18) : 0, // × size
-    swaySpeed: 1.5 + Math.random() * 1.5,             // rad/s
-    tilt: party ? (0.1 + Math.random() * 0.2) : 0,    // rad
+    rise: riseFor(scale),
+    // Calm sways too, only less and slower: straight up looks stiff.
+    sway: party ? 0.12 + Math.random() * 0.18 : 0.04 + Math.random() * 0.04, // × size
+    swaySpeed: party ? 1.5 + Math.random() * 1.5 : 1 + Math.random() * 0.8,  // rad/s
+    // A lean that follows the sway, so it floats rather than slides.
+    tilt: party ? 0.1 + Math.random() * 0.2 : 0.03 + Math.random() * 0.03,  // rad
     phase: Math.random() * Math.PI * 2,
     sparkleDue: 0,
   });
   // Too many: the oldest (nearly faded) make room.
   if (floaters.length > MAX_ON_SCREEN) floaters.splice(0, floaters.length - MAX_ON_SCREEN);
   if (party) addHype(scale === NORMAL ? 1 : scale * 2);
+}
+
+/**
+ * How far up a floater rises, as a fraction of the page height: each one a
+ * different distance in the same time, so they end at different heights.
+ * Stickers and gifts stop in the lower half of the range (with the default
+ * 40–90 %: 45–65 %, around the middle).
+ */
+function riseFor(scale) {
+  const { heightMin: lo, heightMax: hi } = CONFIG;
+  const t = scale === STICKER ? 0.1 + Math.random() * 0.4 : Math.random();
+  return lo + (hi - lo) * t;
 }
 
 /** Where a floater appears: its edge stays `margin` px from the sides. */

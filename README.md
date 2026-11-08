@@ -8,12 +8,13 @@ Aggregates live chat from Twitch, YouTube, Picarto, and Rplay (soon™️), plus
 message stream, exposed as a stylable HTML overlay for OBS/browser sources.
 Chat reactions turn chat into actions in other programs: `!bonk` throws an
 item at your model in Warudo, a big Super Chat puts a voice filter on your
-mic in OBS for 30 seconds.
+mic in OBS for 30 seconds. Widgets show chat other ways in OBS, like every
+emote in chat floating up the screen.
 
 ## How it works
 
 sources → mpsc → hub (broadcast + replay history) ─┬→ SSE → your overlay
-                                                    └→ WebSocket → your programs (JSON API)
+                                                    └→ WebSocket → your programs and widgets (JSON API)
 
 Each platform is its own crate behind a `ChatSource` trait; the server never
 knows what Twitch or YouTube look like, only `ChatEvent`s (messages plus
@@ -30,7 +31,7 @@ moderation: deletes, bans, clears). How the pieces fit together, and why:
 | `chat-streamelements` | StreamElements tips (Overlay Token)   |
 | `chat-streamlabs`     | Streamlabs tips (Socket API Token)    |
 | `chat-render`  | templates + CSS, emote replacement          |
-| `chat-server`  | HTTP: overlay page, SSE stream, JSON API    |
+| `chat-server`  | HTTP: overlay page, SSE stream, JSON API, widgets |
 | `chat-reactions` | chat reactions: rules, Warudo and OBS outputs |
 | `chat-engine`  | runs sources, hub and server together       |
 | `chat-app`     | the desktop app (GPUI)                      |
@@ -195,6 +196,7 @@ from `about.toml`).
 - [x] hub (broadcast + replay history)
 - [x] HTML overlay + themes (SSE)
 - [x] JSON WebSocket API
+- [x] widgets (Live Emoji built in, import your own)
 - [x] control plane + GPUI desktop app
 - [ ] release builds / installers
 

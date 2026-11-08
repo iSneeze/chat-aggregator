@@ -133,6 +133,9 @@ pub struct Status {
     pub overlays_connected: usize,
     /// Programs currently connected to the JSON API.
     pub api_clients: usize,
+    /// Widgets currently connected (pages from `/widgets/`, see
+    /// `chat_server::widgets`). Also counted in `api_clients`.
+    pub widgets_connected: usize,
     /// Web sites waiting for the streamer to allow or deny them the JSON
     /// API, oldest first: answer with `EngineHandle::answer_api_request`.
     pub api_requests: Vec<String>,
@@ -220,6 +223,7 @@ mod tests {
             overlay_url: String::new(),
             overlays_connected: 0,
             api_clients: 0,
+            widgets_connected: 0,
             api_requests: vec![],
             save_error: None,
             sources: vec![],

@@ -56,6 +56,11 @@ impl AppConfig {
         ConfigFile::themes_dir(&self.settings_dir)
     }
 
+    /// The folder with the imported widgets, next to the config file.
+    pub fn widgets_dir(&self) -> PathBuf {
+        ConfigFile::widgets_dir(&self.settings_dir)
+    }
+
     /// The folder the config file lives in; other app files go next to it.
     pub fn settings_dir(&self) -> PathBuf {
         self.settings_dir.clone()

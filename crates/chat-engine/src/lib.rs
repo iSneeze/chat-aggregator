@@ -45,7 +45,7 @@ pub use chat_reactions::{
     OBS_PASSWORD, ObsSettings, OutputState, OutputStatus, ReactionSettings, ReactionStatus, Role,
     Rule, RuleStatus, Target, Trigger, WarudoSettings,
 };
-pub use chat_server::{ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource};
+pub use chat_server::{ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource, widgets};
 pub use config::{SourceConfig, SourceToken, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, Settings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
@@ -74,6 +74,10 @@ pub struct EngineConfig {
     /// the settings' theme name and overlay URLs' `?theme=<name>` are looked
     /// up. `None`: only built-in themes in overlay URLs.
     pub themes_dir: Option<PathBuf>,
+    /// The folder of imported widgets (`widgets/` next to `config.toml`),
+    /// served at `/widgets/<name>` after the built-in ones. `None`: only
+    /// the built-in widgets.
+    pub widgets_dir: Option<PathBuf>,
     /// Whether other sites wait for the streamer's answer (the app shows
     /// the question, see `Status::api_requests`) or are refused right away
     /// (headless mode: nobody to ask).
@@ -315,6 +319,7 @@ impl Engine {
             newest: newest_rx,
             hide: hide_rx,
             themes_dir: config.themes_dir.clone(),
+            widgets_dir: config.widgets_dir.clone(),
             connections: connections.clone(),
             origins: origins.clone(),
             avatars: Arc::new(Avatars::new()),
@@ -336,6 +341,7 @@ impl Engine {
             overlay_url: format!("http://{addr}/"),
             overlays_connected: 0,
             api_clients: 0,
+            widgets_connected: 0,
             api_requests: Vec::new(),
             save_error: None,
             sources: Vec::new(),
@@ -479,6 +485,35 @@ mod tests {
             .unwrap();
         let status = wait_for(&engine.handle(), |s| s.overlays_connected == 1).await;
         assert_eq!(status.api_clients, 0);
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn status_counts_connected_widgets() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+        let mut settings = local();
+        settings.server.api = true;
+        let engine = Engine::start(EngineConfig {
+            settings,
+            ..EngineConfig::default()
+        })
+        .await
+        .unwrap();
+        // The way a widget's page connects: from the server's own address.
+        let addr = engine.addr();
+        let mut request = format!("ws://{addr}/api/v1/ws")
+            .into_client_request()
+            .unwrap();
+        let origin = HeaderValue::from_str(&format!("http://{addr}")).unwrap();
+        request.headers_mut().insert("origin", origin);
+        let (widget, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+
+        let status = wait_for(&engine.handle(), |s| s.widgets_connected == 1).await;
+        assert_eq!(status.api_clients, 1);
+        drop(widget);
+        wait_for(&engine.handle(), |s| s.widgets_connected == 0).await;
         engine.shutdown().await;
     }
 

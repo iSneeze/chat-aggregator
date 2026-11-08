@@ -68,6 +68,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use chat_engine::widgets::{self, Widget};
 use chat_engine::{
     ConfigFile, Engine, EngineConfig, Health, Newest, OBS_PASSWORD, SecretStore, SourceConfig,
     Status, YouTubeSettings,
@@ -150,10 +151,30 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let api = config.settings.server.api;
+    let widgets_dir = config.widgets_dir.clone();
     let engine = Engine::start(config).await?;
     println!("\n  overlay:  http://{}/   (Ctrl+C to stop)", engine.addr());
     if api {
-        println!("  JSON API: ws://{}/api/v1/ws\n", engine.addr());
+        println!("  JSON API: ws://{}/api/v1/ws", engine.addr());
+        // Built in, then imported (those that can be used), without the
+        // values picked in the app: those only go into URLs the app copies.
+        let imported = widgets_dir
+            .as_deref()
+            .map(widgets::imported)
+            .unwrap_or_default();
+        let names = Widget::builtin()
+            .iter()
+            .map(|widget| widget.name.clone())
+            .chain(
+                imported
+                    .into_iter()
+                    .filter(|w| w.widget.is_ok())
+                    .map(|w| w.name),
+            );
+        for name in names {
+            println!("  widget:   http://{}/widgets/{name}", engine.addr());
+        }
+        println!();
     } else {
         println!("  JSON API: off (--api, or `api = true` in [server])\n");
     }
@@ -176,7 +197,7 @@ async fn print_status_changes(mut status: tokio::sync::watch::Receiver<Status>) 
     };
     let mut shown = HashMap::new();
     let mut shown_outputs = Vec::new();
-    let mut shown_clients = (0, 0);
+    let mut shown_clients = (0, 0, 0);
     loop {
         // The borrow holds a lock (it's not `Send`) and must be gone before
         // the `.await` below. An explicit `drop()` isn't enough: the compiler
@@ -186,11 +207,15 @@ async fn print_status_changes(mut status: tokio::sync::watch::Receiver<Status>) 
             // `borrow_and_update` marks the value as seen, so `changed()`
             // below waits for the next one.
             let current = status.borrow_and_update();
-            let clients = (current.overlays_connected, current.api_clients);
+            let clients = (
+                current.overlays_connected,
+                current.api_clients,
+                current.widgets_connected,
+            );
             if clients != shown_clients {
                 println!(
-                    "📺 overlays connected: {}, API clients: {}",
-                    clients.0, clients.1
+                    "📺 overlays connected: {}, API clients: {} (widgets: {})",
+                    clients.0, clients.1, clients.2
                 );
                 shown_clients = clients;
             }

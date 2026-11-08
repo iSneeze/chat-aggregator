@@ -28,8 +28,9 @@ use crate::app_view::report;
 use crate::appearance;
 use crate::paid;
 
-/// How long typing must pause before edits apply.
-const APPLY_AFTER: Duration = Duration::from_millis(800);
+/// How long typing must pause before edits apply (here and in the
+/// widgets window).
+pub(crate) const APPLY_AFTER: Duration = Duration::from_millis(800);
 
 /// The dropdown's entries: the value saved in `config.toml`, and its label.
 const APPEARANCES: [(Appearance, &str, &str); 4] = [

@@ -1,5 +1,5 @@
-//! Counts connected overlays and API clients, for "OBS is connected" in the
-//! status.
+//! Counts connected overlays, API clients and widgets, for "OBS is
+//! connected" in the status.
 //!
 //! Each connection holds a [`Guard`]; dropping it counts down again. That's
 //! Rust's RAII pattern ("resource acquisition is initialization"): the
@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct Connections {
     overlays: AtomicUsize,
     api_clients: AtomicUsize,
+    widgets: AtomicUsize,
 }
 
 impl Connections {
@@ -27,6 +28,12 @@ impl Connections {
         self.api_clients.load(Ordering::Relaxed)
     }
 
+    /// Widgets currently connected: the API clients that are pages this
+    /// server served (see `api::ws`). Also counted as API clients.
+    pub fn widgets(&self) -> usize {
+        self.widgets.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn overlay(self: &Arc<Self>) -> Guard {
         Guard::new(self.clone(), Kind::Overlay)
     }
@@ -35,10 +42,15 @@ impl Connections {
         Guard::new(self.clone(), Kind::ApiClient)
     }
 
+    pub(crate) fn widget(self: &Arc<Self>) -> Guard {
+        Guard::new(self.clone(), Kind::Widget)
+    }
+
     fn counter(&self, kind: Kind) -> &AtomicUsize {
         match kind {
             Kind::Overlay => &self.overlays,
             Kind::ApiClient => &self.api_clients,
+            Kind::Widget => &self.widgets,
         }
     }
 }
@@ -47,6 +59,7 @@ impl Connections {
 enum Kind {
     Overlay,
     ApiClient,
+    Widget,
 }
 
 /// One live connection; counted while it exists.
@@ -80,10 +93,14 @@ mod tests {
         let a = connections.overlay();
         let b = connections.overlay();
         let c = connections.api_client();
+        let d = connections.widget();
         assert_eq!((connections.overlays(), connections.api_clients()), (2, 1));
+        assert_eq!(connections.widgets(), 1);
         drop(a);
         drop(c);
+        drop(d);
         assert_eq!((connections.overlays(), connections.api_clients()), (1, 0));
+        assert_eq!(connections.widgets(), 0);
         drop(b);
         assert_eq!(connections.overlays(), 0);
     }

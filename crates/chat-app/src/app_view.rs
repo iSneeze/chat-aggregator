@@ -1,6 +1,6 @@
 //! The main window: overall status, overlay URL, the list of sources with
-//! their status lights, the chat reactions at a glance, and a form to add
-//! sources.
+//! their status lights, the chat reactions and widgets at a glance, and a
+//! form to add sources.
 //!
 //! The view only draws and forwards clicks. Engine calls run as GPUI tasks
 //! (`cx.spawn`) that await the engine's answer and then update the view;
@@ -43,6 +43,7 @@ use crate::app_config::{AppConfig, edit_settings};
 use crate::manual_window::ManualWindow;
 use crate::reactions_window::ReactionsWindow;
 use crate::settings_window::SettingsWindow;
+use crate::widgets_window::WidgetsWindow;
 use crate::youtube_panel::YouTubePanel;
 
 /// What the add form creates.
@@ -151,6 +152,7 @@ pub struct AppView {
     manual_window: Option<WindowHandle<Root>>,
     settings_window: Option<WindowHandle<Root>>,
     reactions_window: Option<WindowHandle<Root>>,
+    widgets_window: Option<WindowHandle<Root>>,
     /// The web site the open "may it read your chat?" question is about.
     asking: Option<String>,
     /// Sites answered here whose question may still be in the status for a
@@ -295,6 +297,7 @@ impl AppView {
             manual_window: None,
             settings_window: None,
             reactions_window: None,
+            widgets_window: None,
             asking: None,
             answered: Vec::new(),
             _subscriptions: subscriptions,
@@ -653,6 +656,21 @@ impl AppView {
         );
     }
 
+    fn open_widgets_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (engine, config) = (self.engine.clone(), self.config.clone());
+        open_or_focus(
+            &mut self.widgets_window,
+            "Widgets",
+            size(px(880.), px(600.)),
+            move |window, cx| {
+                let view = cx.new(|cx| WidgetsWindow::new(engine, config, window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+            window,
+            cx,
+        );
+    }
+
     /// The pause switch: every rule off (or back on) at once, right away.
     fn set_reactions_on(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let handle = window.window_handle();
@@ -961,7 +979,9 @@ impl AppView {
 
     /// The chat reactions at a glance: on or paused, how their programs are
     /// connected, how much fired. Editing happens in the Reactions window.
-    fn render_reactions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// A `Div` (not just `impl IntoElement`): the row it shares with the
+    /// widgets sizes it.
+    fn render_reactions(&self, cx: &mut Context<Self>) -> Div {
         let settings = self.config.read(cx).settings().reactions;
         let status = &self.status.reactions;
         let muted = cx.theme().muted_foreground;
@@ -1019,6 +1039,44 @@ impl AppView {
             })
             .children(outputs)
             .child(div().text_sm().text_color(muted).child(counts))
+    }
+
+    /// The widgets at a glance: how many are showing chat in OBS right now.
+    /// Picking their settings happens in the Widgets window.
+    fn render_widgets(&self, cx: &mut Context<Self>) -> Div {
+        let connected = self.status.widgets_connected;
+        card(cx)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().font_semibold().child("Widgets"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(if connected > 0 {
+                                cx.theme().success
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .child(format!("{connected} connected")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Chat shown other ways, like emoji rising up the screen."),
+            )
+            .child(
+                Button::new("open-widgets")
+                    .label("Open widgets…")
+                    .small()
+                    .self_start()
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_widgets_window(window, cx)),
+                    ),
+            )
     }
 
     fn render_add_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1105,7 +1163,18 @@ impl Render for AppView {
             .child(self.render_header(cx))
             .child(self.render_overlay(cx))
             .child(self.render_sources(cx))
-            .child(self.render_reactions(cx))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_stretch()
+                    // `min_w_0`: long lines shorten (…) rather than push
+                    // the widgets out of the window.
+                    .child(self.render_reactions(cx).flex_1().min_w_0())
+                    // As wide as the default window allows: the reactions
+                    // keep the room their top row (title, switch, "Edit
+                    // reactions…") needs.
+                    .child(self.render_widgets(cx).w(px(220.)).flex_none()),
+            )
             .child(card(cx).child(self.youtube.clone()))
             .child(self.render_add_form(cx))
     }
@@ -1282,6 +1351,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&settings_dir);
         engine.settings.server.port = 0; // the OS picks a free one
         engine.themes_dir = Some(ConfigFile::themes_dir(&settings_dir));
+        engine.widgets_dir = Some(ConfigFile::widgets_dir(&settings_dir));
         engine.save_to = Some(settings_dir.join("config.toml"));
         let engine = runtime.block_on(Engine::start(engine)).unwrap();
         let handle = engine.handle();
@@ -1645,6 +1715,18 @@ mod tests {
             2,
             "the open one comes to the front instead"
         );
+    }
+
+    #[gpui_kit::test]
+    fn widgets_window_opens_only_once(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        for _ in 0..2 {
+            cx.update_window(ui.window.into(), |_, window, cx| {
+                window.click("open-widgets", cx);
+            })
+            .unwrap();
+        }
+        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
     }
 
     #[gpui_kit::test]

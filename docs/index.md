@@ -19,11 +19,15 @@ or bots, can receive the same chat as a live JSON feed.
 - Moderation carries over: messages deleted on a platform disappear from the
   overlay too.
 - Fully stylable with your own HTML template and CSS.
+- Widgets show chat other ways: every emote in chat floating up the screen
+  (Live Emoji comes with the app), or widgets others made, imported in the
+  app.
 - A small desktop app to set it up: add channels, connect YouTube, pick a
   theme, send test messages.
 - Runs locally: no account with us, no server of ours in between.
 - Built with streamer safety in mind: chat is always shown as text, never
-  as code, and the overlay refuses to run any script but its own.
+  as code, and the overlay and widgets refuse to run any script but their
+  own.
   (Keep OBS itself up to date too: its built-in browser gets security fixes
   with it.)
 
@@ -32,6 +36,8 @@ or bots, can receive the same chat as a live JSON feed.
 - [Connecting YouTube](youtube-setup.md): the one-time setup of your own
   Google Cloud project and login.
 - [Overlay themes](themes.md): making the chat look the way you want.
+- [Widgets](widgets.md): chat shown other ways in OBS (emotes rising up
+  the screen), and how to write your own.
 - [YouTube channel emoji](youtube-emoji.md): how channel emoji become
   pictures, and loading them all at once.
 - [Chat events API](api.md): the JSON WebSocket feed for your own programs

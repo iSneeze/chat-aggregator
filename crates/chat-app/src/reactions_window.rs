@@ -1467,7 +1467,11 @@ fn input(state: &Entity<InputState>, id: &'static str) -> Input {
 
 /// One item of a [`segmented`] choice (filled when chosen, as in the main
 /// window).
-fn choice(id: impl Into<ElementId>, label: &'static str, selected: bool) -> Button {
+pub(crate) fn choice(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+) -> Button {
     let button = Button::new(id).label(label).small().selected(selected);
     if selected {
         button.primary()
@@ -1515,7 +1519,7 @@ fn summary(rule: &Rule) -> String {
 }
 
 /// Asks a yes/no question; `on_ok` runs on yes, nothing on cancel.
-fn confirm(
+pub(crate) fn confirm(
     window: &mut Window,
     cx: &mut App,
     title: String,

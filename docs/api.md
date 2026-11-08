@@ -166,7 +166,8 @@ On the same machine, the API accepts:
 - **programs**: bots, game engines, scripts (anything that isn't a
   browser sends no `Origin` header);
 - **pages served from this computer**, e.g. a browser game you run with
-  `python -m http.server` (`http://localhost:<any port>`);
+  `python -m http.server` (`http://localhost:<any port>`), and
+  chat-aggregator's own [widgets](widgets.md);
 - **OBS browser sources**, including ones set to "Local file";
 - **web sites the streamer allowed**, e.g. a browser game hosted on
   `https://game.example`.

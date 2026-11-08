@@ -397,6 +397,7 @@ every field is an `Arc` or a small handle around one).
 | `/events` | Server-Sent Events: history, then live chat as rendered HTML |
 | `/avatar/<key>` | a chatter's profile picture, downloaded once for all overlays |
 | `/api/v1/ws` | WebSocket: live events as JSON (off by default) |
+| `/widgets/<name>` | a widget: a page that reads the JSON API (built in: `live-emoji`) |
 
 - **SSE for the overlay, WebSocket for the API.** SSE is one-way, built into
   every browser and reconnects by itself: ideal for a page that only
@@ -451,6 +452,25 @@ every field is an `Arc` or a small handle around one).
   came in through chat and point at Google's image hosts are ever
   registered, so the route can't be used to make the server fetch other
   addresses. The JSON API keeps the platform's own URL.
+- **Widgets** (`widgets.rs`) are single HTML files that read the JSON API
+  and show chat their own way (`examples/live-emoji.html` is built in).
+  The server serves them, rather than OBS opening them as files, so their
+  settings can go into the URL: OBS's "Local file" field takes no query,
+  and a page from a `file://` URL can't use the API (its origin is
+  `null`). A widget describes its settings in a JSON block,
+  `<script type="application/json" id="widget">`; the page reads its
+  defaults from it, and the app reads it to know what a widget offers.
+  `Widget::from_page` reads that block into typed settings (an enum per
+  type, so a number always has its limits) and refuses pages that don't
+  fit, saying why. The scan for `<script>` elements is a small one, not
+  an HTML parser: it skips comments and ends a script at the first
+  `</script`, like browsers do. Imported widgets are files in the
+  `widgets` folder next to `config.toml`, read on every request like theme
+  files (an edit shows on the next refresh); the import names them after
+  their title and checks them with the same `from_page`. A built-in name
+  always wins. An API client whose `Origin` is the server's own address is
+  one of its widgets (`api::is_own_page`), counted separately in the status
+  for the main window.
 - **Counting connections** uses guards: each connection holds a value whose
   `Drop` counts down again, so the count is right however the connection
   ends (see Rust idioms).
@@ -720,10 +740,11 @@ need a tokio handle. The app reaches the platform crates only through
 
 ### Views and shared state
 
-- **Windows**: the main window (status, theme row, sources, reactions at a
-  glance, YouTube section, add form), the test messages window, the
-  settings window and the Reactions window. The side windows open once;
-  clicking again brings them to the front.
+- **Windows**: the main window (status, theme row, sources, reactions and
+  widgets at a glance, YouTube section, add form), the test messages
+  window, the settings window, the Reactions window and the Widgets
+  window. The side windows open once; clicking again brings them to the
+  front.
 - **The Reactions window** has the rules on the left, the selected rule's
   form on the right and the two programs' connection settings below. A
   rule's switch and Test button act at once, like a source's switch; the
@@ -735,6 +756,22 @@ need a tokio handle. The app reaches the platform crates only through
   was saved under, so a rename keeps its place. The OBS password field
   hands the password to the engine and empties itself: the window keeps
   no copy.
+- **The Widgets window** lists the built-in widgets, then the widgets
+  folder's (files that can't be widgets too, with the reason), and builds
+  the form from the selected widget's block: no code per widget. The
+  values live in `Settings::widgets` (only those that fit and differ from
+  the defaults, so a widget's new default applies) and go into the URL;
+  nothing running reads them. Switches and choices apply at once, typed
+  values after the settings window's pause (`APPLY_AFTER`), and so do the
+  − and + of a number field (gpui-component's `NumberInput`, its own
+  stepping switched off: `step` moves onto the grid of `min + n × step`
+  as a browser does, and an empty field steps from the default); Copy URL,
+  switching widgets and closing take in what's typed first. Reset (after
+  a question) drops what's typed with a fresh form and removes the
+  widget's table. Import is two
+  steps (`prepare_import`, then `Import::save` after the replace
+  question). The folder is read again whenever the window comes to the
+  front, and the form only rebuilt if its widget's settings changed.
 - **`Entity<AppConfig>`**: the windows' read-only view of the settings,
   shared by all windows. A GPUI entity is shared, reference-counted state
   (like `Rc<RefCell<…>>`, but GPUI hands out access and tracks changes). It
@@ -777,7 +814,14 @@ happened to another overlay: CVE-2024-7971).
    inline script (computed from the served text, so they can't drift apart).
    Injected handlers like `onerror=`, foreign scripts, frames and plugins are
    blocked, even from a hostile theme. Theme files get `nosniff` and
-   `script-src 'none'`.
+   `script-src 'none'`. Widgets get the same kind of policy: only their own
+   inline scripts, by hash, so a widget page must be one file (a
+   `<script src>` is refused when it's read); `connect-src` is the page's
+   own address. An imported widget is still someone else's code running
+   at the app's own address: it can do what any page there can, which
+   today means reading chat. So a future control endpoint needs a token no
+   page at that address can read (ROADMAP, Next steps 7), and the app asks
+   streamers to import widgets only from people they trust.
 3. **Localhost only.** The server binds `127.0.0.1`: other machines can't
    reach it. Web pages in the streamer's browser still could, so
    (`chat-server/src/local.rs`): every request whose `Host` isn't

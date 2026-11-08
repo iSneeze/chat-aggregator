@@ -7,6 +7,7 @@
 //! (`EngineConfig::save_to`). Never at startup, and never in headless mode:
 //! a file nobody changed keeps its comments.
 
+use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,6 +19,7 @@ use chat_core::tiers::TipSettings;
 use chat_reactions::ReactionSettings;
 
 use crate::config::{SourceConfig, YouTubeSettings};
+use crate::widgets::Values;
 use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Hide, Newest, Stagger, ThemeSource};
 
 /// A commented starting point, written by `run --init-config`.
@@ -38,6 +40,10 @@ pub struct ConfigFile {
     /// Before the sources: a `[reactions]` table written after the
     /// `[[sources]]` blocks would read as part of the last one.
     pub reactions: ReactionSettings,
+    /// `[widgets.<name>]`: the values picked for each widget's settings.
+    /// Only written when there are some.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub widgets: BTreeMap<String, Values>,
     pub sources: Vec<SourceEntry>,
 }
 
@@ -52,6 +58,11 @@ pub struct Settings {
     pub app: AppSettings,
     pub tips: TipSettings,
     pub reactions: ReactionSettings,
+    /// The values picked in the app for each widget's settings, by widget
+    /// name, only those that differ from the widget's defaults. Nothing
+    /// running reads them: the app's widget form and its "Copy URL" do (the
+    /// values travel in the widget's URL, see `widgets::Widget::url`).
+    pub widgets: BTreeMap<String, Values>,
 }
 
 /// One `[[sources]]` block: what to read, and whether it's switched on.
@@ -233,6 +244,12 @@ impl ConfigFile {
         settings_dir.join("themes")
     }
 
+    /// The folder with the imported widgets, next to the config file in
+    /// `settings_dir`.
+    pub fn widgets_dir(settings_dir: &Path) -> PathBuf {
+        settings_dir.join("widgets")
+    }
+
     /// `settings_dir` is the folder the config file is in: themes and the
     /// emoji caches are kept next to it.
     pub fn into_engine_config(self, settings_dir: &Path) -> EngineConfig {
@@ -243,9 +260,11 @@ impl ConfigFile {
                 app: self.app,
                 tips: self.tips,
                 reactions: self.reactions,
+                widgets: self.widgets,
             },
             sources: self.sources,
             themes_dir: Some(Self::themes_dir(settings_dir)),
+            widgets_dir: Some(Self::widgets_dir(settings_dir)),
             // Unlike `config.toml`, written in headless mode too: it's
             // data the sources collect, not a file you edit.
             emoji_cache_dir: Some(settings_dir.join("youtube-emojis")),
@@ -472,6 +491,32 @@ mod tests {
         assert_eq!(file.youtube, YouTubeSettings::default());
         assert_eq!(file.tips, TipSettings::default());
         assert_eq!(file.reactions, ReactionSettings::default());
+        assert!(file.widgets.is_empty());
+    }
+
+    #[test]
+    fn widget_values_keep_their_types_and_are_only_written_when_there_are_some() {
+        use crate::widgets::Value;
+
+        // Hand-written: a whole number is a number too.
+        let file = ConfigFile::parse(
+            "[widgets.live-emoji]\nmode = \"calm\"\nsize = 72\nlife = 2.5\nglow = false\n",
+        )
+        .unwrap();
+        let values = &file.widgets["live-emoji"];
+        assert_eq!(values["mode"], Value::Text("calm".into()));
+        assert_eq!(values["size"], Value::Number(72.0));
+        assert_eq!(values["life"], Value::Number(2.5));
+        assert_eq!(values["glow"], Value::Bool(false));
+
+        // Written and read back as they were.
+        let text = toml::to_string_pretty(&file).unwrap();
+        assert_eq!(ConfigFile::parse(&text).unwrap(), file);
+        // No widgets: no `[widgets]` table at all.
+        let text = toml::to_string_pretty(&ConfigFile::default()).unwrap();
+        assert!(!text.contains("widgets"), "{text}");
+        // Something that's none of the types is an error, like a typo.
+        assert!(ConfigFile::parse("[widgets.live-emoji]\nsize = [1, 2]\n").is_err());
     }
 
     #[test]

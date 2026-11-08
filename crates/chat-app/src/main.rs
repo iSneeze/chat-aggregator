@@ -33,6 +33,7 @@ mod paid;
 mod reactions_window;
 mod settings_window;
 mod startup_error;
+mod widgets_window;
 mod youtube_panel;
 
 use app_config::AppConfig;

@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy policy
 
-_Effective 2026-11-07._
+_Effective 2026-11-08._
 
 chat-aggregator is a program that runs **on your own computer**. It has no
 servers, no user accounts and no analytics. The developers never receive
@@ -89,6 +89,10 @@ keeps only the tips: each tipper's name, amount, currency and message.
   secret, an optional API key, channel names, overlay theme, a copy of your
   custom emoji list) are stored in chat-aggregator's settings folder on your
   computer.
+- **Widgets you import** (web pages that show chat their own way, see
+  [Widgets](widgets.md)) are copied into the `widgets` folder in the
+  settings folder, and the settings you pick for widgets are stored in the
+  settings file, until you remove the widget in the app.
 - **Learned emoji** (codes like `:_hypeWave:` and their picture links) are
   stored per channel in the `youtube-emojis` folder in the settings folder,
   so they work right away next time. They stay until you delete that
@@ -133,6 +137,13 @@ keeps only the tips: each tipper's name, amount, currency and message.
   YouTube's and Picarto's image servers by your streaming software, and so
   are Picarto chatters' and StreamElements tippers' profile pictures (from
   StreamElements' image server).
+- **Widgets** get the chat through the same local API (switched on for
+  them), like any page served from your own computer. Your streaming
+  software loads the pictures and fonts a widget asks for from the web: the
+  built-in Live Emoji only loads emote pictures, from the platforms' image
+  servers. A widget you import comes from someone else, and could pass on
+  what it shows to the servers it loads things from: import widgets only
+  from people you trust.
 - **Chat reactions** (only if you set up rules for them): chat-aggregator
   connects to the programs your rules name, at the address you enter (on
   your own computer unless you enter another one): Warudo, OBS. It sends
