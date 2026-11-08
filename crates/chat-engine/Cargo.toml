@@ -28,8 +28,7 @@ tokio = { workspace = true, features = ["test-util"] }
 reqwest.workspace = true
 serde_json.workspace = true
 tracing-subscriber.workspace = true
-# A stand-in Warudo for the chat reactions test (the same version
-# chat-reactions uses).
-tokio-tungstenite = "0.29"
+# A stand-in Warudo for the chat reactions test.
+tokio-tungstenite.workspace = true
 futures-util.workspace = true
 webbrowser.workspace = true

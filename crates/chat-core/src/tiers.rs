@@ -24,20 +24,9 @@ pub const TOP_TIER: u32 = 7;
 /// Where YouTube's tiers 2–7 start, in US dollars (tier 1 is $1+).
 pub const YOUTUBE_TIER_STARTS: [u64; 6] = [2, 5, 10, 20, 50, 100];
 
-/// Bits per dollar on the tier scale: 100 bits cost about a dollar.
-pub const BITS_PER_DOLLAR: u64 = 100;
-
-/// Where the bits' tiers 2–7 start: YouTube's steps × 100.
-pub const BITS_TIER_STARTS: [u64; 6] = {
-    // A `for` loop isn't allowed in a `const` yet; `while` is.
-    let mut starts = YOUTUBE_TIER_STARTS;
-    let mut i = 0;
-    while i < starts.len() {
-        starts[i] *= BITS_PER_DOLLAR;
-        i += 1;
-    }
-    starts
-};
+/// Where the bits' tiers 2–7 start: YouTube's dollar steps × 100 (100
+/// bits cost about a dollar).
+pub const BITS_TIER_STARTS: [u64; 6] = [200, 500, 1_000, 2_000, 5_000, 10_000];
 
 /// The tier of a cheer of `bits`.
 pub fn bits_tier(bits: u64) -> u32 {
@@ -83,16 +72,6 @@ impl Amount {
     pub fn as_f64(self) -> f64 {
         self.0 as f64 / 100.0
     }
-
-    /// "69" for a whole amount, "2.50" otherwise.
-    fn plain(self) -> String {
-        let (units, hundredths) = (self.0 / 100, self.0 % 100);
-        if hundredths == 0 {
-            units.to_string()
-        } else {
-            format!("{units}.{hundredths:02}")
-        }
-    }
 }
 
 impl TryFrom<f64> for Amount {
@@ -114,9 +93,15 @@ impl serde::Serialize for Amount {
     }
 }
 
+/// "69" for a whole amount, "2.50" otherwise.
 impl fmt::Display for Amount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.plain())
+        let (units, hundredths) = (self.0 / 100, self.0 % 100);
+        if hundredths == 0 {
+            write!(f, "{units}")
+        } else {
+            write!(f, "{units}.{hundredths:02}")
+        }
     }
 }
 
@@ -162,19 +147,34 @@ impl TipSettings {
 
     /// What would make tiers or amounts come out wrong.
     pub fn check(&self) -> Result<(), String> {
-        let code = &self.currency;
-        if !code.is_empty() && !(code.len() == 3 && code.bytes().all(|b| b.is_ascii_uppercase())) {
-            return Err(format!(
-                "tips: the currency is a 3-letter code like EUR or USD (got \"{code}\")"
-            ));
+        Self::check_currency(&self.currency)
+            .and_then(|()| Self::check_tiers(&self.tiers))
+            .map_err(|e| format!("tips: {e}"))
+    }
+
+    /// A currency `check` would accept: empty (not set) or a 3-letter code
+    /// in capitals. On its own (and without `check`'s "tips: ") for the
+    /// settings window, which checks each field as it's typed.
+    pub fn check_currency(code: &str) -> Result<(), String> {
+        if code.is_empty() || (code.len() == 3 && code.bytes().all(|b| b.is_ascii_uppercase())) {
+            Ok(())
+        } else {
+            Err(format!(
+                "the currency is a 3-letter code like EUR or USD (got \"{code}\")"
+            ))
         }
-        if self.tiers[0] == Amount::default() {
-            return Err("tips: tier 2 starts above 0".into());
+    }
+
+    /// Tier starts `check` would accept: above 0, each above the one
+    /// before.
+    pub fn check_tiers(tiers: &[Amount; 6]) -> Result<(), String> {
+        if tiers[0] == Amount::default() {
+            return Err("tier 2 starts above 0".into());
         }
         // `windows(2)` walks the neighbours: (tier 2, tier 3), (tier 3, …).
-        if let Some(pair) = self.tiers.windows(2).find(|pair| pair[0] >= pair[1]) {
+        if let Some(pair) = tiers.windows(2).find(|pair| pair[0] >= pair[1]) {
             return Err(format!(
-                "tips: each tier starts above the one before ({} isn't above {})",
+                "each tier starts above the one before ({} isn't above {})",
                 pair[1], pair[0]
             ));
         }
@@ -260,7 +260,7 @@ impl Tip {
 /// Shared by the tip services, so their donations look alike.
 pub fn display_amount(amount: Amount, currency: Option<&str>) -> String {
     let Some(code) = currency else {
-        return amount.plain();
+        return amount.to_string();
     };
     let two = format!("{:.2}", amount.as_f64());
     match code {
@@ -329,7 +329,12 @@ mod tests {
         }
         let mut unordered = ok.clone();
         unordered.tiers[3] = Amount::whole(5);
-        assert!(unordered.check().unwrap_err().contains("above"));
+        // The file's error says which table; the window shows it next to
+        // the field.
+        let error = unordered.check().unwrap_err();
+        assert!(error.starts_with("tips: each tier starts above"), "{error}");
+        let error = TipSettings::check_tiers(&unordered.tiers).unwrap_err();
+        assert!(error.starts_with("each tier starts above"), "{error}");
         let mut zero = ok;
         zero.tiers[0] = Amount::default();
         assert!(zero.check().is_err());

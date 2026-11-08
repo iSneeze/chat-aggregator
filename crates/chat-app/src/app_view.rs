@@ -1232,7 +1232,7 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
 
-    use super::AppView;
+    use super::{AppView, NewSource};
     use crate::app_config::AppConfig;
 
     /// The window as the app builds it (the view inside a `Root`, which
@@ -1254,6 +1254,13 @@ mod tests {
 
     fn open(cx: &mut TestAppContext) -> Ui {
         open_with(cx, EngineConfig::default())
+    }
+
+    /// Picks `kind` in the add form, found by its place in the list (so
+    /// reordering the list doesn't break the tests).
+    fn pick(window: &mut gpui_kit::Window, kind: NewSource, cx: &mut gpui_kit::App) {
+        let index = NewSource::ALL.iter().position(|k| *k == kind).unwrap();
+        window.click(("kind", index), cx);
     }
 
     /// `open` with engine settings of the test's choosing (always on a free
@@ -1322,22 +1329,22 @@ mod tests {
             // Twitch (selected at start) needs a channel name...
             assert!(window.try_find("new-source-text").is_some());
             // ...Demo needs nothing...
-            window.click(("kind", 6usize), cx);
+            pick(window, NewSource::Demo, cx);
             assert!(window.try_find("new-source-text").is_none());
             // ...a YouTube video needs its id...
-            window.click(("kind", 2usize), cx);
+            pick(window, NewSource::YouTubeVideo, cx);
             assert!(window.try_find("new-source-text").is_some());
             // ...Picarto a channel...
-            window.click(("kind", 6usize), cx);
-            window.click(("kind", 3usize), cx);
+            pick(window, NewSource::Demo, cx);
+            pick(window, NewSource::Picarto, cx);
             assert!(window.try_find("new-source-text").is_some());
             assert!(window.try_find("new-source-token").is_none());
             // ...and StreamElements an account id and a token...
-            window.click(("kind", 4usize), cx);
+            pick(window, NewSource::StreamElements, cx);
             assert!(window.try_find("new-source-text").is_some());
             assert!(window.try_find("new-source-token").is_some());
             // ...as Streamlabs a name and a token.
-            window.click(("kind", 5usize), cx);
+            pick(window, NewSource::Streamlabs, cx);
             assert!(window.try_find("new-source-text").is_some());
             assert!(window.try_find("new-source-token").is_some());
         })
@@ -1350,7 +1357,7 @@ mod tests {
         let error =
             |cx: &mut TestAppContext| ui.view.read_with(cx, |view, _| view.form_error.clone());
         cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click(("kind", 5usize), cx);
+            pick(window, NewSource::Streamlabs, cx);
             window.click("add", cx);
         })
         .unwrap();
@@ -1375,7 +1382,7 @@ mod tests {
         let error =
             |cx: &mut TestAppContext| ui.view.read_with(cx, |view, _| view.form_error.clone());
         cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click(("kind", 4usize), cx);
+            pick(window, NewSource::StreamElements, cx);
             window.click("new-source-text", cx);
             window.input("your_channel", cx);
             window.click("add", cx);
@@ -1558,7 +1565,7 @@ mod tests {
                 .unwrap_or_default()
         };
         cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click(("kind", 6usize), cx); // Demo
+            pick(window, NewSource::Demo, cx);
             window.click("add", cx);
         })
         .unwrap();

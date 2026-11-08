@@ -120,12 +120,7 @@ impl Draft {
     /// The tip currency as typed (in capitals), if it's one.
     fn tip_currency(&self) -> Result<String, String> {
         let currency = self.tip_currency.trim().to_ascii_uppercase();
-        let tips = TipSettings {
-            currency: currency.clone(),
-            ..TipSettings::default()
-        };
-        tips.check()
-            .map_err(|e| e.trim_start_matches("tips: ").to_string())?;
+        TipSettings::check_currency(&currency)?;
         Ok(currency)
     }
 
@@ -137,12 +132,7 @@ impl Draft {
         for (i, (text, tier)) in self.tip_tiers.iter().zip(&mut tiers).enumerate() {
             *tier = text.parse().map_err(|e| format!("tier {}: {e}", i + 2))?;
         }
-        let tips = TipSettings {
-            tiers,
-            ..TipSettings::default()
-        };
-        tips.check()
-            .map_err(|e| e.trim_start_matches("tips: ").to_string())?;
+        TipSettings::check_tiers(&tiers)?;
         Ok(tiers)
     }
 

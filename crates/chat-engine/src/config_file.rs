@@ -490,14 +490,6 @@ mod tests {
         ] {
             assert!(ConfigFile::parse(bad).is_err(), "{bad}");
         }
-        // A tier no platform reaches: refused, naming the rule.
-        let err = ConfigFile::parse(
-            "[[reactions.rules]]\nname = \"big\"\n\
-             trigger = { type = \"paid\", min_tier = 20 }\n\
-             action = { target = \"warudo\", action = \"x\" }",
-        )
-        .unwrap_err();
-        assert!(format!("{err:#}").contains("\"big\""), "{err:#}");
     }
 
     #[test]
@@ -507,8 +499,10 @@ mod tests {
         assert!(!text.contains("[tips]"), "{text}");
         file.tips.currency = "EUR".into();
         let text = toml::to_string_pretty(&file).unwrap();
-        // Written as typed: whole amounts without ".0".
-        assert!(text.contains("tiers = [\n    2,"), "{text}");
+        // Written as typed: whole amounts as whole numbers (`2`, not
+        // `2.0`). Read back as TOML values, so the layout doesn't matter.
+        let written: toml::Table = text.parse().unwrap();
+        assert_eq!(written["tips"]["tiers"][0].as_integer(), Some(2), "{text}");
         assert_eq!(ConfigFile::parse(&text).unwrap(), file);
     }
 

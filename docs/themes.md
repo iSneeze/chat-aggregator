@@ -165,6 +165,10 @@ colours are five, so two tiers share some of them:
 .msg--twitch.msg--tier-3  { --paid-color: #9c3ee8; }
 ```
 
+The Minimal theme colours plain `.msg--tier-1` … `.msg--tier-7` the
+YouTube way, for every platform, and gives Twitch its own with
+`.msg--twitch.msg--tier-N`: two classes beat one, so those win.
+
 Messages without a tier (YouTube jewel gifts, the app's test messages)
 have no tier class, so give `--paid-color` a default too.
 

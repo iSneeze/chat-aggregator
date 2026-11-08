@@ -125,7 +125,7 @@ impl FromStr for Hide {
 
 /// Whether a message gets through: neither its platform nor its kind is
 /// hidden.
-pub fn shown(hidden: &[Hide], msg: &ChatMessage) -> bool {
+fn shown(hidden: &[Hide], msg: &ChatMessage) -> bool {
     !hidden.contains(&Hide::of_platform(msg.platform))
         && !hidden.contains(&Hide::of_kind(&msg.kind))
 }

@@ -246,68 +246,45 @@ mod tests {
 
     #[test]
     fn validation_catches_typos() {
-        assert!(
+        // Each source's settings go through its own check: one that passes
+        // and one that doesn't per source (the checks themselves are tested
+        // in the platform crates).
+        let valid = [
             SourceConfig::Twitch {
-                channel: "your_channel".into()
-            }
-            .validate()
-            .is_ok()
-        );
-        assert!(
-            SourceConfig::Twitch {
-                channel: "not valid!".into()
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            SourceConfig::YouTube {
-                video_id: Some(" ".into())
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(SourceConfig::YouTube { video_id: None }.validate().is_ok());
-        assert!(
+                channel: "your_channel".into(),
+            },
+            SourceConfig::YouTube { video_id: None },
             SourceConfig::Picarto {
-                channel: "picarto.tv/your_channel".into()
-            }
-            .validate()
-            .is_ok()
-        );
-        assert!(
-            SourceConfig::Picarto {
-                channel: "not valid!".into()
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
+                channel: "picarto.tv/your_channel".into(),
+            },
             SourceConfig::StreamElements {
-                account: "0123456789abcdef01234567".into()
-            }
-            .validate()
-            .is_ok()
-        );
-        assert!(
-            SourceConfig::StreamElements {
-                account: "your_channel".into()
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
+                account: "0123456789abcdef01234567".into(),
+            },
             SourceConfig::Streamlabs {
-                label: "Corpo".into()
-            }
-            .validate()
-            .is_ok()
-        );
-        assert!(
-            SourceConfig::Streamlabs { label: " ".into() }
-                .validate()
-                .is_err()
-        );
+                label: "Corpo".into(),
+            },
+        ];
+        let invalid = [
+            SourceConfig::Twitch {
+                channel: "not valid!".into(),
+            },
+            SourceConfig::YouTube {
+                video_id: Some(" ".into()),
+            },
+            SourceConfig::Picarto {
+                channel: "not valid!".into(),
+            },
+            SourceConfig::StreamElements {
+                account: "your_channel".into(),
+            },
+            SourceConfig::Streamlabs { label: " ".into() },
+        ];
+        for config in valid {
+            assert!(config.validate().is_ok(), "refused: {config:?}");
+        }
+        for config in invalid {
+            assert!(config.validate().is_err(), "accepted: {config:?}");
+        }
     }
 
     #[test]

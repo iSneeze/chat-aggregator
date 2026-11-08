@@ -18,9 +18,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 # Outputs are WebSocket clients. Plain ws:// only (no TLS features): the
-# programs we talk to listen on the streamer's own machine or LAN. Same
-# version as the other crates', so it's compiled once.
-tokio-tungstenite = "0.29"
+# programs we talk to listen on the streamer's own machine or LAN.
+tokio-tungstenite.workspace = true
 
 [dev-dependencies]
 # Paused, fast-forwarding clock for exact timing tests; tests only.

@@ -25,8 +25,8 @@ tracing.workspace = true
 # test builds only.
 tokio = { workspace = true, features = ["test-util"] }
 jiff.workspace = true
-# Same version axum uses internally, so it isn't compiled twice.
-tokio-tungstenite = "0.29"
+# A WebSocket client for the API's tests.
+tokio-tungstenite.workspace = true
 # The schema test (tests/api_schema.rs) needs the JSON Schema derives, which
 # chat-core only compiles with this feature: tests only, not normal builds.
 chat-core = { path = "../chat-core", features = ["schema"] }

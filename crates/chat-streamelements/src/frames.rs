@@ -280,10 +280,18 @@ mod tests {
     fn the_subscription_uses_the_overlay_token() {
         let command: Value =
             serde_json::from_str(&subscribe("0123456789abcdef01234567", "t0ken")).unwrap();
-        assert_eq!(command["type"], "subscribe");
-        assert_eq!(command["data"]["topic"], "channel.activities");
-        assert_eq!(command["data"]["room"], "0123456789abcdef01234567");
-        assert_eq!(command["data"]["token"], "t0ken");
-        assert_eq!(command["data"]["token_type"], "apikey");
+        // The whole frame, as Astro accepted it live (STREAMELEMENTS.md):
+        // the account goes into `room`, the token into `token`.
+        let expected = json!({
+            "type": "subscribe",
+            "nonce": "channel.activities",
+            "data": {
+                "topic": "channel.activities",
+                "room": "0123456789abcdef01234567",
+                "token": "t0ken",
+                "token_type": "apikey",
+            },
+        });
+        assert_eq!(command, expected);
     }
 }

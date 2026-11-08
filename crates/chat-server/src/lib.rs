@@ -51,7 +51,7 @@ pub use approvals::{ANSWER_TIMEOUT, ApiOrigins};
 pub use avatars::Avatars;
 pub use chat_render::{Builtin, ThemeSource};
 pub use connections::Connections;
-pub use hide::{Hide, shown};
+pub use hide::Hide;
 pub use stagger::Stagger;
 
 /// Which end of the overlay the newest message appears at. The app's

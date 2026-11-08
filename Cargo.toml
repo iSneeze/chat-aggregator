@@ -39,6 +39,13 @@ anyhow = "1"
 serde_json = "1"
 minijinja = "2"
 axum = { version = "0.8", features = ["ws"] }
+# WebSockets without TLS (the reactions' outputs, the server's and engine's
+# tests); chat-websocket adds rustls for wss://. The version axum uses
+# internally, so it isn't compiled twice.
+tokio-tungstenite = "0.29"
+# Only the aws-lc-rs backend, which reqwest uses too (chat-websocket's `TLS`
+# says why it's chosen explicitly); chat-websocket adds TLS 1.2.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
