@@ -1320,6 +1320,23 @@ mod tests {
         })
     }
 
+    /// What the list shows: the built-in widgets, then the folder's
+    /// `files` (in the list's order). Counted from the built-ins, so the
+    /// tests don't depend on how many come with the app.
+    fn listed(files: &[&str]) -> Vec<String> {
+        Widget::builtin()
+            .iter()
+            .map(|widget| widget.name.clone())
+            .chain(files.iter().map(|name| name.to_string()))
+            .collect()
+    }
+
+    /// The list row of the folder's `n`th widget (from 0): after the
+    /// built-in ones.
+    fn file_row(n: usize) -> usize {
+        Widget::builtin().len() + n
+    }
+
     fn error(cx: &mut TestAppContext, ui: &Ui, setting: usize) -> Option<String> {
         ui.view().read_with(cx, |view, _| {
             view.form
@@ -1483,7 +1500,9 @@ mod tests {
         assert_eq!(error(cx, &ui, size), None);
 
         // Without a step in the block: steps of 1.
-        act(cx, &ui, |window, cx| window.click(("widget", 1usize), cx));
+        act(cx, &ui, |window, cx| {
+            window.click(("widget", file_row(0)), cx)
+        });
         assert_eq!(selected(cx, &ui), "test-widget");
         step_button(cx, &ui, 0, "increment");
         assert_eq!(shown(cx, &ui, 0), "49");
@@ -1605,7 +1624,7 @@ mod tests {
             view.import_file(file, window, cx)
         });
         run_until(cx, |cx| selected(cx, &ui) == "test-widget");
-        assert_eq!(names(cx, &ui), ["live-emoji", "test-widget"]);
+        assert_eq!(names(cx, &ui), listed(&["test-widget"]));
         let imported = ui.widgets_dir().join("test-widget.html");
         assert!(imported.is_file());
 
@@ -1636,7 +1655,7 @@ mod tests {
         run_until(cx, |_| {
             std::fs::read_to_string(&imported).is_ok_and(|page| page.contains("\"default\": 64"))
         });
-        assert_eq!(names(cx, &ui), ["live-emoji", "test-widget"]);
+        assert_eq!(names(cx, &ui), listed(&["test-widget"]));
         let (default, size) = ui.view().read_with(cx, |view, _| {
             let form = view.form.as_ref().unwrap();
             let setting = &form.widget.manifest.settings[0];
@@ -1668,7 +1687,7 @@ mod tests {
         );
         assert!(refused.contains("no widget block"), "{refused}");
         assert!(!ui.widgets_dir().exists(), "nothing written");
-        assert_eq!(names(cx, &ui), ["live-emoji"]);
+        assert_eq!(names(cx, &ui), listed(&[]));
     }
 
     #[gpui_kit::test]
@@ -1681,7 +1700,7 @@ mod tests {
             let values = Values::from([("size".to_string(), Value::Number(72.))]);
             config.settings.widgets.insert("test-widget".into(), values);
         });
-        assert_eq!(names(cx, &ui), ["live-emoji", "broken", "test-widget"]);
+        assert_eq!(names(cx, &ui), listed(&["broken", "test-widget"]));
         let has_remove = |cx: &mut TestAppContext| {
             cx.update_window(ui.window.into(), |_, window, cx| {
                 window.render_frame(cx);
@@ -1691,7 +1710,9 @@ mod tests {
         };
         assert!(!has_remove(cx), "the built-in one stays");
 
-        act(cx, &ui, |window, cx| window.click(("widget", 2usize), cx));
+        act(cx, &ui, |window, cx| {
+            window.click(("widget", file_row(1)), cx)
+        });
         assert_eq!(selected(cx, &ui), "test-widget");
         act(cx, &ui, |window, cx| window.click("widget-remove", cx));
         click_in_dialog(cx, &ui, "ok");
@@ -1701,10 +1722,12 @@ mod tests {
         assert!(!ui.widgets_dir().join("test-widget.html").exists());
 
         // A file that can't be a widget says why, and can go too.
-        act(cx, &ui, |window, cx| window.click(("widget", 1usize), cx));
+        act(cx, &ui, |window, cx| {
+            window.click(("widget", file_row(0)), cx)
+        });
         let problem = ui.view().read_with(cx, |view, _| {
             assert!(view.form.is_none(), "no form for it");
-            view.entries[1]
+            view.entries[file_row(0)]
                 .widget
                 .as_ref()
                 .err()
@@ -1713,7 +1736,7 @@ mod tests {
         assert!(problem.is_some_and(|p| p.contains("no widget block")));
         act(cx, &ui, |window, cx| window.click("widget-remove", cx));
         click_in_dialog(cx, &ui, "ok");
-        run_until(cx, |cx| names(cx, &ui) == ["live-emoji"]);
+        run_until(cx, |cx| names(cx, &ui) == listed(&[]));
         assert!(!ui.widgets_dir().join("broken.html").exists());
     }
 

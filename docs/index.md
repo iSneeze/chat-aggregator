@@ -28,7 +28,8 @@ sees the same chat, and you have one chat to read instead of three.
   Warudo; a big Super Chat puts a voice filter on your mic in OBS for 30
   seconds.
 - **Widgets.** Other ways to show chat, like every emote floating up the
-  screen (Live Emoji comes with the app), or widgets others made.
+  screen or chat flying across it danmaku-style (Live Emoji and Danmaku
+  come with the app), or widgets others made.
 - **A feed for your own tools.** Games and bots can receive the merged
   chat as it happens.
 - **Stays on your computer.** No account with us, and no server of ours in
@@ -46,7 +47,7 @@ sees the same chat, and you have one chat to read instead of three.
   Google Cloud project and login.
 - [Overlay themes](themes.md): making the chat look the way you want.
 - [Widgets](widgets.md): chat shown other ways in OBS (emotes rising up
-  the screen), and how to write your own.
+  the screen, danmaku), and how to write your own.
 - [YouTube channel emoji](youtube-emoji.md): how channel emoji become
   pictures, and loading them all at once.
 - [Chat events API](api.md): the JSON WebSocket feed for your own programs

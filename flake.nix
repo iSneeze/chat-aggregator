@@ -48,8 +48,9 @@
               ./Cargo.lock
               ./.cargo
               ./crates
-              # The built-in widget (chat-server includes it).
+              # The built-in widgets (chat-server includes them).
               ./examples/live-emoji.html
+              ./examples/danmaku.html
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;

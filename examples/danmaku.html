@@ -1,0 +1,892 @@
+<!doctype html>
+<!--
+  Danmaku: a widget for chat-aggregator.
+
+  Chat flies across the screen from right to left, as on Niconico or
+  Bilibili ("danmaku", a barrage of comments): in lanes, without names,
+  every comment the same time on screen, so long ones move faster. A
+  comment takes the topmost lane where it neither touches the comment in
+  front when it comes in nor catches up with it later; when every lane is
+  busy, it waits a moment (and is dropped after a few seconds of a flood).
+
+  Paid messages (bits, Super Chats, stickers, tips) and member events
+  (subs, memberships, gifted subs) don't fly: they're pinned in the middle
+  of the area's top (or bottom) edge for a while, the amount in the tier's
+  colour. They're never dropped: when every row is taken they wait, and the
+  ones showing make room sooner. Raids and announcements are left out. A
+  message a moderator deletes disappears at once, wherever it is.
+
+  Needs the JSON API switched on (app: ⚙ Settings → Connection → JSON API;
+  headless: `--api`). Use it as an OBS browser source sized like your
+  canvas (the page background is transparent), in one of two ways:
+
+    from the app   its Widgets window: pick the settings, Copy URL, and
+                   paste it into a browser source's URL field. The
+                   settings travel in the URL query:
+                   http://127.0.0.1:7878/widgets/danmaku?life=9&size=48
+    as a file      "Local file", this file picked. OBS takes no URL query
+                   there, so change the defaults in the settings block
+                   below instead.
+
+  The settings are described in the JSON block below (`<script
+  type="application/json" id="widget">`): chat-aggregator reads it to learn
+  which settings this widget has, and the page takes its defaults from it.
+  A value in the URL query wins over the default.
+
+  For testing, also in the URL query:
+
+    ?demo=1        fake chatters (try it without a stream)
+    ?bg=%23202030  page background
+    ?ws=ws://127.0.0.1:7878/api/v1/ws   API address (default: the app the
+                   page came from, else port 7878)
+
+  Keys for testing: 1 a comment, 2 a long one, 3 a Super Chat, 4 a
+  membership, F a flood, D delete the newest comment (as a moderator).
+
+  Chat is untrusted: nothing from chat reaches the page as HTML. Text goes
+  in as text nodes (`append`, `textContent`), emotes as <img> with an
+  http(s) address only, the font name as a CSS property value.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Danmaku</title>
+<script type="application/json" id="widget">
+{
+  "title": "Danmaku",
+  "description": "Chat flies across the screen from right to left in lanes, without names, as on Niconico or Bilibili. Paid messages and member events are pinned at the edge for a while instead.",
+  "settings": [
+    {
+      "name": "life", "label": "Time on screen", "type": "number", "default": 7,
+      "min": 2, "max": 20, "step": 0.5, "unit": "s",
+      "help": "How long a comment takes to cross the screen. Every comment takes the same time, so long ones move faster, as in real danmaku."
+    },
+    {
+      "name": "size", "label": "Text size", "type": "number", "default": 40,
+      "min": 12, "max": 160, "step": 2, "unit": "px"
+    },
+    {
+      "name": "area", "label": "Screen used", "type": "number", "default": 75,
+      "min": 10, "max": 100, "step": 5, "unit": "%",
+      "help": "Comments fly in this much of the screen, from the top; the rest stays free (for your model, say)."
+    },
+    {
+      "name": "opacity", "label": "Opacity", "type": "number", "default": 90,
+      "min": 10, "max": 100, "step": 5, "unit": "%"
+    },
+    {
+      "name": "paid", "label": "Paid messages", "type": "choice", "default": "top",
+      "options": ["top", "bottom", "scroll", "off"],
+      "help": "Bits, Super Chats, stickers, tips, subs and memberships. top, bottom: pinned in the middle of the area's top or bottom edge, the amount in the tier's colour. scroll: they fly by like the rest. off: left out (when an alert box shows them already)."
+    },
+    {
+      "name": "paid_life", "label": "Pinned for", "type": "number", "default": 6,
+      "min": 2, "max": 30, "step": 1, "unit": "s",
+      "help": "How long a pinned paid message stays (shorter while others wait for a row)."
+    },
+    {
+      "name": "names", "label": "Names", "type": "choice", "default": "off",
+      "options": ["off", "paid", "all"],
+      "help": "off: no names, as in real danmaku. paid: only on paid messages and member events. all: on every comment."
+    },
+    {
+      "name": "font", "label": "Font", "type": "text", "default": "",
+      "help": "The name of a font installed on this computer. Empty: a bold sans-serif."
+    }
+  ]
+}
+</script>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    /* --font is the "Font" setting, when there is one */
+    font-family: var(--font, "Inter"), "Segoe UI", system-ui, sans-serif,
+      "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+    font-size: var(--size);
+    font-weight: 700;
+    line-height: 1.3; /* LINE in the script: a lane's height */
+    color: #fff;
+  }
+
+  /* One comment: its parts on one line, as wide as they are. */
+  .c {
+    --paid-color: #ffca28; /* paid messages without a tier */
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: max-content;
+    white-space: nowrap;
+    opacity: var(--opacity);
+    /* a dark outline, so it reads over bright scenes */
+    text-shadow:
+      0.05em 0 0 #000, -0.05em 0 0 #000, 0 0.05em 0 #000, 0 -0.05em 0 #000,
+      0.035em 0.035em 0 #000, -0.035em 0.035em 0 #000,
+      0.035em -0.035em 0 #000, -0.035em -0.035em 0 #000,
+      0 0 0.15em rgba(0, 0, 0, 0.6);
+    will-change: transform;
+  }
+  /* Built and measured before it starts, out of sight. */
+  .c--measure {
+    visibility: hidden;
+  }
+  /* gaps between the name, the amount, the text */
+  .c > * + * {
+    margin-left: 0.4em;
+  }
+  .c__name {
+    font-weight: 600;
+    color: #e8e8e8;
+  }
+  .c__name::after {
+    content: ":";
+  }
+  .c__event {
+    color: var(--paid-color);
+  }
+  .c__info {
+    font-weight: 400;
+  }
+
+  /* Emotes and emoji pictures, at the text's height. Wide ones keep their
+     shape, within reason. */
+  .c__pic {
+    height: 1.2em;
+    max-width: 4.8em;
+    object-fit: contain;
+    vertical-align: middle;
+    margin: -0.15em 0.05em;
+    filter: drop-shadow(0 0 0.05em #000);
+  }
+  /* Still loading when the comment was measured: a square box, so the
+     comment doesn't grow when the picture arrives. */
+  .c__pic--pending {
+    width: 1.2em;
+  }
+
+  /* A pinned paid message: centred, on a dark backing so it reads over the
+     comments flying behind it (they'd show through a lighter one), edged
+     in the tier's colour. */
+  .c--pinned {
+    left: 50%;
+    padding: 0.12em 0.6em;
+    border: 0.08em solid var(--paid-color);
+    border-radius: 0.6em;
+    background: rgba(0, 0, 0, 0.75);
+    transform: translateX(-50%);
+    z-index: 1;
+  }
+
+  #status {
+    position: fixed;
+    left: 1.2vmin;
+    bottom: 1.2vmin;
+    z-index: 2;
+    font: 600 clamp(12px, 1.6vmin, 20px) system-ui, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.6s;
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="status"></div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- settings
+
+const params = new URLSearchParams(location.search);
+
+/** Each setting of the widget block: the URL's value if it's a valid one,
+ *  else the block's default. */
+function settingsFrom(widget, query) {
+  const values = {};
+  for (const s of widget.settings) {
+    const raw = query.get(s.name);
+    let value = s.default;
+    if (raw !== null) {
+      if (s.type === "number") {
+        const v = parseFloat(raw);
+        if (Number.isFinite(v)) value = Math.min(s.max, Math.max(s.min, v));
+      } else if (s.type === "bool") {
+        if (raw === "1" || raw === "true") value = true;
+        else if (raw === "0" || raw === "false") value = false;
+      } else if (s.type === "choice") {
+        if (s.options.includes(raw)) value = raw;
+      } else {
+        value = raw;
+      }
+    }
+    values[s.name] = value;
+  }
+  return values;
+}
+const SETTINGS = settingsFrom(JSON.parse(document.getElementById("widget").textContent), params);
+
+// Served by chat-aggregator (`/widgets/…`), the API is at the same address,
+// whatever the port. Anywhere else (OBS "Local file" pages come from a
+// made-up `http://absolute`) it's at the default one.
+function defaultWsUrl() {
+  const served = location.protocol === "http:" && location.pathname.startsWith("/widgets/");
+  return served ? `ws://${location.host}/api/v1/ws` : "ws://127.0.0.1:7878/api/v1/ws";
+}
+
+const CONFIG = {
+  wsUrl: params.get("ws") || defaultWsUrl(),
+  demo: params.get("demo") === "1",
+  life: SETTINGS.life * 1000, // ms to cross the screen
+  size: SETTINGS.size,
+  area: SETTINGS.area / 100,
+  opacity: SETTINGS.opacity / 100,
+  paid: SETTINGS.paid,        // top, bottom, scroll or off
+  paidLife: SETTINGS.paid_life * 1000,
+  names: SETTINGS.names,      // off, paid or all
+  font: SETTINGS.font.trim(),
+};
+const bg = params.get("bg");
+if (bg && CSS.supports("color", bg)) document.body.style.background = bg;
+
+const MAX_CHARS = 80;     // longer comments are cut: at a fixed time on screen
+                          // they'd race past unreadably (Niconico's limit is 75)
+const MAX_WAIT = 4000;    // ms a comment waits for a free lane before it's dropped
+const MAX_WAITING = 60;   // comments waiting at once; in a flood the oldest go first
+const MAX_PINNED = 4;     // rows of pinned paid messages
+const MIN_PINNED = 2000;  // ms a pinned one stays at least, when others wait for its row
+const IMAGE_WAIT = 1000;  // ms a comment waits for its pictures before it's measured
+const LINE = 1.3;         // a lane's height × the text size (the stage's line-height)
+const PIN_LINE = 1.9;     // a pinned row's height × the text size (the backing is taller)
+const GAP = CONFIG.size;  // px kept free behind a comment before the next in its lane
+
+const PAID_KINDS = new Set(["donation", "special", "membership", "gift"]);
+const PINNED = CONFIG.paid === "top" || CONFIG.paid === "bottom";
+
+// The same colours as the built-in Minimal theme: YouTube's Super Chat
+// colours by tier (tips use them too), Twitch's five cheer colours (tiers
+// are YouTube's dollar steps × 100 bits), green for members.
+const TIER_COLORS = [null, "#1e88e5", "#00e5ff", "#1de9b6", "#ffca28", "#f57c00", "#e91e63", "#e62117"];
+const TWITCH_COLORS = [null, "#979797", "#9c3ee8", "#9c3ee8", "#1db2a5", "#1db2a5", "#0099fe", "#f43021"];
+const MEMBER_COLOR = "#2ba640";
+
+const root = document.documentElement;
+root.style.setProperty("--size", `${CONFIG.size}px`);
+root.style.setProperty("--opacity", String(CONFIG.opacity));
+// One quoted name: whatever was typed stays a font name (a CSS value set
+// through the style object can't become anything else).
+if (CONFIG.font) root.style.setProperty("--font", `"${CONFIG.font.replace(/["\\]/g, "\\$&")}"`);
+
+const stage = document.getElementById("stage");
+
+// ------------------------------------------------------------------ layout
+
+let W = 0;         // page width
+let areaH = 0;     // height of the part comments fly in
+let laneH = 0;
+let pinH = 0;
+let laneCount = 1;
+let pinRows = 1;
+
+function resize() {
+  W = window.innerWidth;
+  areaH = window.innerHeight * CONFIG.area;
+  laneH = CONFIG.size * LINE;
+  pinH = CONFIG.size * PIN_LINE;
+  laneCount = Math.max(1, Math.floor(areaH / laneH));
+  pinRows = Math.max(1, Math.min(MAX_PINNED, Math.floor(areaH / pinH)));
+  // Comments already flying keep the width they started with: the lane
+  // checks are a little off for their few seconds, and then right again.
+  lanes.length = laneCount;
+}
+
+// ------------------------------------------------------------------ state
+
+// A comment: { id, platform, author (ids, for moderation), el, pinned,
+// width, height (measured), ready, gone, arrived (ms), anim }.
+const live = new Set();  // every comment on the page, for moderation
+const waiting = [];      // flying comments not started yet, oldest first
+const pinQueue = [];     // pinned ones waiting for a row, oldest first
+// The last comment started in each lane: { start (ms), width, speed (px/ms) }.
+const lanes = [];
+// Each pinned row: { c, shown, until, leaving } or null.
+const pins = new Array(MAX_PINNED).fill(null);
+
+// ----------------------------------------------------------- chat → parts
+
+// Same rules as the overlay's renderer (`split_body` in chat-render), so
+// both always agree on what counts as an emote:
+// - YouTube-style `:code:` matches anywhere, even back to back;
+// - word codes (Twitch's `Kappa`) only as whole words: `Kappachino` is text;
+// - the longest code wins (`KappaPride` over `Kappa`).
+// The API lists each emote once; `text` says how often it was used.
+function isTokenCode(code) {
+  return code.length > 2 && code.startsWith(":") && code.endsWith(":");
+}
+function isWholeWord(text, start, end) {
+  return (start === 0 || /\s/.test(text[start - 1])) && (end === text.length || /\s/.test(text[end]));
+}
+
+/** Splits `text` into [{ text }] and [{ emote }] parts, in order. */
+function partsOf(text, emotes) {
+  const known = emotes.filter((e) => typeof e?.code === "string" && e.code && typeof e.url === "string");
+  const parts = [];
+  let plainStart = 0;
+  let i = 0;
+  while (i < text.length) {
+    let best = null;
+    for (const e of known) {
+      if (best && e.code.length <= best.code.length) continue;
+      if (!text.startsWith(e.code, i)) continue;
+      if (isTokenCode(e.code) || isWholeWord(text, i, i + e.code.length)) best = e;
+    }
+    if (best) {
+      if (plainStart < i) parts.push({ text: text.slice(plainStart, i) });
+      parts.push({ emote: best });
+      i += best.code.length;
+      plainStart = i;
+    } else {
+      i++;
+    }
+  }
+  if (plainStart < text.length) parts.push({ text: text.slice(plainStart) });
+  return parts;
+}
+
+// Grapheme clusters keep 👍🏽, 👨‍👩‍👧 and 🇩🇪 in one piece when a long
+// comment is cut (older browsers: code points).
+const graphemes = "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+function charsOf(text) {
+  return graphemes ? Array.from(graphemes.segment(text), (s) => s.segment) : Array.from(text);
+}
+
+/** The parts, cut after MAX_CHARS characters (an emote counts as one), with
+ *  "…" where something was left out. */
+function shorten(parts) {
+  const out = [];
+  let left = MAX_CHARS;
+  for (const part of parts) {
+    const chars = part.emote ? null : charsOf(part.text);
+    const size = part.emote ? 1 : chars.length;
+    if (size <= left) {
+      out.push(part);
+      left -= size;
+      continue;
+    }
+    if (chars && left > 0) out.push({ text: chars.slice(0, left).join("").trimEnd() });
+    out.push({ text: "…" });
+    break;
+  }
+  return out;
+}
+
+// Twitch's 1.0 and 2.0 images are 28 and 56 px: blurry in big text or on a
+// HiDPI screen. The 3.0 version (112 px) of the same emote is sharp.
+function sharper(url) {
+  return url.replace(/^(https:\/\/static-cdn\.jtvnw\.net\/emoticons\/v2\/.+\/)[12]\.0$/, "$13.0");
+}
+
+/** An emote's picture, or its code as text if the address isn't a web one
+ *  (it comes from chat data). */
+function picture(url, code) {
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return code ? document.createTextNode(code) : null;
+  const img = document.createElement("img");
+  img.className = "c__pic";
+  img.alt = code;
+  img.decoding = "async";
+  img.draggable = false;
+  // Failing after the comment started: keep its box, so nothing moves.
+  img.addEventListener("error", () => (img.style.visibility = "hidden"));
+  img.src = sharper(url);
+  return img;
+}
+
+function span(className, text) {
+  const el = document.createElement("span");
+  el.className = className;
+  el.textContent = text;
+  return el;
+}
+
+const str = (v) => (typeof v === "string" ? v : "");
+const idOf = (v) => (v === null || v === undefined ? "" : String(v));
+
+/** What a paid message or member event says before its text: the amount,
+ *  "New member", "gifted 5 subs" (as the Minimal theme says it). */
+function eventParts(event, named) {
+  const kind = event.kind;
+  const youtube = event.platform === "youtube";
+  switch (kind.type) {
+    case "donation":
+      return [{ text: str(kind.amount), className: "c__event" }];
+    case "special":
+      return [
+        { text: str(kind.amount), className: "c__event" },
+        { text: str(kind.info), className: "c__info" },
+      ];
+    case "membership": {
+      const months = kind.months;
+      const text = Number.isFinite(months)
+        ? `${youtube ? "Member" : "Subscribed"} for ${months} month${months === 1 ? "" : "s"}`
+        : youtube ? "New member" : "New subscriber";
+      return [{ text, className: "c__event" }];
+    }
+    case "gift": {
+      const count = Number.isFinite(kind.count) ? kind.count : 1;
+      const unit = `${youtube ? "membership" : "sub"}${count === 1 ? "" : "s"}`;
+      // Without the name in front, "gifted 5 subs" would read like an order.
+      const text = named ? `gifted ${count} ${unit}` : `${count} gifted ${unit}`;
+      return [{ text, className: "c__event" }];
+    }
+  }
+  return [];
+}
+
+function paidColor(event) {
+  const kind = event.kind;
+  if (kind.type === "membership" || kind.type === "gift") return MEMBER_COLOR;
+  // YouTube's top band may come as more than 7: all of it is red.
+  const tier = Number.isInteger(kind.tier) && kind.tier >= 1 ? Math.min(kind.tier, 7) : 0;
+  if (!tier) return null; // the stylesheet's colour for paid messages without a tier
+  return (event.platform === "twitch" ? TWITCH_COLORS : TIER_COLORS)[tier];
+}
+
+/** The comment's element, not shown yet; null if it would be empty. */
+function commentElement(event, paid, pinned) {
+  const el = document.createElement("div");
+  el.className = pinned ? "c c--pinned c--measure" : "c c--measure";
+  let content = false;
+
+  const name = str(event.author?.name).trim();
+  const named = name !== "" && (CONFIG.names === "all" || (CONFIG.names === "paid" && paid));
+  if (named) el.append(span("c__name", name));
+
+  if (paid) {
+    const color = paidColor(event);
+    if (color) el.style.setProperty("--paid-color", color);
+    for (const part of eventParts(event, named)) {
+      if (!part.text.trim()) continue;
+      el.append(span(part.className, part.text));
+      content = true;
+    }
+    // A YouTube gift's picture (Super Stickers come without one).
+    const sticker = event.kind.type === "special" ? picture(event.kind.image_url, "") : null;
+    if (sticker) {
+      el.append(sticker);
+      content = true;
+    }
+  }
+
+  const text = str(event.text);
+  if (text.trim()) {
+    const body = document.createElement("span");
+    body.className = "c__body";
+    const emotes = Array.isArray(event.emotes) ? event.emotes : [];
+    for (const part of shorten(partsOf(text, emotes))) {
+      if (part.emote) body.append(picture(part.emote.url, part.emote.code));
+      else body.append(part.text); // a text node: never markup
+    }
+    el.append(body);
+    content = true;
+  }
+  return content ? el : null;
+}
+
+// ------------------------------------------------------------ chat events
+
+function onChatEvent(event) {
+  switch (event?.type) {
+    case "message":
+      return onMessage(event);
+    case "delete":
+    case "clear_user":
+    case "clear_all":
+      return moderate(event);
+  }
+}
+
+function onMessage(event) {
+  // An OBS source that isn't shown: nothing to fly, and nothing should
+  // pile up for when it's shown again.
+  if (document.hidden) return;
+  const kind = event.kind?.type;
+  // Raids and announcements aren't viewers' comments (and name the raider).
+  if (kind === "notice") return;
+  const paid = PAID_KINDS.has(kind);
+  if (paid && CONFIG.paid === "off") return;
+  const pinned = paid && PINNED;
+
+  const el = commentElement(event, paid, pinned);
+  if (!el) return;
+  const c = {
+    id: idOf(event.id),
+    platform: idOf(event.platform),
+    author: idOf(event.author?.id),
+    el,
+    pinned,
+    width: 0,
+    height: 0,
+    ready: false,
+    gone: false,
+    arrived: performance.now(),
+    anim: null,
+  };
+  live.add(c);
+  stage.append(el);
+  if (pinned) {
+    pinQueue.push(c); // never dropped
+  } else {
+    waiting.push(c);
+    if (waiting.length > MAX_WAITING) discard(waiting[0]);
+  }
+  measureWhenReady(c);
+}
+
+/** Waits for the comment's pictures (a moment at most), then measures it:
+ *  its lane check needs its width before it starts. */
+async function measureWhenReady(c) {
+  const imgs = [...c.el.querySelectorAll("img")];
+  if (imgs.length) {
+    const settled = (img) => new Promise((resolve) => {
+      if (img.complete) return resolve();
+      img.addEventListener("load", resolve, { once: true });
+      img.addEventListener("error", resolve, { once: true });
+    });
+    await Promise.race([
+      Promise.all(imgs.map(settled)),
+      new Promise((resolve) => setTimeout(resolve, IMAGE_WAIT)),
+    ]);
+  }
+  if (c.gone) return;
+  for (const img of imgs) {
+    if (!img.complete) {
+      img.classList.add("c__pic--pending");
+    } else if (img.naturalWidth === 0) {
+      // Failed: its code instead, as the platform would show it.
+      img.replaceWith(img.alt);
+    }
+  }
+  const box = c.el.getBoundingClientRect();
+  c.width = box.width;
+  c.height = box.height;
+  c.ready = true;
+}
+
+/** Takes the comment off the page and out of every list. */
+function discard(c) {
+  if (c.gone) return;
+  c.gone = true;
+  c.anim?.cancel();
+  c.el.remove();
+  live.delete(c);
+  removeFrom(waiting, c);
+  removeFrom(pinQueue, c);
+  const row = pins.findIndex((p) => p?.c === c);
+  if (row >= 0) pins[row] = null;
+}
+
+function removeFrom(list, item) {
+  const i = list.indexOf(item);
+  if (i >= 0) list.splice(i, 1);
+}
+
+/** A moderator removed messages: off the screen at once, wherever they
+ *  are (flying, pinned or still waiting). */
+function moderate(event) {
+  const platform = idOf(event.platform);
+  let matches;
+  if (event.type === "delete") {
+    const id = idOf(event.message_id);
+    matches = (c) => c.platform === platform && c.id === id;
+  } else if (event.type === "clear_user") {
+    const user = idOf(event.user_id);
+    matches = (c) => c.platform === platform && c.author === user;
+  } else {
+    matches = (c) => c.platform === platform;
+  }
+  for (const c of [...live]) if (matches(c)) discard(c);
+}
+
+// -------------------------------------------------------------- the lanes
+
+/**
+ * Whether a comment `width` px wide may start now (`t`) in a lane whose
+ * last comment is `last`. Every comment crosses the screen in the same
+ * time, from just outside the right edge until it's gone at the left, so a
+ * wider one moves faster. Two things must hold:
+ * 1. the last one's tail is on screen already, with a gap behind it;
+ * 2. the new one doesn't catch up with it before it's gone. Both move in
+ *    straight lines at constant speeds, so if they're apart now (1) and
+ *    still apart when the last one leaves, they're apart all along: when
+ *    it leaves, the new one's front must not have reached the left edge.
+ * Comments further ahead in the lane were checked the same way against
+ * the last one, so they're out of reach too.
+ */
+function fits(last, width, t) {
+  if (!last) return true;
+  const flown = t - last.start;
+  if (flown >= CONFIG.life) return true;
+  if (last.speed * flown < last.width + GAP) return false;
+  const speed = (W + width) / CONFIG.life;
+  return speed * (CONFIG.life - flown) <= W;
+}
+
+/** The topmost lane the comment fits in, or -1. */
+function freeLane(width, t) {
+  for (let lane = 0; lane < laneCount; lane++) {
+    if (fits(lanes[lane], width, t)) return lane;
+  }
+  return -1;
+}
+
+/** Starts a comment flying in `lane`. The browser's animation moves it
+ *  (on the compositor, no script per frame); its finish removes it. */
+function launch(c, lane, t) {
+  const { el, width } = c;
+  el.style.top = `${lane * laneH}px`;
+  // Outside the right edge until the animation applies, and again after
+  // it ends (no flash at the left).
+  el.style.transform = `translateX(${W}px)`;
+  el.classList.remove("c--measure");
+  c.anim = el.animate(
+    [{ transform: `translateX(${W}px)` }, { transform: `translateX(${-width}px)` }],
+    { duration: CONFIG.life, easing: "linear" },
+  );
+  // From this frame's time, the same the lane checks count from.
+  c.anim.startTime = t;
+  c.anim.onfinish = () => discard(c);
+  lanes[lane] = { start: t, width, speed: (W + width) / CONFIG.life };
+}
+
+// ------------------------------------------------------------ pinned rows
+
+function freeRow() {
+  for (let row = 0; row < pinRows; row++) if (!pins[row]) return row;
+  return -1;
+}
+
+/** Shows a paid message pinned in `row` (counted from the area's top or
+ *  bottom edge), shrunk to fit if it's wider than the page. */
+function pinIn(c, row, t) {
+  const { el } = c;
+  const rowTop = CONFIG.paid === "bottom" ? areaH - (row + 1) * pinH : row * pinH;
+  el.style.top = `${rowTop + (pinH - c.height) / 2}px`;
+  const scale = Math.min(1, (W * 0.96) / c.width);
+  if (scale < 1) el.style.transform = `translateX(-50%) scale(${scale})`;
+  el.classList.remove("c--measure");
+  el.animate({ opacity: [0, CONFIG.opacity] }, { duration: 200 });
+  pins[row] = { c, shown: t, until: t + CONFIG.paidLife, leaving: false };
+}
+
+/** Fades a pinned message out; its row is free once it's gone. */
+function unpin(row) {
+  const p = pins[row];
+  p.leaving = true;
+  const fade = p.c.el.animate({ opacity: [CONFIG.opacity, 0] }, { duration: 300, fill: "forwards" });
+  fade.onfinish = () => discard(p.c);
+}
+
+// ------------------------------------------------------------------- loop
+
+function schedule(t) {
+  // Flying comments, oldest first, each into the topmost lane it fits.
+  // (A later, shorter one may fit where an earlier one doesn't yet.)
+  for (let i = 0; i < waiting.length; ) {
+    const c = waiting[i];
+    if (t - c.arrived > MAX_WAIT) {
+      discard(c); // out of `waiting`: the next one is at `i` now
+      continue;
+    }
+    const lane = c.ready ? freeLane(c.width, t) : -1;
+    if (lane >= 0) {
+      waiting.splice(i, 1);
+      launch(c, lane, t);
+    } else {
+      i++;
+    }
+  }
+
+  // Pinned ones, oldest first, into free rows.
+  for (let i = 0; i < pinQueue.length; ) {
+    const c = pinQueue[i];
+    const row = c.ready ? freeRow() : -1;
+    if (row < 0) {
+      i++;
+      continue;
+    }
+    pinQueue.splice(i, 1);
+    pinIn(c, row, t);
+  }
+
+  // Their time is up; or others wait, and they've been up a while (oldest
+  // first, only as many as are waiting): a hype train of subs mustn't
+  // queue up for minutes.
+  let wanted = pinQueue.filter((c) => c.ready).length - pins.filter((p) => p?.leaving).length;
+  const showing = pins
+    .map((p, row) => ({ p, row }))
+    .filter(({ p }) => p && !p.leaving)
+    .sort((a, b) => a.p.shown - b.p.shown);
+  for (const { p, row } of showing) {
+    if (t >= p.until || (wanted > 0 && t - p.shown >= MIN_PINNED)) {
+      unpin(row);
+      wanted--;
+    }
+  }
+}
+
+function frame(t) {
+  schedule(t);
+  requestAnimationFrame(frame);
+}
+
+// -------------------------------------------------------------- websocket
+
+const statusEl = document.getElementById("status");
+let statusTimer = 0;
+function setStatus(text, stay) {
+  statusEl.textContent = text;
+  statusEl.style.opacity = "0.85";
+  clearTimeout(statusTimer);
+  if (!stay) statusTimer = setTimeout(() => (statusEl.style.opacity = "0"), 3000);
+}
+
+let retryMs = 1000;
+function connect() {
+  let ws;
+  try {
+    ws = new WebSocket(CONFIG.wsUrl);
+  } catch {
+    return setStatus(`💬 not a WebSocket address: ${CONFIG.wsUrl}`, true);
+  }
+  ws.onopen = () => {
+    retryMs = 1000;
+    setStatus("💬 connected to chat", false);
+  };
+  ws.onmessage = (frame) => {
+    try {
+      onChatEvent(JSON.parse(frame.data));
+    } catch (err) {
+      console.warn("ignored an event:", err);
+    }
+  };
+  // Also fires after a failed connect (server not running, API switched
+  // off → HTTP 403), so this is the one place that retries.
+  ws.onclose = () => {
+    setStatus("💬 waiting for chat… (is the JSON API switched on?)", true);
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 1.5, 10000);
+  };
+}
+
+// --------------------------------------------------------------- testing
+
+// Twitch's global emotes, the same the app's demo mode uses.
+const DEMO_EMOTES = [
+  { code: "Kappa", url: "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0" },
+  { code: "HeyGuys", url: "https://static-cdn.jtvnw.net/emoticons/v2/30259/default/dark/2.0" },
+  { code: ":_demoHype:", url: "https://static-cdn.jtvnw.net/emoticons/v2/354/default/dark/2.0" },
+];
+const DEMO_NAMES = ["Viewer42", "Viewer7", "Lurker99", "ChatFan", "Guest123"];
+const DEMO_TEXTS = [
+  "hello from the back!", "wwwwwww", "8888888888", "GG", "lol", "that was close",
+  "first time here, love the vibes", "NO WAY", "clip it!", "🔥🔥🔥", "this song is so good 🎶",
+  "Kappa", "HeyGuys HeyGuys", ":_demoHype::_demoHype:", "草", "kawaii 💜", "again! again!",
+];
+const DEMO_LONG = "okay this is a really long comment, to see how a long message races across "
+  + "the screen faster than the short ones do, and where it gets cut off at the end";
+const DEMO_PAID = [
+  { platform: "youtube", amount: "$2.00", tier: 2 },
+  { platform: "youtube", amount: "€5.00", tier: 3 },
+  { platform: "youtube", amount: "¥2,000", tier: 4 },
+  { platform: "twitch", amount: "500 bits", tier: 3 },
+  { platform: "youtube", amount: "$100.00", tier: 7 },
+  { platform: "streamelements", amount: "€10.00", tier: 4 },
+];
+const pick = (list) => list[(Math.random() * list.length) | 0];
+let demoId = 0;
+
+function demoEvent(platform, text, kind) {
+  const emotes = DEMO_EMOTES.filter((e) => text.includes(e.code));
+  const name = pick(DEMO_NAMES);
+  onChatEvent({
+    type: "message",
+    id: `demo-${demoId++}`,
+    platform,
+    author: { id: `demo-${name}`, name },
+    text,
+    emotes,
+    kind,
+  });
+}
+
+function demoMessage(what) {
+  const platform = Math.random() < 0.5 ? "twitch" : "youtube";
+  if (what === "long") return demoEvent(platform, DEMO_LONG, { type: "text" });
+  if (what === "paid") {
+    const paid = pick(DEMO_PAID);
+    const text = Math.random() < 0.7 ? pick(["thank you for the stream!", "for the song 🎶", "HeyGuys"]) : "";
+    return demoEvent(paid.platform, text, { type: "donation", amount: paid.amount, tier: paid.tier });
+  }
+  if (what === "member") {
+    const months = Math.random() < 0.5 ? null : 12;
+    return demoEvent("youtube", months ? "a year already!" : "", { type: "membership", info: null, months });
+  }
+  if (what === "gift") return demoEvent("twitch", "", { type: "gift", count: 5 });
+  return demoEvent(platform, pick(DEMO_TEXTS), { type: "text" });
+}
+
+function flood() {
+  for (let i = 0; i < 40; i++) setTimeout(() => demoMessage(), i * 50);
+}
+
+/** As a moderator would: deletes the newest comment on the page. */
+function deleteNewest() {
+  const newest = [...live].filter((c) => !c.gone).pop();
+  if (newest) onChatEvent({ type: "delete", platform: newest.platform, message_id: newest.id });
+}
+
+const KEYS = { 1: "text", 2: "long", 3: "paid", 4: "member" };
+window.addEventListener("keydown", (e) => {
+  if (e.repeat) return;
+  if (e.key === "f" || e.key === "F") return flood();
+  if (e.key === "d" || e.key === "D") return deleteNewest();
+  if (KEYS[e.key]) demoMessage(KEYS[e.key]);
+});
+
+// A chat that comes and goes: quiet stretches, busy moments.
+function startDemo() {
+  let busyUntil = 0;
+  let nextBusy = performance.now() + 5000;
+  (function next() {
+    const now = performance.now();
+    if (now > nextBusy) {
+      busyUntil = now + 5000;
+      nextBusy = now + 12000 + Math.random() * 8000;
+    }
+    const busy = now < busyUntil;
+    const r = Math.random();
+    demoMessage(r < 0.04 ? "paid" : r < 0.06 ? "member" : r < 0.07 ? "gift" : r < 0.1 ? "long" : "text");
+    setTimeout(next, busy ? 60 + Math.random() * 160 : 300 + Math.random() * 1100);
+  })();
+}
+
+// ------------------------------------------------------------------- start
+
+resize();
+window.addEventListener("resize", resize);
+requestAnimationFrame(frame);
+connect();
+if (CONFIG.demo) startDemo();
+</script>
+</body>
+</html>

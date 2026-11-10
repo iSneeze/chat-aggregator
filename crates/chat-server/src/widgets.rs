@@ -231,13 +231,17 @@ pub struct Widget {
     csp: String,
 }
 
-/// The widgets that come with the app. Checked once, on first use; the
-/// tests make sure the `expect` never fires.
+/// The widgets that come with the app, in the order the app lists them.
+/// Checked once, on first use; the tests make sure the `expect` never
+/// fires. (The flake's source set lists these files too.)
 static BUILTIN: LazyLock<Vec<Widget>> = LazyLock::new(|| {
-    [(
-        "live-emoji",
-        include_str!("../../../examples/live-emoji.html"),
-    )]
+    [
+        (
+            "live-emoji",
+            include_str!("../../../examples/live-emoji.html"),
+        ),
+        ("danmaku", include_str!("../../../examples/danmaku.html")),
+    ]
     .into_iter()
     .map(|(name, page)| Widget::from_page(name, page).expect("built-in widgets are valid"))
     .collect()
@@ -1021,6 +1025,9 @@ mod tests {
         assert!(!builtin.is_empty());
         for widget in builtin {
             assert!(!widget.manifest.settings.is_empty(), "{}", widget.name);
+            // The name an import of it would get, so importing it (or
+            // another widget with its title) runs into the built-in name.
+            assert_eq!(widget.name, name_from(&widget.manifest.title));
             // The page takes its defaults from the block, so the app's form
             // and the page can't disagree.
             assert!(
@@ -1032,35 +1039,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_widget_is_served_with_its_security_rules() {
+    async fn the_built_in_widgets_are_served_with_their_security_rules() {
         let server = start(None).await;
-        let resp = reqwest::get(format!("http://{}/widgets/live-emoji", server.addr))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(resp.headers()["x-content-type-options"], "nosniff");
-        let csp = resp.headers()["content-security-policy"]
-            .to_str()
-            .unwrap()
-            .to_string();
-        let page = resp.text().await.unwrap();
-        assert_eq!(page, include_str!("../../../examples/live-emoji.html"));
+        for widget in Widget::builtin() {
+            let url = format!("http://{}/widgets/{}", server.addr, widget.name);
+            let resp = reqwest::get(url).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{}", widget.name);
+            assert_eq!(resp.headers()["x-content-type-options"], "nosniff");
+            let csp = resp.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .to_string();
+            let page = resp.text().await.unwrap();
+            assert_eq!(page, widget.page, "{}", widget.name);
 
-        // Its one script, by the hash of exactly what's served.
-        let script = page
-            .split_once("<script>")
-            .and_then(|(_, rest)| rest.split_once("</script>"))
-            .unwrap()
-            .0;
-        assert_eq!(
-            script_src(&csp),
-            format!("script-src 'sha256-{}'", script_hash(script))
-        );
-        assert!(csp.starts_with("default-src 'none';"), "{csp}");
-        assert!(
-            csp.ends_with(&format!("connect-src 'self' ws://{}", server.addr)),
-            "{csp}"
-        );
+            // Its one script, by the hash of exactly what's served.
+            let script = page
+                .split_once("<script>")
+                .and_then(|(_, rest)| rest.split_once("</script>"))
+                .unwrap()
+                .0;
+            assert_eq!(
+                script_src(&csp),
+                format!("script-src 'sha256-{}'", script_hash(script)),
+                "{}",
+                widget.name
+            );
+            assert!(csp.starts_with("default-src 'none';"), "{csp}");
+            assert!(
+                csp.ends_with(&format!("connect-src 'self' ws://{}", server.addr)),
+                "{csp}"
+            );
+        }
     }
 
     #[tokio::test]

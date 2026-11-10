@@ -397,7 +397,7 @@ every field is an `Arc` or a small handle around one).
 | `/events` | Server-Sent Events: history, then live chat as rendered HTML |
 | `/avatar/<key>` | a chatter's profile picture, downloaded once for all overlays |
 | `/api/v1/ws` | WebSocket: live events as JSON (off by default) |
-| `/widgets/<name>` | a widget: a page that reads the JSON API (built in: `live-emoji`) |
+| `/widgets/<name>` | a widget: a page that reads the JSON API (built in: `live-emoji`, `danmaku`) |
 
 - **SSE for the overlay, WebSocket for the API.** SSE is one-way, built into
   every browser and reconnects by itself: ideal for a page that only
@@ -453,7 +453,9 @@ every field is an `Arc` or a small handle around one).
   registered, so the route can't be used to make the server fetch other
   addresses. The JSON API keeps the platform's own URL.
 - **Widgets** (`widgets.rs`) are single HTML files that read the JSON API
-  and show chat their own way (`examples/live-emoji.html` is built in).
+  and show chat their own way (`examples/live-emoji.html` and
+  `examples/danmaku.html` are built in, compiled into the binary with
+  `include_str!`).
   The server serves them, rather than OBS opening them as files, so their
   settings can go into the URL: OBS's "Local file" field takes no query,
   and a page from a `file://` URL can't use the API (its origin is

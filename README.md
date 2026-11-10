@@ -26,7 +26,7 @@ Website and guides: <https://isneeze.github.io/chat-aggregator/>
   Warudo; a big Super Chat puts a voice filter on your mic in OBS for 30
   seconds.
 - **Widgets.** Other ways to show chat, like every emote floating up the
-  screen.
+  screen, or chat flying across it danmaku-style.
 - **A feed for your own tools.** Games and bots can receive the merged
   chat as it happens.
 - **Stays on your computer.** No account with us, and no server of ours in

@@ -5,9 +5,21 @@ source: emotes rising up the screen, a counter, a mini game. It gets the
 chat from chat-aggregator's [JSON API](api.md), and chat-aggregator serves
 it, so its settings can be picked in the app and travel in its URL.
 
-**Live Emoji** is built in: every emote and emoji sent in chat floats up
-from the bottom of the screen and fades away, in a lively "party" mood or a
-calm one.
+Two widgets come with the app:
+
+- **Live Emoji**: every emote and emoji sent in chat floats up from the
+  bottom of the screen and fades away, in a lively "party" mood or a calm
+  one.
+- **Danmaku**: chat flies across the screen from right to left, as on
+  Niconico or Bilibili, without names (unless you switch them on). Every
+  comment takes the same time to cross the screen, so long ones move
+  faster, and each one takes a lane where it never runs into the one in
+  front. Paid messages and member events are pinned at the top (or the
+  bottom) for a few seconds instead, the amount in the tier's colour.
+  Raids and announcements are left out, and a message a moderator deletes
+  disappears from the screen at once. When chat is faster than the lanes
+  can carry, comments wait a few seconds for a free lane and are dropped
+  after that; paid messages always get their turn.
 
 ## Using a widget
 
@@ -25,6 +37,11 @@ The URL carries the settings (`…/widgets/live-emoji?mode=calm&size=72`):
 after changing them, copy the URL again into the browser source. **Reset**
 puts every setting back to the widget's own default (it asks first). The
 main window shows how many widgets are connected right now.
+
+What the overlay leaves out (**⚙ Settings → Overlay**, `?hide=`) doesn't
+apply to widgets: they get all of chat from the JSON API, and each widget
+decides what it shows. Danmaku's **Paid messages: off**, for one, leaves
+out tips that your tip service's alert box shows already.
 
 ### Importing a widget
 
