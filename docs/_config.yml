@@ -7,5 +7,5 @@
 # links between them like [setup](youtube-setup.md) are rewritten to the
 # generated HTML automatically.
 title: chat-aggregator
-description: Twitch and YouTube live chat in one overlay for your stream.
+description: Twitch, YouTube and Picarto live chat as one chat on your stream.
 theme: jekyll-theme-minimal

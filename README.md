@@ -1,205 +1,114 @@
-# chat-aggregator (name pending)
+# chat-aggregator
 
-*Multi platform, single chat.*
+*A working title: the final name is still being decided.*
 
-Website and docs: <https://isneeze.github.io/chat-aggregator/>
+**All your stream chats in one place.** chat-aggregator is a free desktop
+app for streamers. It collects the live chat from Twitch, YouTube and
+Picarto, plus tips from StreamElements and Streamlabs, and shows them as
+one chat on your stream.
 
-Aggregates live chat from Twitch, YouTube, Picarto, and Rplay (soon™️), plus StreamElements and Streamlabs tips, into a single unified
-message stream, exposed as a stylable HTML overlay for OBS/browser sources.
-Chat reactions turn chat into actions in other programs: `!bonk` throws an
-item at your model in Warudo, a big Super Chat puts a voice filter on your
-mic in OBS for 30 seconds. Widgets show chat other ways in OBS, like every
-emote in chat floating up the screen.
+If you stream to several platforms at once, your viewers sit in several
+chats that can't see each other. With chat-aggregator everyone watching
+sees the same chat, and you have one chat to read instead of three.
 
-## How it works
+Website and guides: <https://isneeze.github.io/chat-aggregator/>
 
-sources → mpsc → hub (broadcast + replay history) ─┬→ SSE → your overlay
-                                                    └→ WebSocket → your programs and widgets (JSON API)
+## What it does
 
-Each platform is its own crate behind a `ChatSource` trait; the server never
-knows what Twitch or YouTube look like, only `ChatEvent`s (messages plus
-moderation: deletes, bans, clears). How the pieces fit together, and why:
-[docs/architecture.md](docs/architecture.md).
+- **One chat on your stream.** Messages from every platform appear in one
+  chat box in OBS (or any streaming software that can show a web page),
+  with emotes, badges, donations, subs and memberships.
+- **Your look.** Two built-in themes, or style the chat yourself with HTML
+  and CSS.
+- **Moderation carries over.** A message deleted on a platform disappears
+  from your stream too.
+- **Chat makes things happen.** `!bonk` throws an item at your model in
+  Warudo; a big Super Chat puts a voice filter on your mic in OBS for 30
+  seconds.
+- **Widgets.** Other ways to show chat, like every emote floating up the
+  screen.
+- **A feed for your own tools.** Games and bots can receive the merged
+  chat as it happens.
+- **Stays on your computer.** No account with us, and no server of ours in
+  between.
 
-| crate          | role                                        |
-|----------------|---------------------------------------------|
-| `chat-core`    | message model, source trait, hub, demo data |
-| `chat-twitch`  | Twitch IRC (anonymous read)                 |
-| `chat-youtube` | YouTube gRPC live chat (`streamList`)       |
-| `chat-rplay`   | rplay — research in progress                |
-| `chat-picarto` | Picarto chat WebSocket (anonymous read)     |
-| `chat-streamelements` | StreamElements tips (Overlay Token)   |
-| `chat-streamlabs`     | Streamlabs tips (Socket API Token)    |
-| `chat-render`  | templates + CSS, emote replacement          |
-| `chat-server`  | HTTP: overlay page, SSE stream, JSON API, widgets |
-| `chat-reactions` | chat reactions: rules, Warudo and OBS outputs |
-| `chat-engine`  | runs sources, hub and server together       |
-| `chat-app`     | the desktop app (GPUI)                      |
+## How you use it
 
-## Building
+1. Start the app and add your channels. Twitch and Picarto only need the
+   channel name; YouTube needs a
+   [one-time setup](https://isneeze.github.io/chat-aggregator/youtube-setup)
+   of about 10 minutes.
+2. Copy the overlay address from the app (`http://127.0.0.1:7878/`) and
+   add it in OBS as a **Browser Source**.
+3. Go live. The chat shows up on its own.
 
-*Prerequisites*: a Rust toolchain (1.88+ / edition 2024) and `protoc` on
-your `PATH` — `chat-youtube` compiles its protobuf schema at build time
-via a build script.
+No account at hand? Add the **Demo** source: it sends sample messages of
+every kind, so you can try themes and widgets before your first stream.
 
-Debian/Ubuntu:
-```sh
-apt install protobuf-compiler
-```
+## Get it
 
-macOS (brew):
-```sh
-brew install protobuf
-```
+Builds for **Windows** (10 or newer) and **Linux** are on the
+[Releases page](https://github.com/iSneeze/chat-aggregator/releases).
+There's no installer yet: unpack the archive and start the program.
 
-Windows (use your package manager of choice): 
-```powershell
-winget install protobuf
-choco install proto
-scoop install proto
-```
+[Download and first steps](https://isneeze.github.io/chat-aggregator/install)
+covers what to expect on each system (Windows warns about the unsigned
+file), where your settings are kept, and how to report a problem.
 
-Nix: a [flake](./flake.nix) is provided — `nix develop` puts everything (toolchain,
-protoc, etc.) on PATH. `direnv` works too. No manual setup needed.
+## What's supported
 
-Then the usual:
-```sh
-cargo build
-cargo test          # or: cargo nextest run
-```
+| Platform | What you get | What it needs |
+|----------|--------------|---------------|
+| Twitch | chat, bits, subs, gift subs, raids, announcements | the channel name |
+| YouTube | chat, Super Chats, Super Stickers, memberships; unlisted and members-only streams too | your own free Google project ([setup](https://isneeze.github.io/chat-aggregator/youtube-setup)) |
+| Picarto | chat and emotes | the channel name |
+| StreamElements | tips | your Overlay Token |
+| Streamlabs | tips, from several accounts if you have them | your Socket API Token |
+| Rplay | planned | |
 
-## Running
+## Guides
 
-The desktop app: sources with status lights and on/off switches, YouTube
-login and custom emoji, overlay themes, a test messages window and ⚙
-settings (appearance, replay, pacing, port). Everything is saved to the
-same config file the headless mode uses:
+- [Download and first steps](https://isneeze.github.io/chat-aggregator/install)
+- [Connecting YouTube](https://isneeze.github.io/chat-aggregator/youtube-setup)
+- [Overlay themes](https://isneeze.github.io/chat-aggregator/themes):
+  making the chat look the way you want
+- [Widgets](https://isneeze.github.io/chat-aggregator/widgets): using
+  them, and writing your own
+- [YouTube channel emoji](https://isneeze.github.io/chat-aggregator/youtube-emoji)
+- [Chat events API](https://isneeze.github.io/chat-aggregator/api): the
+  feed for your own programs
+- [Privacy policy](https://isneeze.github.io/chat-aggregator/privacy/)
 
-```sh
-cargo run -p chat-app
-```
+## Safety and privacy
 
-The whole pipeline, headless:
+Anyone can type anything into a chat, so chat-aggregator always shows
+chat as text and never runs it as code, and the overlay refuses every
+script but its own. Keep OBS up to date as well: its built-in browser gets
+its security fixes that way.
 
-```sh
-cargo run -p chat-engine --example run -- --demo            # every message kind, no account needed
-cargo run -p chat-engine --example run -- --init-config     # once: write a commented config.toml
-cargo run -p chat-engine --example run                      # start everything in the config file
-cargo run -p chat-engine --example run -- --youtube-login   # once; see docs/youtube-setup.md
-cargo run -p chat-engine --example run -- --twitch <channel> --youtube-own   # sources as flags instead
-```
+Everything runs on your computer. What the app stores and sends is in the
+[privacy policy](https://isneeze.github.io/chat-aggregator/privacy/).
 
-The config file lives in the per-OS settings folder
-(`~/.config/chat-aggregator/config.toml` on Linux). The terminal shows a
-status light per source (🟢 🟡 🔴 ⚪) and how many overlays are connected.
-The desktop app also writes a log of its last start next to it
-(`chat-aggregator.log`, the start before as `chat-aggregator.old.log`):
-attach it to bug reports.
+## Where it stands
 
-YouTube needs your own (free) Google Cloud project, because YouTube's API
-quota is counted per project: [docs/youtube-setup.md](docs/youtube-setup.md)
-walks through it.
+An early version. It works and has been tested on live streams, but there
+is no installer yet and details may still change. Found a problem? Open an
+[issue](https://github.com/iSneeze/chat-aggregator/issues) and attach the
+app's log file
+([where to find it](https://isneeze.github.io/chat-aggregator/install#reporting-a-problem)).
 
-Sources can be combined; see the top of `crates/chat-engine/examples/run.rs`
-for all flags. Then add `http://127.0.0.1:7878/` as a **Browser Source** in
-OBS (e.g. 450×800).
+## For developers
 
-**Styling:** two built-in themes (Default, and Minimal: one line per
-message), plus your own: folders in `themes/` next to the config file, picked
-in the app (or `theme = "name"` in `config.toml`, `--theme <name|dir>`
-headless), or per browser source with `?theme=name` in the overlay URL; see
-[docs/themes.md](docs/themes.md). Chat direction (newest at
-the bottom or top): the app's dropdown, `newest = "top"` / `--newest top`,
-or per browser source `?newest=top` in the overlay URL. To iterate without a
-server: `cargo run -p chat-render --example preview -- <dir> > preview.html`.
+chat-aggregator is written in Rust and open source.
 
-**JSON API** for your own programs (games, bots, ...):
-`ws://127.0.0.1:7878/api/v1/ws`, one JSON event per WebSocket message.
-Off by default: switch it on in the app's settings (headless: `--api` or
-`api = true` in `[server]`). See [docs/api.md](docs/api.md); formal spec in
-[docs/asyncapi.yaml](docs/asyncapi.yaml). Quick look:
-`cargo run -p chat-engine --example run -- --demo --api`, then
-`websocat ws://127.0.0.1:7878/api/v1/ws`.
-
-**Security:** chat is untrusted input. It reaches the overlay only through
-`chat-render` (auto-escaped template, body pre-split into text/emote
-parts), and the overlay page sends a Content-Security-Policy that allows
-only its own script (by hash), so neither chat nor a hostile theme can run
-code in OBS's unsandboxed browser (cf. CVE-2024-7971). API consumers must
-insert chat as text too: see [docs/api.md](docs/api.md#security).
-
-Standalone listeners for a single platform:
-
-```sh
-cargo run -p chat-twitch --example listen_twitch -- <channel>
-YOUTUBE_API_KEY=... cargo run -p chat-youtube --example listen_youtube -- <video_id>
-# optional: YOUTUBE_EMOJIS=export.json (from scripts/yt-emoji-export.user.js)
-```
-
-## Builds and releases
-
-Windows and Linux builds of the desktop app come from GitHub Actions
-(`.github/workflows/release.yml`), on the GitHub repository:
-
-- **Test build:** **Actions → Release → Run workflow**. The finished run
-  has a zip (Windows) and a tar.gz (Linux) attached; downloading them needs
-  a GitHub login.
-- **Release:** set `version` in `Cargo.toml`, commit, then push a matching
-  tag (`git tag v0.1.0 && git push origin v0.1.0` to the GitHub
-  repository). The same builds become a *draft* release with
-  `SHA256SUMS`; check it under Releases, then publish it.
-
-Windows is built on Windows because GPUI compiles its DirectX shaders with
-the Windows SDK, so cross-compiling from Linux doesn't work. Linux is built
-on Ubuntu 22.04, so the binary runs on distributions from about 2022 on (it
-needs glibc 2.35 or newer). Both are a single program, no installer.
-
-For testers on Windows (10 or newer):
-
-- Windows SmartScreen warns about the unsigned file ("Windows protected
-  your PC"): **More info → Run anyway**.
-- There's no console window: the app's log goes to a file (below). If
-  the app doesn't open at all, that file says why.
-- Settings, themes and the log file are in
-  `%APPDATA%\chat-aggregator\config\` (⚙ → General → Settings folder →
-  Open folder). Please send `chat-aggregator.log` with any bug report (and
-  `chat-aggregator.old.log` if the app was restarted after the problem).
-- The YouTube login is stored in the Windows Credential Manager.
-- In OBS, add `http://127.0.0.1:7878/` as a Browser Source.
-
-For testers on Linux:
-
-- Unpack and run `./chat-aggregator`. It needs a graphics driver with
-  Vulkan (Mesa or the GPU vendor's), Wayland or X11, and libxkbcommon,
-  which desktop installs normally have.
-- Settings, themes and the log file are in `~/.config/chat-aggregator/`.
-- The YouTube login is stored in the desktop's keyring (GNOME Keyring,
-  KWallet, ...) through the Secret Service; without one, in a file in the
-  settings folder that only your user can read.
-- NixOS: the binary doesn't run as is (no `/usr/lib`). Use the flake
-  instead: `nix run github:iSneeze/chat-aggregator` (or `nix profile
-  install github:iSneeze/chat-aggregator`); in a checkout, `nix build`
-  leaves the app in `./result/bin/`.
-
-Each archive also has `THIRD-PARTY-LICENSES.html`, the licenses of the
-open-source projects the app is built from (generated by `cargo about`
-from `about.toml`).
-
-## Status
-
-- [x] Twitch IRC source
-- [x] YouTube gRPC source (OAuth login or API key; quota handling)
-- [x] Picarto source (chat, emotes, moderation)
-- [x] StreamElements tips
-- [x] Streamlabs tips (several accounts, by name)
-- [ ] rplay source
-- [x] hub (broadcast + replay history)
-- [x] HTML overlay + themes (SSE)
-- [x] JSON WebSocket API
-- [x] widgets (Live Emoji built in, import your own)
-- [x] control plane + GPUI desktop app
-- [ ] release builds / installers
+- [Building and running from source](docs/development.md): the
+  toolchain, the headless mode, how releases are made.
+- [Architecture](docs/architecture.md): how the pieces fit together, and
+  why.
 
 ## License
 
 [MIT](LICENSE) © 2026 iSneeze
+
+chat-aggregator is an independent project, not affiliated with or endorsed
+by Twitch, YouTube, Google, Picarto, StreamElements or Streamlabs.

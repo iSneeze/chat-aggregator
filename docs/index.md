@@ -4,35 +4,44 @@ title: chat-aggregator
 
 # chat-aggregator
 
-**Twitch, YouTube and Picarto live chat in one overlay for your stream.**
+**All your stream chats in one place.** chat-aggregator is a free desktop
+app for streamers. It collects the live chat from Twitch, YouTube and
+Picarto, plus tips from StreamElements and Streamlabs, and shows them as
+one chat on your stream.
 
-chat-aggregator runs on your own computer while you stream. It reads the
-live chat of your channels on Twitch, YouTube and Picarto, merges it into a single
-chat, and shows it as a styled overlay you add to OBS (or any streaming
-software) as a browser source. Other programs on your computer, like games
-or bots, can receive the same chat as a live JSON feed.
+If you stream to several platforms at once, your viewers sit in several
+chats that can't see each other. With chat-aggregator everyone watching
+sees the same chat, and you have one chat to read instead of three.
 
-- One chat for all platforms, with emotes, badges, donations, subs and
-  memberships.
-- Tips through StreamElements or Streamlabs show up in the same chat, like
-  Super Chats (several Streamlabs accounts too, say one per persona).
-- Moderation carries over: messages deleted on a platform disappear from the
-  overlay too.
-- Fully stylable with your own HTML template and CSS.
-- Widgets show chat other ways: every emote in chat floating up the screen
-  (Live Emoji comes with the app), or widgets others made, imported in the
-  app.
-- A small desktop app to set it up: add channels, connect YouTube, pick a
-  theme, send test messages.
-- Runs locally: no account with us, no server of ours in between.
-- Built with streamer safety in mind: chat is always shown as text, never
-  as code, and the overlay and widgets refuse to run any script but their
-  own.
-  (Keep OBS itself up to date too: its built-in browser gets security fixes
-  with it.)
+**[Download and first steps](install.md)** (Windows and Linux)
 
-## Documentation
+## What it does
 
+- **One chat on your stream.** Messages from every platform appear in one
+  chat box in OBS (or any streaming software that can show a web page),
+  with emotes, badges, donations, subs and memberships.
+- **Your look.** Two built-in themes, or style the chat yourself with HTML
+  and CSS.
+- **Moderation carries over.** A message deleted on a platform disappears
+  from your stream too.
+- **Chat makes things happen.** `!bonk` throws an item at your model in
+  Warudo; a big Super Chat puts a voice filter on your mic in OBS for 30
+  seconds.
+- **Widgets.** Other ways to show chat, like every emote floating up the
+  screen (Live Emoji comes with the app), or widgets others made.
+- **A feed for your own tools.** Games and bots can receive the merged
+  chat as it happens.
+- **Stays on your computer.** No account with us, and no server of ours in
+  between.
+- **Built with streamer safety in mind.** Chat is always shown as text,
+  never run as code, and the overlay and widgets refuse every script but
+  their own. (Keep OBS up to date too: its built-in browser gets its
+  security fixes that way.)
+
+## Guides
+
+- [Download and first steps](install.md): getting the app, adding your
+  channels, putting the chat into OBS.
 - [Connecting YouTube](youtube-setup.md): the one-time setup of your own
   Google Cloud project and login.
 - [Overlay themes](themes.md): making the chat look the way you want.
@@ -42,8 +51,8 @@ or bots, can receive the same chat as a live JSON feed.
   pictures, and loading them all at once.
 - [Chat events API](api.md): the JSON WebSocket feed for your own programs
   ([AsyncAPI spec](asyncapi.yaml)).
-- [Architecture](architecture.md): for developers, how the program is
-  built and why.
+- [Building from source](development.md) and
+  [Architecture](architecture.md): for developers.
 - [Privacy policy](privacy.md)
 - Source code: [github.com/iSneeze/chat-aggregator](https://github.com/iSneeze/chat-aggregator) (open source, [MIT license](https://github.com/iSneeze/chat-aggregator/blob/master/LICENSE))
 
@@ -58,4 +67,4 @@ chat-aggregator itself does with the data is in our
 [privacy policy](privacy.md).
 
 chat-aggregator is an independent project, not affiliated with or endorsed
-by YouTube, Google or Twitch.
+by Twitch, YouTube, Google, Picarto, StreamElements or Streamlabs.

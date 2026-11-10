@@ -1,7 +1,7 @@
 # Architecture
 
 How chat-aggregator is put together, and why it's built this way. For
-building and running, see the [README](https://github.com/iSneeze/chat-aggregator#readme).
+building and running, see [Building and running from source](development.md).
 
 ## The big picture
 
