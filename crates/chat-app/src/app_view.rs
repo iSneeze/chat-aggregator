@@ -727,25 +727,13 @@ impl AppView {
             n => format!("{n} overlays connected"),
         };
 
+        // The title shares its row with the address (no "URL" label: the
+        // address says what it is), saving a row for the sources list.
         let heading = h_flex()
-            .justify_between()
-            .items_center()
-            .child(div().font_semibold().child("Overlay"))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(if overlays > 0 {
-                        cx.theme().success
-                    } else {
-                        muted
-                    })
-                    .child(obs),
-            );
-        let address = h_flex()
             .gap_2()
             .items_center()
             .flex_wrap()
-            .child(div().text_color(muted).child("URL"))
+            .child(div().font_semibold().child("Overlay"))
             .child(div().font_family("monospace").child(url.clone()))
             .child(
                 Button::new("copy-url")
@@ -756,12 +744,22 @@ impl AppView {
                         cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
                         window.push_notification(Notification::success("Overlay URL copied"), cx);
                     }),
+            )
+            // Pushes the status to the row's other end (or onto the next
+            // line, in a narrow window).
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(if overlays > 0 {
+                        cx.theme().success
+                    } else {
+                        muted
+                    })
+                    .child(obs),
             );
 
-        card(cx)
-            .child(heading)
-            .child(address)
-            .child(self.render_themes(cx))
+        card(cx).child(heading).child(self.render_themes(cx))
     }
 
     fn render_themes(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1138,15 +1136,20 @@ impl AppView {
                 .on_click(cx.listener(|this, _, window, cx| this.add_source(window, cx))),
         );
 
-        card(cx)
-            .child(div().font_semibold().child("Add a source"))
-            .child(kinds)
-            .child(row)
-            .children(
-                self.form_error
-                    .clone()
-                    .map(|error| div().text_sm().text_color(cx.theme().danger).child(error)),
-            )
+        // The title beside the kinds rather than above them: a row less.
+        // The track's `self_start` keeps the title level with its first
+        // line when it wraps in a narrow window.
+        let heading = h_flex()
+            .gap_3()
+            .items_center()
+            .child(div().flex_none().font_semibold().child("Add a source"))
+            .child(kinds);
+
+        card(cx).child(heading).child(row).children(
+            self.form_error
+                .clone()
+                .map(|error| div().text_sm().text_color(cx.theme().danger).child(error)),
+        )
     }
 }
 

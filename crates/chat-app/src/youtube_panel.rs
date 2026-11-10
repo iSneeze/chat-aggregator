@@ -496,6 +496,7 @@ impl YouTubePanel {
                     .gap_2()
                     .items_center()
                     .flex_wrap()
+                    .child(title())
                     .child(light(health, cx))
                     .child(div().flex_1().child(text))
                     .child(buttons),
@@ -564,6 +565,13 @@ impl YouTubePanel {
     }
 }
 
+/// The section's title, in its first row (the login row, or above the
+/// client form). A function rather than a value: each use needs its own
+/// element, and building a `Div` is cheap.
+fn title() -> Div {
+    div().font_semibold().child("YouTube")
+}
+
 impl Render for YouTubePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let drop_highlight = cx.theme().muted;
@@ -578,7 +586,9 @@ impl Render for YouTubePanel {
                     panel.import_emoji(path.clone(), window, cx);
                 }
             }))
-            .child(div().font_semibold().child("YouTube"))
+            // The title sits in the login row (a row less in the window);
+            // the client form has no such row, so there it stands above.
+            .when(self.editing, |panel| panel.child(title()))
             .child(if self.editing {
                 self.render_client_form(cx)
             } else {
