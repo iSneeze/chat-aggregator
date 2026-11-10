@@ -1,7 +1,8 @@
 //! YouTube live chat source.
 //!
 //! Two resolution paths (see `resolver`):
-//! - `YouTubeTarget::Video`: public videos, API-key auth (testing path)
+//! - `YouTubeTarget::Video`: a given video, with an API key (public
+//!   videos, the testing path) or a login
 //! - `YouTubeTarget::OwnBroadcast`: the authenticated creator's own
 //!   broadcast, including unlisted/members-only (OAuth, the product path)
 //!
@@ -43,11 +44,12 @@ pub mod web_chat;
 
 use convert::BoundedIdSet;
 use emoji_cache::{BroadcastEmojis, EmojiCache};
+use oauth::TokenProvider;
 use pb::LiveChatMessageListRequest;
 use pb::v3_data_live_chat_message_service_client::V3DataLiveChatMessageServiceClient;
 use quota::Exhaustion;
 pub use quota::QuotaExhausted;
-use resolver::ResolvedStream;
+use resolver::{Broadcast, ResolvedStream};
 
 const ENDPOINT: &str = "https://youtube.googleapis.com:443";
 
@@ -95,12 +97,29 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// attempt for minutes.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// What to read, and what authenticates reading it. The two belong
+/// together: your own broadcasts can only be found with your login, while
+/// a given video also works with an API key. So each variant carries what
+/// it accepts, and "your broadcasts, with an API key" can't be built.
 pub enum YouTubeTarget {
-    /// Watch a specific video (public path, API key auth).
-    Video(String),
-    /// Watch the authenticated creator's own current/next broadcast
-    /// (OAuth path — sees unlisted and members-only streams).
-    OwnBroadcast,
+    /// Watch a specific video: a public one with an API key, or one only
+    /// some account may see (members-only) with that account's login.
+    Video { id: String, auth: Auth },
+    /// Watch the logged-in creator's own current/next broadcast (sees
+    /// unlisted and members-only streams).
+    OwnBroadcast { login: TokenProvider },
+}
+
+impl YouTubeTarget {
+    /// The header that authenticates a call for this target, as (name,
+    /// value). Asked for on every call: a login's access token is renewed
+    /// shortly before it expires.
+    async fn header(&self) -> anyhow::Result<(&'static str, String)> {
+        match self {
+            YouTubeTarget::Video { auth, .. } => auth.header().await,
+            YouTubeTarget::OwnBroadcast { login } => resolver::bearer(login).await,
+        }
+    }
 }
 
 /// Why a streamList connection ended.
@@ -119,7 +138,6 @@ enum StreamEnd {
 
 pub struct YouTubeSource {
     pub target: YouTubeTarget,
-    pub auth: Auth,
     /// Custom emoji from the browser export; `EmojiMap::default()` for none.
     pub emojis: EmojiMap,
     /// The folder of the per-channel emoji caches (see `emoji_cache`);
@@ -134,7 +152,7 @@ impl ChatSource for YouTubeSource {
     async fn run(self, tx: mpsc::Sender<ChatEvent>, activity: Reporter) -> anyhow::Result<()> {
         activity.set(Activity::Connecting);
         // Before the resolution loop, so we don't move self.target twice.
-        let is_own_broadcast = matches!(self.target, YouTubeTarget::OwnBroadcast);
+        let is_own_broadcast = matches!(self.target, YouTubeTarget::OwnBroadcast { .. });
 
         // One HTTP/2 channel, reused by every broadcast and reconnect; only
         // replaced when it stalls (see `StreamEnd::Stalled`).
@@ -168,37 +186,40 @@ impl ChatSource for YouTubeSource {
                 Err(e) => return Err(e),
             };
 
-            // A scheduled broadcast has no chat yet: idle cheaply by
-            // polling, faster as the start time approaches.
-            if !stream.is_live {
-                let start = stream
-                    .scheduled_start_time
-                    .context("a scheduled broadcast without a start time")?;
-                let wait = scan_interval(start);
-                let now = jiff::Zoned::now();
-                let when = start_label(&start.to_zoned(now.time_zone().clone()), now.date());
-                activity.set(Activity::Idle(format!(
-                    "waiting for your broadcast to start (scheduled for {when})"
-                )));
-                info!(
-                    video_id = %stream.video_id,
-                    next_check = ?wait,
-                    "waiting for broadcast to start"
-                );
-                tokio::time::sleep(wait).await;
-                continue 'outer;
-            }
-
-            // Live, but with chat switched off: nothing to read. Not an
-            // error: check again later, the chat may be switched on.
-            let Some(live_chat_id) = stream.live_chat_id else {
-                activity.set(Activity::Idle(format!(
-                    "your broadcast is live, but its chat is off; checking again in {} min",
-                    POLL_IDLE.as_secs() / 60
-                )));
-                info!(video_id = %stream.video_id, "live broadcast without a chat");
-                tokio::time::sleep(POLL_IDLE).await;
-                continue 'outer;
+            // Only a live broadcast with its chat on goes past this
+            // `match`; the other two states wait and resolve again.
+            // (`stream.state` moves out here; the other fields of `stream`
+            // stay usable, since Rust tracks moves per field.)
+            let live_chat_id = match stream.state {
+                // A scheduled broadcast has no chat yet: idle cheaply by
+                // polling, faster as the start time approaches.
+                Broadcast::Upcoming { start } => {
+                    let wait = scan_interval(start);
+                    let now = jiff::Zoned::now();
+                    let when = start_label(&start.to_zoned(now.time_zone().clone()), now.date());
+                    activity.set(Activity::Idle(format!(
+                        "waiting for your broadcast to start (scheduled for {when})"
+                    )));
+                    info!(
+                        video_id = %stream.video_id,
+                        next_check = ?wait,
+                        "waiting for broadcast to start"
+                    );
+                    tokio::time::sleep(wait).await;
+                    continue 'outer;
+                }
+                // Live, but with chat switched off: nothing to read. Not an
+                // error: check again later, the chat may be switched on.
+                Broadcast::Live { chat: None } => {
+                    activity.set(Activity::Idle(format!(
+                        "your broadcast is live, but its chat is off; checking again in {} min",
+                        POLL_IDLE.as_secs() / 60
+                    )));
+                    info!(video_id = %stream.video_id, "live broadcast without a chat");
+                    tokio::time::sleep(POLL_IDLE).await;
+                    continue 'outer;
+                }
+                Broadcast::Live { chat: Some(id) } => id,
             };
 
             // Dropped when this broadcast's chat is left, for whatever
@@ -227,7 +248,7 @@ impl ChatSource for YouTubeSource {
 
                 // Asked on every reconnect: with OAuth this hands out the
                 // cached token, refreshing it shortly before it expires.
-                let (name, value) = self.auth.header().await?;
+                let (name, value) = self.target.header().await?;
                 let value: MetadataValue<_> = value
                     .parse()
                     .context("credentials contain characters invalid in a header")?;
@@ -336,12 +357,11 @@ impl YouTubeSource {
         first_scan: &mut bool,
     ) -> anyhow::Result<Option<ResolvedStream>> {
         match &self.target {
-            YouTubeTarget::Video(video_id) => Ok(Some(
-                resolver::resolve_video(http, &self.auth, video_id).await?,
-            )),
-            YouTubeTarget::OwnBroadcast => {
-                let resolved =
-                    resolver::resolve_own_broadcast(http, &self.auth, *first_scan).await?;
+            YouTubeTarget::Video { id, auth } => {
+                Ok(Some(resolver::resolve_video(http, auth, id).await?))
+            }
+            YouTubeTarget::OwnBroadcast { login } => {
+                let resolved = resolver::resolve_own_broadcast(http, login, *first_scan).await?;
                 *first_scan = false;
                 Ok(resolved)
             }
@@ -589,8 +609,11 @@ mod tests {
         )
         .unwrap();
         let source = YouTubeSource {
-            target: YouTubeTarget::OwnBroadcast,
-            auth: Auth::ApiKey(String::new()),
+            // Which target doesn't matter here: no call is made.
+            target: YouTubeTarget::Video {
+                id: "abc123".into(),
+                auth: Auth::ApiKey(String::new()),
+            },
             emojis: EmojiMap::from_json(
                 r#"{ "version": 1, "entries": [
                     { "code": ":_hype:", "url": "https://yt3.ggpht.com/hype" },

@@ -22,22 +22,24 @@ async fn main() -> anyhow::Result<()> {
     // optional: YOUTUBE_EMOJIS=<export.json> from scripts/yt-emoji-export.user.js
     let args: Vec<String> = std::env::args().collect();
 
-    let (target, auth) = match (args.get(1).map(String::as_str), args.get(2)) {
+    let target = match (args.get(1).map(String::as_str), args.get(2)) {
         (Some("--login"), _) => return login(&app_from_env()?).await,
         (Some("--logout"), _) => {
             oauth::logout(&app_from_env()?).await?;
             println!("logged out");
             return Ok(());
         }
-        (Some("--own"), _) => (YouTubeTarget::OwnBroadcast, oauth_auth().await?),
-        (Some("--member"), Some(video_id)) => (
-            YouTubeTarget::Video(video_id.to_string()),
-            oauth_auth().await?,
-        ),
-        (Some(video_id), None) => (
-            YouTubeTarget::Video(video_id.to_string()),
-            Auth::ApiKey(env("YOUTUBE_API_KEY")),
-        ),
+        (Some("--own"), _) => YouTubeTarget::OwnBroadcast {
+            login: stored_login().await?,
+        },
+        (Some("--member"), Some(video_id)) => YouTubeTarget::Video {
+            id: video_id.to_string(),
+            auth: Auth::OAuth(stored_login().await?),
+        },
+        (Some(video_id), None) => YouTubeTarget::Video {
+            id: video_id.to_string(),
+            auth: Auth::ApiKey(env("YOUTUBE_API_KEY")),
+        },
         _ => anyhow::bail!(
             "usage: listen_youtube <video_id> | --login | --own | --member <video_id> | --logout"
         ),
@@ -56,7 +58,6 @@ async fn main() -> anyhow::Result<()> {
     let mut source_task = tokio::spawn(
         YouTubeSource {
             target,
-            auth,
             emojis,
             // A quick look at a chat: learned emoji aren't kept.
             emoji_cache: None,
@@ -140,11 +141,11 @@ async fn login(app: &OAuthApp) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn oauth_auth() -> anyhow::Result<Auth> {
-    let provider = TokenProvider::from_store(app_from_env()?)
+/// The login stored by `--login`.
+async fn stored_login() -> anyhow::Result<TokenProvider> {
+    TokenProvider::from_store(app_from_env()?)
         .await
-        .context("run `listen_youtube --login` first")?;
-    Ok(Auth::OAuth(provider))
+        .context("run `listen_youtube --login` first")
 }
 
 /// Your OAuth client from `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`.

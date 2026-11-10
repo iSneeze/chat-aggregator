@@ -127,9 +127,9 @@ pub async fn resolve_video(
     Ok(ResolvedStream {
         video_id: video_id.to_string(),
         channel_id,
-        live_chat_id: Some(live_chat_id),
-        is_live: true,
-        scheduled_start_time: None,
+        state: Broadcast::Live {
+            chat: Some(live_chat_id),
+        },
     })
 }
 
@@ -151,12 +151,7 @@ impl Auth {
     pub(crate) async fn header(&self) -> anyhow::Result<(&'static str, String)> {
         Ok(match self {
             Auth::ApiKey(key) => ("x-goog-api-key", key.clone()),
-            // The scheme is required: without "Bearer " the gRPC endpoint
-            // answers `PermissionDenied: unregistered callers`.
-            Auth::OAuth(tokens) => (
-                "authorization",
-                format!("Bearer {}", tokens.access_token().await?),
-            ),
+            Auth::OAuth(login) => bearer(login).await?,
         })
     }
 
@@ -164,6 +159,15 @@ impl Auth {
         let (name, value) = self.header().await?;
         Ok(rb.header(name, value))
     }
+}
+
+/// The header of a call made as the logged-in account, as (name, value).
+/// Async because the access token may have to be refreshed first.
+pub(crate) async fn bearer(login: &TokenProvider) -> anyhow::Result<(&'static str, String)> {
+    // The scheme is required: without "Bearer " the gRPC endpoint answers
+    // `PermissionDenied: unregistered callers`.
+    let token = login.access_token().await?;
+    Ok(("authorization", format!("Bearer {token}")))
 }
 
 /// The logged-in account's channel name, e.g. to confirm a login worked.
@@ -208,20 +212,27 @@ pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Resul
 }
 
 /// A resolved broadcast, with enough information for the caller to decide
-/// what to do next.
-///
-/// - `is_live == true`: an active chat exists; attach to `live_chat_id`.
-/// - `is_live == false`: scheduled but not live yet; wait until
-///   `scheduled_start_time` (always set then), polling faster as it
-///   approaches.
+/// what to do next (see [`Broadcast`]).
 pub struct ResolvedStream {
     pub video_id: String,
     /// The channel the broadcast belongs to (its custom emoji are cached
     /// per channel). Google always sends it; `None` only if it ever doesn't.
     pub channel_id: Option<String>,
-    pub live_chat_id: Option<String>,
-    pub is_live: bool,
-    pub scheduled_start_time: Option<jiff::Timestamp>,
+    pub state: Broadcast,
+}
+
+/// Where a resolved broadcast stands. An enum rather than an `is_live` flag
+/// next to an optional start time and an optional chat: each state has
+/// exactly what the caller needs in it, so there's no "scheduled, but
+/// without a start time" left to handle at run time.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Broadcast {
+    /// Scheduled, not live yet: wait for `start`, polling faster as it
+    /// approaches.
+    Upcoming { start: jiff::Timestamp },
+    /// On air. `chat`: the id of its live chat to attach to; `None`: the
+    /// chat is switched off.
+    Live { chat: Option<String> },
 }
 
 fn parse_time(raw: Option<&str>) -> Option<jiff::Timestamp> {
@@ -287,18 +298,15 @@ impl BroadcastItem {
 /// Returns `Ok(None)` when nothing is live and nothing is coming up (no
 /// scheduled broadcast, or only stale ones, see [`STALE_AFTER`]): the
 /// caller should keep scanning rather than treat that as an error.
-/// Requires OAuth (youtube.readonly scope): `mine=true` only works for
-/// the token's own channel, and is the ONLY way to see unlisted and
-/// members-only broadcasts. Costs 1 quota unit per call.
+/// Takes the login itself (youtube.readonly scope), not an [`Auth`]:
+/// `mine=true` only works for the token's own channel, never with an API
+/// key, and is the ONLY way to see unlisted and members-only broadcasts.
+/// Costs 1 quota unit per call.
 pub async fn resolve_own_broadcast(
     http: &reqwest::Client,
-    auth: &Auth,
+    login: &TokenProvider,
     log_all: bool,
 ) -> anyhow::Result<Option<ResolvedStream>> {
-    if !matches!(auth, Auth::OAuth(_)) {
-        anyhow::bail!("OwnBroadcast requires OAuth; API keys cannot use `mine=true`");
-    }
-
     // Only ONE of `mine` / `broadcastStatus` / `id` may be used per request
     // (the API rejects combinations), so fetch everything we own and
     // classify lifeCycleStatus locally. 50 is the most one page holds, and
@@ -311,9 +319,10 @@ pub async fn resolve_own_broadcast(
                ?part=id,snippet,status&mine=true&broadcastType=all&maxResults=50\
                &fields=items(id,snippet(channelId,liveChatId,scheduledStartTime),status/lifeCycleStatus)";
 
-    let response = auth
-        .apply(http.get(url))
-        .await?
+    let (name, value) = bearer(login).await?;
+    let response = http
+        .get(url)
+        .header(name, value)
         .send()
         .await
         .context("liveBroadcasts.list request failed")?;
@@ -356,9 +365,9 @@ fn pick_broadcast(items: Vec<BroadcastItem>, now: jiff::Timestamp) -> Option<Res
         return Some(ResolvedStream {
             video_id: item.id.clone(),
             channel_id: item.snippet.as_ref().and_then(|s| s.channel_id.clone()),
-            live_chat_id: item.snippet.as_ref().and_then(|s| s.live_chat_id.clone()),
-            is_live: true,
-            scheduled_start_time: None,
+            state: Broadcast::Live {
+                chat: item.snippet.as_ref().and_then(|s| s.live_chat_id.clone()),
+            },
         });
     }
 
@@ -378,12 +387,8 @@ fn pick_broadcast(items: Vec<BroadcastItem>, now: jiff::Timestamp) -> Option<Res
         .min_by_key(|(start, _)| *start)
         .map(|(start, item)| ResolvedStream {
             video_id: item.id,
-            // Fields are evaluated in the order written: this borrows the
-            // snippet before the next line moves it out of `item`.
-            channel_id: item.snippet.as_ref().and_then(|s| s.channel_id.clone()),
-            live_chat_id: item.snippet.and_then(|s| s.live_chat_id),
-            is_live: false,
-            scheduled_start_time: Some(start),
+            channel_id: item.snippet.and_then(|s| s.channel_id),
+            state: Broadcast::Upcoming { start },
         })
 }
 
@@ -452,8 +457,23 @@ mod tests {
         .unwrap();
         assert_eq!(picked.video_id, "on-air");
         assert_eq!(picked.channel_id.as_deref(), Some("UC_own"));
-        assert!(picked.is_live);
-        assert_eq!(picked.live_chat_id.as_deref(), Some("chat-on-air"));
+        assert_eq!(
+            picked.state,
+            Broadcast::Live {
+                chat: Some("chat-on-air".into())
+            }
+        );
+    }
+
+    #[test]
+    fn a_live_broadcast_with_its_chat_off_is_still_live() {
+        let mut on_air = broadcast("on-air", "live", Some("2026-10-07T17:00:00Z"));
+        on_air["snippet"]
+            .as_object_mut()
+            .unwrap()
+            .remove("liveChatId");
+        let picked = pick(vec![on_air], NOW).unwrap();
+        assert_eq!(picked.state, Broadcast::Live { chat: None });
     }
 
     #[test]
@@ -469,7 +489,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(picked.video_id, "tomorrow");
-        assert!(!picked.is_live);
+        assert_eq!(picked.channel_id.as_deref(), Some("UC_own"));
+        assert_eq!(
+            picked.state,
+            Broadcast::Upcoming {
+                start: "2026-10-08T20:00:00Z".parse().unwrap()
+            }
+        );
     }
 
     #[test]

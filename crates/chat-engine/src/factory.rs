@@ -190,11 +190,10 @@ impl SourceFactory for Production {
                         .map_err(|e| SetupError(format!("YouTube emoji file: {e:#}")))?,
                     None => EmojiMap::default(),
                 };
-                let (target, auth) = match video_id {
-                    None => (
-                        YouTubeTarget::OwnBroadcast,
-                        Auth::OAuth(self.login().await?),
-                    ),
+                let target = match video_id {
+                    None => YouTubeTarget::OwnBroadcast {
+                        login: self.login().await?,
+                    },
                     Some(id) => {
                         // A public video works with just an API key; without
                         // one, the login works too.
@@ -202,12 +201,14 @@ impl SourceFactory for Production {
                             Some(key) => Auth::ApiKey(key.clone()),
                             None => Auth::OAuth(self.login().await?),
                         };
-                        (YouTubeTarget::Video(id.clone()), auth)
+                        YouTubeTarget::Video {
+                            id: id.clone(),
+                            auth,
+                        }
                     }
                 };
                 SourceSpec::YouTube(YouTubeSource {
                     target,
-                    auth,
                     emojis,
                     emoji_cache: self.emoji_cache.clone(),
                     learn_emojis: settings.learn_emojis,
