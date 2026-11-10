@@ -32,8 +32,10 @@ impl fmt::Display for SourceId {
 pub enum SourceState {
     /// Turned off by you.
     Stopped,
-    /// Its task is running; what it's doing is in `SourceStatus::activity`.
-    Running,
+    /// Its task is running, and this is what the source reports it's doing.
+    /// Inside the variant because only a running source has an activity:
+    /// a stopped one with a leftover "receiving chat" can't be written.
+    Running(Activity),
     /// Failed; starts again automatically at `next_try`.
     Retrying {
         attempt: u32,
@@ -68,8 +70,6 @@ pub struct SourceStatus {
     /// none: the window feeds it, and closing the window removes it.
     pub config: Option<SourceConfig>,
     pub state: SourceState,
-    /// What the source reports it's doing; only while `Running`.
-    pub activity: Option<Activity>,
     /// Chat messages received since the engine started.
     pub messages: u64,
     pub last_message: Option<Timestamp>,
@@ -85,10 +85,10 @@ impl SourceStatus {
             SourceState::Stopped | SourceState::Finished => Health::Off,
             SourceState::Retrying { .. } => Health::Warning,
             SourceState::NeedsAttention { .. } => Health::Error,
-            SourceState::Running => match &self.activity {
-                Some(Activity::Receiving | Activity::Idle(_)) => Health::Ok,
-                Some(Activity::Connecting | Activity::Degraded(_)) | None => Health::Warning,
-                Some(Activity::Blocked(_)) => Health::Error,
+            SourceState::Running(activity) => match activity {
+                Activity::Receiving | Activity::Idle(_) => Health::Ok,
+                Activity::Connecting | Activity::Degraded(_) => Health::Warning,
+                Activity::Blocked(_) => Health::Error,
             },
         }
     }
@@ -107,10 +107,10 @@ impl SourceStatus {
                 let secs = next_try.duration_since(Timestamp::now()).as_secs().max(0);
                 format!("retrying in {secs} s: {error}")
             }
-            SourceState::Running => match &self.activity {
-                None | Some(Activity::Connecting) => "connecting…".into(),
-                Some(Activity::Receiving) => "receiving chat".into(),
-                Some(Activity::Idle(text) | Activity::Degraded(text) | Activity::Blocked(text)) => {
+            SourceState::Running(activity) => match activity {
+                Activity::Connecting => "connecting…".into(),
+                Activity::Receiving => "receiving chat".into(),
+                Activity::Idle(text) | Activity::Degraded(text) | Activity::Blocked(text) => {
                     text.clone()
                 }
             },
@@ -184,12 +184,11 @@ impl Status {
 mod tests {
     use super::*;
 
-    fn status(state: SourceState, activity: Option<Activity>) -> SourceStatus {
+    fn status(state: SourceState) -> SourceStatus {
         SourceStatus {
             id: SourceId(1),
             config: Some(SourceConfig::Demo),
             state,
-            activity,
             messages: 0,
             last_message: None,
         }
@@ -198,7 +197,7 @@ mod tests {
     #[test]
     fn traffic_light_mapping() {
         use Activity::*;
-        let running = |a| status(SourceState::Running, Some(a)).health();
+        let running = |a| status(SourceState::Running(a)).health();
         assert_eq!(running(Receiving), Health::Ok);
         assert_eq!(running(Idle("waiting for broadcast".into())), Health::Ok);
         assert_eq!(running(Connecting), Health::Warning);
@@ -210,11 +209,11 @@ mod tests {
             next_try: Timestamp::now(),
             error: "x".into(),
         };
-        assert_eq!(status(retrying, None).health(), Health::Warning);
+        assert_eq!(status(retrying).health(), Health::Warning);
         let attention = SourceState::NeedsAttention { error: "x".into() };
-        assert_eq!(status(attention, None).health(), Health::Error);
-        assert_eq!(status(SourceState::Stopped, None).health(), Health::Off);
-        assert_eq!(status(SourceState::Finished, None).health(), Health::Off);
+        assert_eq!(status(attention).health(), Health::Error);
+        assert_eq!(status(SourceState::Stopped).health(), Health::Off);
+        assert_eq!(status(SourceState::Finished).health(), Health::Off);
     }
 
     #[test]
@@ -231,12 +230,10 @@ mod tests {
         };
         assert_eq!(all.overall(), Health::Off);
         all.sources
-            .push(status(SourceState::Running, Some(Activity::Receiving)));
+            .push(status(SourceState::Running(Activity::Receiving)));
         assert_eq!(all.overall(), Health::Ok);
-        all.sources.push(status(
-            SourceState::Running,
-            Some(Activity::Blocked("q".into())),
-        ));
+        all.sources
+            .push(status(SourceState::Running(Activity::Blocked("q".into()))));
         assert_eq!(all.overall(), Health::Error);
     }
 }

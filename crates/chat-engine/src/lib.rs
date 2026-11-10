@@ -944,10 +944,9 @@ mod tests {
 
         // Build 3 succeeds, 2 s + 4 s after the start.
         let s = wait_for(&handle, |s| {
-            s.sources[0].activity == Some(Activity::Receiving)
+            *state(s) == SourceState::Running(Activity::Receiving)
         })
         .await;
-        assert_eq!(*state(&s), SourceState::Running);
         assert_eq!(s.sources[0].health(), Health::Ok);
         assert_eq!(factory.builds("fail-then-run:2"), 3);
         assert_eq!(started.elapsed().as_secs(), 6);
@@ -1251,7 +1250,7 @@ mod tests {
         handle.stop_source(id).await.unwrap();
         handle.start_source(id).await.unwrap();
         wait_for(&handle, |s| {
-            s.source(id).unwrap().state == SourceState::Running
+            matches!(s.source(id).unwrap().state, SourceState::Running(_))
         })
         .await;
         input.send(ChatEvent::Message(msg)).await.unwrap();

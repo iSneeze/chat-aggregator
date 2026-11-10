@@ -220,9 +220,10 @@ async fn print_status_changes(mut status: tokio::sync::watch::Receiver<Status>) 
                 shown_clients = clients;
             }
             for source in &current.sources {
-                // Compare state and activity, not the summary text: a retry's
-                // text contains a countdown that would print a line per second.
-                let key = format!("{:?}{:?}", source.state, source.activity);
+                // Compare the state (with a running source's activity in
+                // it), not the summary text: a retry's text contains a
+                // countdown that would print a line per second.
+                let key = format!("{:?}", source.state);
                 if shown.get(&source.id) != Some(&key) {
                     let light = light(source.health());
                     println!("{light} {}: {}", source.label(), source.summary());

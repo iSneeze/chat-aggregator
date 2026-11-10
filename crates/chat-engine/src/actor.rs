@@ -117,15 +117,14 @@ pub(crate) struct Actor<F> {
 
 struct Slot {
     source: SlotSource,
-    state: SourceState,
+    run: Run,
     /// Bumped on every start and stop. Messages from an older run (a late
     /// "ended", a retry timer) carry the old number and are ignored.
     generation: u64,
-    /// Dropping the handle aborts the task: stopping a source is just
-    /// setting this to `None`.
-    task: Option<AbortOnDropHandle<()>>,
-    activity: Option<watch::Receiver<Activity>>,
     stats: Arc<Stats>,
+    /// How many times in a row it has failed; kept while it runs, since
+    /// the next failure counts on from here (unless it ran long enough,
+    /// see `STABLE_AFTER`).
     attempt: u32,
 }
 
@@ -134,14 +133,71 @@ impl Slot {
     fn new(source: SlotSource) -> Self {
         Self {
             source,
-            state: SourceState::Stopped,
+            run: Run::Stopped,
             generation: 0,
-            task: None,
-            activity: None,
             stats: Arc::default(),
             attempt: 0,
         }
     }
+
+    /// What the status shows: the same states as [`Run`], with a running
+    /// source's activity as it is right now.
+    fn state(&self) -> SourceState {
+        match &self.run {
+            Run::Stopped => SourceState::Stopped,
+            Run::Running { activity, .. } => SourceState::Running(activity.borrow().clone()),
+            Run::Retrying { next_try, error } => SourceState::Retrying {
+                attempt: self.attempt,
+                next_try: *next_try,
+                error: error.clone(),
+            },
+            Run::NeedsAttention { error } => SourceState::NeedsAttention {
+                error: error.clone(),
+            },
+            Run::Finished => SourceState::Finished,
+        }
+    }
+
+    /// Switched off by you (`enabled = false` in the file), as opposed to
+    /// failed or ended: those are still meant to run.
+    fn is_stopped(&self) -> bool {
+        matches!(self.run, Run::Stopped)
+    }
+
+    /// Ends the current run, if there is one. Callers that only restart it
+    /// call `Actor::start` right after.
+    fn stop(&mut self) {
+        // Invalidates pending retry timers and late "ended"s.
+        self.generation += 1;
+        // Assigning drops the old value: for a running source that's its
+        // task handle, which aborts the task.
+        self.run = Run::Stopped;
+    }
+}
+
+/// Where a slot is in its life: the actor's own version of `SourceState`,
+/// which is what it publishes (see [`Slot::state`]).
+///
+/// What only a running source has, its task and the activity it reports,
+/// lives inside `Running`. So "stopped, but with a task still going" can't
+/// be written down, and stopping is one assignment instead of three fields
+/// to keep in step.
+enum Run {
+    /// Turned off by you.
+    Stopped,
+    Running {
+        /// What the source says it's doing (its `Reporter`'s other end).
+        activity: watch::Receiver<Activity>,
+        /// Dropping the handle aborts the task. Never read, only held:
+        /// the leading `_` tells the compiler that's on purpose.
+        _task: AbortOnDropHandle<()>,
+    },
+    /// Failed; a timer starts it again at `next_try` (`Internal::RetryDue`).
+    Retrying { next_try: Timestamp, error: String },
+    /// Failed in a way only you can fix.
+    NeedsAttention { error: String },
+    /// Ended normally.
+    Finished,
 }
 
 /// Where a slot's chat comes from. An enum rather than a `SourceConfig`
@@ -327,12 +383,11 @@ impl<F: SourceFactory> Actor<F> {
                 let result = match self.slots.get_mut(&id) {
                     None => Err(unknown(id)),
                     // Already running: nothing to do.
-                    Some(slot) if slot.task.is_some() => Ok(()),
+                    Some(slot) if matches!(slot.run, Run::Running { .. }) => Ok(()),
                     Some(slot) => {
                         // Switched on, rather than started again after a
                         // failure: that goes into the file.
-                        let switched_on =
-                            slot.state == SourceState::Stopped && slot.source.config().is_some();
+                        let switched_on = slot.is_stopped() && slot.source.config().is_some();
                         slot.attempt = 0;
                         self.start(id);
                         if switched_on {
@@ -347,10 +402,8 @@ impl<F: SourceFactory> Actor<F> {
                 let result = match self.slots.get_mut(&id) {
                     None => Err(unknown(id)),
                     Some(slot) => {
-                        let switched_off =
-                            slot.state != SourceState::Stopped && slot.source.config().is_some();
-                        stop(slot);
-                        slot.state = SourceState::Stopped;
+                        let switched_off = !slot.is_stopped() && slot.source.config().is_some();
+                        slot.stop();
                         info!(source = %slot.source.label(), "stopped");
                         if switched_off {
                             self.save();
@@ -431,8 +484,8 @@ impl<F: SourceFactory> Actor<F> {
                         .into())
                     }
                     Some(slot) => {
-                        let was_stopped = slot.state == SourceState::Stopped;
-                        stop(slot);
+                        let was_stopped = slot.is_stopped();
+                        slot.stop();
                         slot.source = SlotSource::Configured(config);
                         slot.attempt = 0;
                         // New settings may fix whatever was wrong, so restart
@@ -488,7 +541,7 @@ impl<F: SourceFactory> Actor<F> {
                     config: config.clone(),
                     // On unless you switched it off: a source that failed
                     // or ended is still meant to run next time.
-                    enabled: slot.state != SourceState::Stopped,
+                    enabled: !slot.is_stopped(),
                 })
             })
             .collect();
@@ -557,13 +610,13 @@ impl<F: SourceFactory> Actor<F> {
                 matches!(
                     slot.source,
                     SlotSource::Configured(SourceConfig::YouTube { .. })
-                ) && slot.state != SourceState::Stopped
+                ) && !slot.is_stopped()
             })
             .map(|(id, _)| *id)
             .collect();
         for id in youtube {
             if let Some(slot) = self.slots.get_mut(&id) {
-                stop(slot);
+                slot.stop();
                 slot.attempt = 0;
             }
             self.start(id);
@@ -579,8 +632,6 @@ impl<F: SourceFactory> Actor<F> {
         let generation = slot.generation;
         let (reporter, activity) = Reporter::new();
         let mut activity_changes = activity.clone();
-        slot.activity = Some(activity);
-        slot.state = SourceState::Running;
 
         let factory = self.factory.clone();
         let hub = self.controls.hub.clone();
@@ -588,7 +639,7 @@ impl<F: SourceFactory> Actor<F> {
         let source = slot.source.clone();
         let internal = self.internal_tx.clone();
         info!(source = %source.label(), "starting");
-        slot.task = Some(AbortOnDropHandle::new(tokio::spawn(async move {
+        let task = AbortOnDropHandle::new(tokio::spawn(async move {
             let started = Instant::now();
             // Wakes the actor whenever the source reports a new activity,
             // so the status light changes right away rather than at the next
@@ -618,7 +669,11 @@ impl<F: SourceFactory> Actor<F> {
                 result,
                 ran_for: started.elapsed(),
             });
-        })));
+        }));
+        slot.run = Run::Running {
+            activity,
+            _task: task,
+        };
     }
 
     fn internal(&mut self, message: Internal) {
@@ -635,20 +690,20 @@ impl<F: SourceFactory> Actor<F> {
                 if slot.generation != generation {
                     return; // an older run; the slot has moved on
                 }
-                slot.task = None;
-                slot.activity = None;
+                // The run is over either way: each arm below replaces
+                // `Running` (and with it the finished task's handle).
                 let label = slot.source.label();
                 match result {
                     Ok(()) => {
                         info!(source = %label, "finished");
-                        slot.state = SourceState::Finished;
+                        slot.run = Run::Finished;
                     }
                     Err(e) if needs_attention(&e) => {
                         warn!(source = %label, "needs attention: {e:#}");
                         if is_login_required(&e) {
                             self.factory.forget_login();
                         }
-                        slot.state = SourceState::NeedsAttention {
+                        slot.run = Run::NeedsAttention {
                             error: format!("{e:#}"),
                         };
                     }
@@ -660,8 +715,7 @@ impl<F: SourceFactory> Actor<F> {
                         };
                         let delay = backoff(slot.attempt);
                         warn!(source = %label, attempt = slot.attempt, ?delay, "failed, retrying: {e:#}");
-                        slot.state = SourceState::Retrying {
-                            attempt: slot.attempt,
+                        slot.run = Run::Retrying {
                             // jiff adds a `std::time::Duration` directly;
                             // the backoff is capped, far from overflowing.
                             next_try: Timestamp::now() + delay,
@@ -679,8 +733,7 @@ impl<F: SourceFactory> Actor<F> {
             Internal::ActivityChanged => {}
             Internal::RetryDue { id, generation } => {
                 let due = self.slots.get(&id).is_some_and(|slot| {
-                    slot.generation == generation
-                        && matches!(slot.state, SourceState::Retrying { .. })
+                    slot.generation == generation && matches!(slot.run, Run::Retrying { .. })
                 });
                 if due {
                     self.start(id);
@@ -698,8 +751,7 @@ impl<F: SourceFactory> Actor<F> {
             .map(|(id, slot)| SourceStatus {
                 id: *id,
                 config: slot.source.config().cloned(),
-                state: slot.state.clone(),
-                activity: slot.activity.as_ref().map(|a| a.borrow().clone()),
+                state: slot.state(),
                 messages: slot.stats.messages.load(Ordering::Relaxed),
                 last_message: slot.stats.last_message(),
             })
@@ -771,12 +823,6 @@ async fn run_manual(
         hub.publish(event);
     }
     Ok(())
-}
-
-fn stop(slot: &mut Slot) {
-    slot.generation += 1; // invalidates pending retry timers and late "ended"s
-    slot.task = None; // aborts the task
-    slot.activity = None;
 }
 
 fn backoff(attempt: u32) -> Duration {

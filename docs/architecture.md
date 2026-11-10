@@ -689,9 +689,16 @@ every window reads the current ones instead of keeping a copy.
 - Each start/stop bumps a **generation** number. Messages from an older run
   (a late "ended", a stale retry timer) carry the old number and are
   ignored, so a quick stop/start can't be undone by leftovers.
+- **A source's state is one enum** (`SourceState`: stopped, running,
+  retrying, needs attention, finished), and what belongs to one state
+  only lives inside its variant: `Running` carries the activity the source
+  reports, `Retrying` the time of the next try. The actor's own version
+  (`Run`) also holds the running task there, so there's no "stopped, but
+  its task still runs" to get wrong: stopping is assigning `Stopped`,
+  which drops the task's handle and so aborts it.
 - **Health** (off / ok / warning / error, the traffic lights) is computed
-  from state plus the source's reported activity, in `chat-engine`, so the
-  app and headless mode always agree.
+  from that state, in `chat-engine`, so the app and headless mode always
+  agree.
 
 ### Sources are built by a factory
 
@@ -891,6 +898,11 @@ happened to another overlay: CVE-2024-7971).
   window's sender whose drop ends the source, weak handles
   (`WeakEntity`) in callbacks so they don't keep a closed window's view
   alive.
+- **Data inside the enum variant it belongs to.** A value that only
+  exists in one state (a running source's task and activity, the time of
+  a failed one's next try) is a field of that variant rather than an `Option`
+  next to the enum: the compiler then refuses code that reads it in any
+  other state, and no `None` case has to be handled "just in case".
 - **Generics over trait objects** where the set of types is known (the
   source factory, `SourceSpec`): static dispatch, no allocation, no
   object-safety limits. And a **trait object** where it isn't: a settings
