@@ -94,7 +94,7 @@ never knows what Twitch or YouTube look like, only the common `ChatEvent`.
 | `chat-picarto` | Picarto chat WebSocket (anonymous read) |
 | `chat-streamelements` | StreamElements tips (Overlay Token) |
 | `chat-streamlabs` | Streamlabs tips (Socket API Token) |
-| `chat-rplay` | Rplay: research in progress |
+| `chat-rplay` | RPlay chat on Amazon IVS (the streamer's widget key) |
 | `chat-websocket` | what the WebSocket sources share: TLS, reconnecting |
 | `chat-render` | message templates and CSS, emote replacement |
 | `chat-server` | HTTP: overlay page, SSE stream, JSON API, widgets |
@@ -114,7 +114,10 @@ Windows and Linux builds of the desktop app come from GitHub Actions
 
 - **Test build:** **Actions → Release → Run workflow**. The finished run
   has a zip (Windows) and a tar.gz (Linux) attached; downloading them needs
-  a GitHub login.
+  a GitHub login. Ticking **RPlay capture** makes an RPlay test build
+  (feature `rplay-capture`, archives named `…-rplay-capture`): RPlay's raw
+  chat goes into `rplay-capture.jsonl` in the settings folder. For testers
+  only, never for a release.
 - **Release:** set `version` in `Cargo.toml`, commit, then push a matching
   tag to the GitHub repository (`git tag v0.1.0`, then push the tag). The
   same builds become a *draft* release with `SHA256SUMS`; check it under

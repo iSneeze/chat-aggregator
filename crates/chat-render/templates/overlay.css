@@ -5,7 +5,7 @@
  * at the top of message.html; every message is an <article class="msg">
  * with modifier classes:
  *   .msg--twitch / .msg--youtube / .msg--picarto    platform
- *   / .msg--streamelements / .msg--streamlabs
+ *   / .msg--rplay / .msg--streamelements / .msg--streamlabs
  *   .msg--text / --emote-only / --donation / --special
  *   .msg--membership / --gift / --notice            kind
  *   .msg--paid                                      donation or special
@@ -33,6 +33,7 @@
   --twitch: #9146ff;
   --youtube: #ff0033;
   --picarto: #35a775;
+  --rplay: #00b2ff;
   --streamelements: #5c7cfa;
   --streamlabs: #31c3a2;
   --paid: #f5b700;
@@ -91,6 +92,7 @@ body {
 .msg--twitch  { --platform-color: var(--twitch); }
 .msg--youtube { --platform-color: var(--youtube); }
 .msg--picarto { --platform-color: var(--picarto); }
+.msg--rplay   { --platform-color: var(--rplay); }
 .msg--streamelements { --platform-color: var(--streamelements); }
 .msg--streamlabs { --platform-color: var(--streamlabs); }
 

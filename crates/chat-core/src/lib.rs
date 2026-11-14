@@ -155,11 +155,12 @@ impl ChatPlatform {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Author {
     /// Platform-specific user id (Twitch user id, YouTube channel id,
-    /// Picarto user id).
+    /// Picarto user id, RPlay user id).
     pub id: String,
     /// Display name.
     pub name: String,
-    /// Name color chosen by the user, as `#rrggbb` (Twitch and Picarto).
+    /// Name color, as `#rrggbb`: chosen by the user (Twitch and Picarto),
+    /// or the one RPlay gives them.
     pub color: Option<String>,
     /// Badge names, e.g. `moderator`, `subscriber`, `member`, `vip`.
     pub badges: Vec<String>,
@@ -207,19 +208,22 @@ pub enum MessageKind {
         /// - Twitch bits: YouTube's dollar steps × 100: 1 (below 200 bits),
         ///   2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+), 6 (5,000+),
         ///   7 (10,000+).
+        /// - RPlay coins: the bits' steps ÷ 5 (a coin buys about what 5 bits
+        ///   do): 1 (below 40 coins), 2 (40+), 3 (100+), 4 (200+),
+        ///   5 (400+), 6 (1,000+), 7 (2,000+).
         /// - StreamElements and Streamlabs tips: from the streamer's own
         ///   amounts (by default YouTube's steps, in the tip page's
         ///   currency). A Streamlabs tip in another currency: 1 (its worth
         ///   is unknown without a conversion).
         tier: Option<u32>,
         /// The amount as a number, in the platform's unit: bits for Twitch,
-        /// jewels for YouTube gifts, otherwise money in `currency` (`5.0`
-        /// for "€5.00"); `null` if unknown.
+        /// coins for RPlay, jewels for YouTube gifts, otherwise money in
+        /// `currency` (`5.0` for "€5.00"); `null` if unknown.
         value: Option<f64>,
         /// The ISO code of `value`'s currency ("EUR"): YouTube's is the
         /// viewer's, a StreamElements tip's the streamer's tip page's (if
         /// they set it), a Streamlabs tip's the one Streamlabs reports;
-        /// `null` for bits, jewels or an unknown currency.
+        /// `null` for bits, coins, jewels or an unknown currency.
         currency: Option<String>,
     },
     /// New subscriber/member, resub, membership milestone.

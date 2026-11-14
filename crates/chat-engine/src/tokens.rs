@@ -1,9 +1,10 @@
-//! The tip services' tokens in the secret store (StreamElements' Overlay
-//! Token, Streamlabs' Socket API Token): stored when a source is added,
-//! deleted when the last source using one is removed. Never in
-//! `config.toml`, which gets pasted into bug reports. What differs between
-//! the services (where a token is kept, what it's called) is in
-//! `SourceConfig::token`; everything here works the same for both.
+//! The sources' secrets in the secret store (StreamElements' Overlay
+//! Token, Streamlabs' Socket API Token, RPlay's toolkey): stored when a
+//! source is added, deleted when the last source using one is removed.
+//! Never in `config.toml`, which gets pasted into bug reports. What differs
+//! between the services (where a token is kept, what it's called, what of
+//! the pasted text is kept) is in `SourceConfig::token` and
+//! `SourceConfig::prepare_token`; everything here works the same for all.
 
 use chat_core::SetupError;
 use tracing::warn;
@@ -33,10 +34,7 @@ impl EngineHandle {
         let Some(source_token) = config.token() else {
             return Err(SetupError(format!("{} takes no token", config.label())).into());
         };
-        let token = token.trim().to_string();
-        if token.is_empty() {
-            return Err(SetupError(format!("the {} is empty", source_token.what)).into());
-        }
+        let token = config.prepare_token(token).map_err(SetupError)?;
         let secrets = self.secret_store()?;
         let name = source_token.secret_name;
         // On the engine's runtime: the store runs the keyring in tokio's
@@ -194,6 +192,31 @@ mod tests {
         };
         handle.update_source(tips, spaced).await.unwrap();
         assert_eq!(token().await.as_deref(), Some("t0ken"));
+
+        engine.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn only_the_key_of_an_rplay_widget_link_is_stored() {
+        let (engine, store, dir) = engine_with_secrets("tokens-rplay").await;
+        let handle = engine.handle();
+        let rplay = SourceConfig::Rplay {
+            label: "Main".into(),
+        };
+        let stored = || async { store.load("rplay:Main").await.unwrap() };
+        let link =
+            "https://rplay.live/live/chat/basic/0123456789abcdef01234567?toolkey=Key-123&lang=en";
+        handle.store_token(&rplay, link).await.unwrap();
+        assert_eq!(stored().await.as_deref(), Some("Key-123"));
+
+        // A link without a key: refused, and the stored key stays.
+        let refused = handle
+            .store_token(&rplay, "https://rplay.live/live/0123456789abcdef01234567")
+            .await
+            .unwrap_err();
+        assert!(refused.is::<SetupError>(), "{refused:#}");
+        assert_eq!(stored().await.as_deref(), Some("Key-123"));
 
         engine.shutdown().await;
         let _ = std::fs::remove_dir_all(dir);

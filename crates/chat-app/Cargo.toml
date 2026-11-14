@@ -21,6 +21,13 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[features]
+# An RPlay test build: RPlay's raw chat frames, chat included, go to
+# `rplay-capture.jsonl` in the settings folder (see chat-rplay's
+# src/capture.rs). The release workflow's "RPlay capture" checkbox; never
+# for a release.
+rplay-capture = ["chat-engine/rplay-capture"]
+
 [dev-dependencies]
 # Headless UI tests: real components in an invisible window, driven by
 # simulated clicks and typing (`#[gpui_kit::test]`, `gpui_kit::test`).

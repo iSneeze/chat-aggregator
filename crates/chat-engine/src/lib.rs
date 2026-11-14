@@ -289,8 +289,20 @@ impl Engine {
         let youtube = config.settings.youtube.clone();
         let emoji_cache = config.emoji_cache_dir.clone();
         let secrets = config.secrets.clone();
+        // RPlay test builds: the raw chat capture goes next to
+        // `config.toml`, like the log. Headless mode leaves that folder
+        // alone (no `save_to`), so it captures nothing.
+        #[cfg(feature = "rplay-capture")]
+        let rplay_capture = config
+            .save_to
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf);
         Self::start_with(config, |tips| {
-            Production::new(youtube, emoji_cache, secrets, tips)
+            let factory = Production::new(youtube, emoji_cache, secrets, tips);
+            #[cfg(feature = "rplay-capture")]
+            let factory = factory.capturing_rplay(rplay_capture);
+            factory
         })
         .await
     }

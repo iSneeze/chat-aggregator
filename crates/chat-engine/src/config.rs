@@ -39,6 +39,15 @@ pub enum SourceConfig {
     Picarto {
         channel: String,
     },
+    /// The streamer's own RPlay chat. `label` is their name for the
+    /// channel ("Main"; one source per persona). The channel's toolkey
+    /// (from a widget link of their RPlay studio) is kept in the secret
+    /// store under the label, not here (see [`SourceConfig::token`]): it
+    /// can do much more than read chat. It also says whose channel it is,
+    /// so nothing else is needed.
+    Rplay {
+        label: String,
+    },
     /// Tips through StreamElements. `account` is the channel's "Account ID"
     /// from the StreamElements dashboard; its Overlay Token is kept in the
     /// secret store, not here (see [`SourceConfig::token`]).
@@ -72,6 +81,7 @@ impl SourceConfig {
                 account: Some(id), ..
             } if id.trim().is_empty() => Err("the YouTube account is empty".into()),
             SourceConfig::Picarto { channel } => chat_picarto::normalize_channel(channel).map(drop),
+            SourceConfig::Rplay { label } => chat_rplay::normalize_label(label).map(drop),
             SourceConfig::StreamElements { account } => {
                 chat_streamelements::normalize_account(account).map(drop)
             }
@@ -104,6 +114,7 @@ impl SourceConfig {
                 video_id: Some(id), ..
             } => format!("YouTube: video {id}"),
             SourceConfig::Picarto { channel } => format!("Picarto: {channel}"),
+            SourceConfig::Rplay { label } => format!("RPlay: {label}"),
             // The account id means nothing to the streamer: there's usually
             // just the one.
             SourceConfig::StreamElements { .. } => "StreamElements tips".into(),
@@ -114,9 +125,10 @@ impl SourceConfig {
 
     /// The token this source reads from the secret store, if it has one;
     /// `None` too for settings that could never have stored one (they don't
-    /// pass `validate`). Everything that differs between the tip services'
-    /// tokens is here, so storing, loading and deleting them is the same
-    /// code for both (`tokens.rs`).
+    /// pass `validate`). Everything that differs between the services'
+    /// secrets is here (and in [`prepare_token`](Self::prepare_token)), so
+    /// storing, loading and deleting them is the same code for all
+    /// (`tokens.rs`).
     pub fn token(&self) -> Option<SourceToken> {
         // The names are the ones tokens were always stored under: changing
         // them would lose the tokens streamers have stored. `.ok()?`: a
@@ -138,10 +150,32 @@ impl SourceConfig {
                 what: "Streamlabs Socket API Token",
                 headless_flag: "--streamlabs-token",
             }),
+            SourceConfig::Rplay { label } => Some(SourceToken {
+                secret_name: format!("rplay:{}", chat_rplay::normalize_label(label).ok()?),
+                what: "RPlay widget link",
+                headless_flag: "--rplay-token",
+            }),
             SourceConfig::Twitch { .. }
             | SourceConfig::YouTube { .. }
             | SourceConfig::Picarto { .. }
             | SourceConfig::Demo => None,
+        }
+    }
+
+    /// The secret to store for this source, from what the user pasted: the
+    /// token as it is (trimmed) for the tip services, the toolkey out of a
+    /// widget link for RPlay (the link is what RPlay's studio hands out;
+    /// only the key in it is needed). The error says what's wrong, in words
+    /// for the add form.
+    pub fn prepare_token(&self, pasted: &str) -> Result<String, String> {
+        let pasted = pasted.trim();
+        match self {
+            SourceConfig::Rplay { .. } => chat_rplay::toolkey_from(pasted),
+            _ if pasted.is_empty() => Err(format!(
+                "the {} is empty",
+                self.token().map_or("token", |token| token.what)
+            )),
+            _ => Ok(pasted.to_owned()),
         }
     }
 }
@@ -282,6 +316,7 @@ mod tests {
                 { "type": "picarto", "channel": "your_channel" },
                 { "type": "streamelements", "account": "0123456789abcdef01234567" },
                 { "type": "streamlabs", "label": "Corpo" },
+                { "type": "rplay", "label": "Main" },
                 { "type": "demo" }
             ]
         }))
@@ -313,6 +348,9 @@ mod tests {
                 SourceConfig::Streamlabs {
                     label: "Corpo".into()
                 },
+                SourceConfig::Rplay {
+                    label: "Main".into()
+                },
                 SourceConfig::Demo,
             ]
         );
@@ -340,6 +378,9 @@ mod tests {
             SourceConfig::Streamlabs {
                 label: "Corpo".into(),
             },
+            SourceConfig::Rplay {
+                label: "Main".into(),
+            },
         ];
         let invalid = [
             SourceConfig::Twitch {
@@ -360,6 +401,7 @@ mod tests {
                 account: "your_channel".into(),
             },
             SourceConfig::Streamlabs { label: " ".into() },
+            SourceConfig::Rplay { label: "".into() },
         ];
         for config in valid {
             assert!(config.validate().is_ok(), "refused: {config:?}");
@@ -367,6 +409,33 @@ mod tests {
         for config in invalid {
             assert!(config.validate().is_err(), "accepted: {config:?}");
         }
+    }
+
+    #[test]
+    fn rplay_keeps_only_the_key_of_a_widget_link() {
+        let rplay = SourceConfig::Rplay {
+            label: " Main ".into(),
+        };
+        // The name the key is stored under: changing it would lose the keys
+        // streamers have stored.
+        assert_eq!(rplay.token().unwrap().secret_name, "rplay:Main");
+        let link =
+            " https://rplay.live/live/chat/basic/0123456789abcdef01234567?toolkey=Key-123&lang=en ";
+        assert_eq!(rplay.prepare_token(link), Ok("Key-123".into()));
+        // A link without a key (the channel's page): says what to paste.
+        let problem = rplay
+            .prepare_token("https://rplay.live/live/0123456789abcdef01234567")
+            .unwrap_err();
+        assert!(problem.contains("Dashboard Widget"), "{problem}");
+        // The tip services' tokens are stored as pasted, trimmed.
+        let streamlabs = SourceConfig::Streamlabs {
+            label: "Main".into(),
+        };
+        assert_eq!(streamlabs.prepare_token(" t0ken\n"), Ok("t0ken".into()));
+        assert_eq!(
+            streamlabs.prepare_token(" "),
+            Err("the Streamlabs Socket API Token is empty".into())
+        );
     }
 
     #[test]

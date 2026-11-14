@@ -112,10 +112,11 @@ const ROLES: [(Role, &str); 5] = [
 ];
 
 /// The platforms a rule can be limited to (those the app reads chat from).
-const PLATFORMS: [(ChatPlatform, &str); 5] = [
+const PLATFORMS: [(ChatPlatform, &str); 6] = [
     (ChatPlatform::Twitch, "Twitch"),
     (ChatPlatform::YouTube, "YouTube"),
     (ChatPlatform::Picarto, "Picarto"),
+    (ChatPlatform::Rplay, "RPlay"),
     (ChatPlatform::StreamElements, "StreamElements"),
     (ChatPlatform::Streamlabs, "Streamlabs"),
 ];
@@ -1845,6 +1846,7 @@ mod tests {
             [
                 chat_core::ChatPlatform::Twitch,
                 chat_core::ChatPlatform::Picarto,
+                chat_core::ChatPlatform::Rplay,
                 chat_core::ChatPlatform::StreamElements,
                 chat_core::ChatPlatform::Streamlabs
             ]

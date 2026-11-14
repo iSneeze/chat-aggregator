@@ -55,6 +55,17 @@ picture link and badges. To show Picarto's own emotes and emoji names, the
 program also downloads the script of Picarto's website once each time a
 Picarto chat starts, and reads the emote lists from it.
 
+From RPlay, only if you add it as a source, with the key in the widget link
+you enter, the way RPlay's own OBS widgets use it (as your channel): your
+channel's state (whether it's live, its chat server, its banned words, its
+access settings and the ids of its managers), a chat token, and your
+channel's chat, with each message's author name and user id, plus
+donations and missions. Donations don't carry the sender's name, so it's
+looked up on RPlay (a public lookup, without the key). RPlay's answer about
+your channel also contains your stream key; chat-aggregator doesn't keep
+it. The emote lists (RPlay's free set and your channel's own) are
+downloaded too.
+
 From StreamElements, only if you add it as a source, with the Overlay Token
 you enter: your channel's activity feed. That feed also carries your
 platforms' own events (follows, subscriptions, Super Chats); chat-aggregator
@@ -90,8 +101,16 @@ keeps only the tips: each tipper's name, amount, currency and message.
   is kept the same way, under the name you gave that account in the app,
   until you remove that source (which deletes it). It is never written to
   the settings file; the name is.
-- A copied profile shares its tip sources, and with them their tokens: a
-  token is deleted once no source of any profile uses it any more
+- **Your RPlay widget key**, if you add RPlay as a source: of the widget
+  link you paste, only the key in it is kept, the same way, under the name
+  you gave that channel in the app, until you remove that source (which
+  deletes it). It is never written to the settings file; the name is.
+  That key is powerful: RPlay lets whoever has it use your channel's live
+  tools (chat moderation, the stream's title and access settings, donation
+  settings and history). chat-aggregator only uses it to read your chat and
+  your channel's state.
+- A copied profile shares its tip and RPlay sources, and with them their
+  tokens: a token is deleted once no source of any profile uses it any more
   (removing the last such source, or deleting the last profile with one).
 - **Your settings** (for example your Google project's client id and
   secret, an optional API key, channel names, overlay theme, a copy of your
@@ -113,9 +132,19 @@ keeps only the tips: each tipper's name, amount, currency and message.
   start as `chat-aggregator.old.log`) in the settings folder records what
   the program did: which sources started, connection problems, errors. It
   can include the channel names and video ids you entered, but no chat
-  messages, passwords or login tokens. It's replaced each time the program
+  messages, passwords or login tokens. For RPlay it also notes your
+  channel's access settings, which kinds of events and messages its chat
+  sends and the names of their fields (not what's in them), why a chatter
+  was disconnected (a ban or a kick, not who) and how many emotes it has,
+  to help improve RPlay support. It's replaced each time the program
   starts and never sent anywhere; you can attach it to a bug report if you
   choose.
+- **RPlay test builds only** (made by hand for testing RPlay, their
+  archive's name ends in `-rplay-capture`; the releases don't do this):
+  RPlay's chat as it arrives, names and messages included, in
+  `rplay-capture.jsonl` in the settings folder, up to 50 MB. Never sent
+  anywhere: a tester sends it to the developer by hand. Delete it when
+  you're done testing.
 - **Chat messages are not saved.** They're kept in memory while the program
   runs (the most recent ones, 20 by default, so a reloaded overlay isn't
   empty) and are gone when you close it.
@@ -140,13 +169,15 @@ keeps only the tips: each tipper's name, amount, currency and message.
   platforms themselves: Google/YouTube (for
   login, chat, chatters' profile pictures and, through YouTube's chat page,
   channel emoji), Twitch (for chat), Picarto (for chat, channel info and
-  the emote lists in its website's script), StreamElements (for tips,
-  with your Overlay Token) and Streamlabs (for tips, with your Socket API
-  Token). It
+  the emote lists in its website's script), RPlay (for chat, your
+  channel's state, the emote lists and donors' names, with your widget
+  key; the chat itself runs on Amazon's IVS chat service, at the address
+  RPlay names), StreamElements (for tips, with your Overlay Token) and
+  Streamlabs (for tips, with your Socket API Token). It
   downloads each YouTube profile picture shown in the overlay once from
   YouTube's image server and hands it to your streaming software itself.
   Emote and gift images in the overlay are loaded from Twitch's,
-  YouTube's and Picarto's image servers by your streaming software, and so
+  YouTube's, Picarto's and RPlay's image servers by your streaming software, and so
   are Picarto chatters' and StreamElements tippers' profile pictures (from
   StreamElements' image server).
 - **Widgets** get the chat through the same local API (switched on for
@@ -178,6 +209,10 @@ keeps only the tips: each tipper's name, amount, currency and message.
   Socket API Token from your computer. To make a token useless everywhere,
   generate a new one on the Streamlabs dashboard (Settings → API Settings →
   API Tokens).
+- Remove an RPlay source in chat-aggregator: this deletes its stored key
+  from your computer. To make the key useless everywhere, click **Reset all
+  widget URLs** in your RPlay studio (Dashboard Widget); RPlay's own
+  widgets then need their new links in OBS too.
 - Revoke chat-aggregator's access at any time in your Google Account, under
   third-party connections:
   [myaccount.google.com/connections](https://myaccount.google.com/connections).

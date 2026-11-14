@@ -57,17 +57,19 @@ enum NewSource {
     YouTubeOwn,
     YouTubeVideo,
     Picarto,
+    Rplay,
     StreamElements,
     Streamlabs,
     Demo,
 }
 
 impl NewSource {
-    const ALL: [NewSource; 7] = [
+    const ALL: [NewSource; 8] = [
         NewSource::Twitch,
         NewSource::YouTubeOwn,
         NewSource::YouTubeVideo,
         NewSource::Picarto,
+        NewSource::Rplay,
         NewSource::StreamElements,
         NewSource::Streamlabs,
         NewSource::Demo,
@@ -79,6 +81,7 @@ impl NewSource {
             NewSource::YouTubeOwn => "YouTube (your broadcasts)",
             NewSource::YouTubeVideo => "YouTube (a video)",
             NewSource::Picarto => "Picarto",
+            NewSource::Rplay => "RPlay",
             NewSource::StreamElements => "StreamElements tips",
             NewSource::Streamlabs => "Streamlabs tips",
             NewSource::Demo => "Demo",
@@ -91,6 +94,9 @@ impl NewSource {
             NewSource::Twitch => Some("channel name"),
             NewSource::YouTubeVideo => Some("video id (the part after watch?v=)"),
             NewSource::Picarto => Some("channel name or picarto.tv link"),
+            // Like Streamlabs: the widget link says whose channel it is,
+            // the name is for the app's list (one per persona).
+            NewSource::Rplay => Some("a name of your choice, e.g. your RPlay name"),
             NewSource::StreamElements => Some("Account ID (StreamElements: your avatar → channel)"),
             // Only for the app's list: the token doesn't say whose account
             // it is, and a streamer may have one per persona.
@@ -113,6 +119,14 @@ impl NewSource {
                 "Paste the Socket API Token too (Streamlabs dashboard: Settings → API Settings → \
                  API Tokens → Your Socket API Token).",
             )),
+            // A link, not a token: that's what RPlay's studio shows. It
+            // holds a key that can do much more than read chat, so it gets
+            // the masked field too (streamers' screens are often on stream).
+            NewSource::Rplay => Some((
+                "widget link (RPlay studio → Dashboard Widget → Stream Chat)",
+                "Paste a widget link too: in your RPlay studio, open Dashboard Widget, click \
+                 Generate Widget URLs, then Show next to Stream Chat, and copy that link.",
+            )),
             _ => None,
         }
     }
@@ -131,6 +145,7 @@ impl NewSource {
                 account: None,
             },
             NewSource::Picarto => SourceConfig::Picarto { channel: text },
+            NewSource::Rplay => SourceConfig::Rplay { label: text },
             NewSource::StreamElements => SourceConfig::StreamElements { account: text },
             NewSource::Streamlabs => SourceConfig::Streamlabs { label: text },
             NewSource::Demo => SourceConfig::Demo,
@@ -602,6 +617,15 @@ impl AppView {
             && token.is_empty()
         {
             self.form_error = Some(missing.into());
+            cx.notify();
+            return;
+        }
+        // What can be checked without connecting (an RPlay link without a
+        // key in it): said here, before anything is stored.
+        if needs_token.is_some()
+            && let Err(problem) = config.prepare_token(&token)
+        {
+            self.form_error = Some(problem);
             cx.notify();
             return;
         }
@@ -1508,12 +1532,44 @@ mod tests {
             pick(window, NewSource::StreamElements, cx);
             assert!(window.try_find("new-source-text").is_some());
             assert!(window.try_find("new-source-token").is_some());
-            // ...as Streamlabs a name and a token.
+            // ...as Streamlabs a name and a token...
             pick(window, NewSource::Streamlabs, cx);
+            assert!(window.try_find("new-source-text").is_some());
+            assert!(window.try_find("new-source-token").is_some());
+            // ...and RPlay a name and a widget link.
+            pick(window, NewSource::Rplay, cx);
             assert!(window.try_find("new-source-text").is_some());
             assert!(window.try_find("new-source-token").is_some());
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn rplay_needs_a_widget_link_with_its_key(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let error =
+            |cx: &mut TestAppContext| ui.view.read_with(cx, |view, _| view.form_error.clone());
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            pick(window, NewSource::Rplay, cx);
+            window.click("new-source-text", cx);
+            window.input("Main", cx);
+            window.click("add", cx);
+        })
+        .unwrap();
+        let problem = error(cx).expect("the link is asked for");
+        assert!(problem.contains("Dashboard Widget"), "{problem}");
+
+        // The channel's page instead of a widget link: no key in it, so
+        // refused right in the form, and nothing is added.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("new-source-token", cx);
+            window.input("https://rplay.live/live/0123456789abcdef01234567", cx);
+            window.click("add", cx);
+        })
+        .unwrap();
+        let problem = error(cx).expect("a link without a key is refused");
+        assert!(problem.contains("no widget key"), "{problem}");
+        assert!(ui.engine.handle().status().borrow().sources.is_empty());
     }
 
     #[gpui_kit::test]

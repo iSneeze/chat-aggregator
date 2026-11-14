@@ -15,6 +15,7 @@ display.
  Twitch (IRC) ──┐
  YouTube (gRPC)─┤                          ┌─ SSE /events ──────→ overlay page in OBS
  Picarto (WS) ──┤                          │
+ RPlay (WS) ────┤                          │
  StreamElements ┤                          │
  Streamlabs ────┤                          │
  Demo ──────────┼─→ forwarder ─→  Hub  ────┼─ WebSocket /api/v1/ws → games, bots
@@ -46,6 +47,7 @@ chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ─�
                          ├─→ chat-twitch ─────────────────→ chat-core
                          ├─→ chat-youtube ────────────────→ chat-core
                          ├─→ chat-picarto ────────┐
+                         ├─→ chat-rplay ──────────┤
                          ├─→ chat-streamelements ─┼─→ chat-websocket ─→ chat-core
                          ├─→ chat-streamlabs ─────┘
                          └─→ chat-reactions ──────────────→ chat-core
@@ -60,8 +62,8 @@ chat-app ──→ chat-engine ──→ chat-server ──→ chat-render ─�
 | `chat-server`  | HTTP: overlay page, theme files, SSE stream, JSON WebSocket API, burst pacing |
 | `chat-engine`  | owns everything at runtime: the control-plane actor, source restarts, status, config file |
 | `chat-app`     | the desktop app (GPUI): windows, settings, login, test messages |
-| `chat-rplay`   | placeholder for a future source |
 | `chat-picarto` | Picarto chat over the website's WebSocket (anonymous, read-only), its emotes, converted to `ChatEvent`s |
+| `chat-rplay`   | the streamer's RPlay chat (Amazon IVS, with the toolkey from a widget link), its emotes and display rules, converted to `ChatEvent`s |
 | `chat-streamelements` | tips through StreamElements (its Astro event gateway, with the streamer's Overlay Token), converted to donation `ChatEvent`s |
 | `chat-streamlabs` | tips through Streamlabs (its Socket API, socket.io 2 by hand, with the account's Socket API Token), converted to donation `ChatEvent`s |
 | `chat-websocket` | what the WebSocket sources share: `connect` (a `wss://` connection with one TLS setup for the whole app) and `keep_connected` (reconnecting with growing pauses, the status while waiting, giving up on a `SetupError`) |
@@ -279,12 +281,14 @@ are `data:` images in it, emoji names map to unicode). The reconnecting is
 chat-websocket's `keep_connected`, shared by all three WebSocket sources:
 3 s after a connection ends, twice as long after each quick failure in a
 row (up to 2 minutes), back to 3 s once a connection lasted a minute, the
-reason and the wait in the source's status, and a `SetupError` ends it.
+reason and the wait in the source's status, and a `SetupError` ends it
+(and right away, without a pause, after a server restart or a planned
+session renewal).
 Their TLS comes from there too (`connect`): rustls with its aws-lc-rs
 backend chosen explicitly (the process-wide default panics when both
 backends are built in, as in the app), set up once for the whole app.
-Picarto's and Streamlabs' log lines carry the channel or label (a tracing
-span), as several can run at once. It pings every 30 s
+Picarto's, RPlay's and Streamlabs' log lines carry the channel or label (a
+tracing span), as several can run at once. It pings every 30 s
 as the site does; 75 s without any frame counts as a dead connection. In a
 multistream the channels share one chat, and all of it is shown, as on
 Picarto; only the configured channel's own streamer gets the
@@ -351,6 +355,42 @@ source turns it into a `SetupError` and waits for the user. The server
 speaks only TLS 1.2, hence rustls' `tls12` feature (in chat-websocket,
 whose TLS setup all WebSocket sources share). The token is blanked out of
 connection errors, which could quote the address it's in.
+
+**RPlay** has no public chat API either; its chat runs on Amazon IVS
+Chat. The source joins it the way RPlay's own OBS widgets do, never
+anonymously: a channel that asks viewers to log in (even just to follow)
+gives anonymous visitors no chat. The streamer pastes a widget link from
+their RPlay studio; only its **toolkey** is kept
+(`SourceConfig::prepare_token` takes it out of the link, so the add form
+can say right away when a link has none), in the secret store under a
+label, like a
+Streamlabs token (same `tokens.rs`). Each connection trades the key for a
+live-tool session that acts as the streamer (a refused key is a
+`SetupError`), asks for the channel's state and a chat token as the
+streamer, and opens the IVS WebSocket with the token as its subprotocol.
+The key can do much more than read chat (moderation, stream settings), so
+it never reaches a log, and the channel state is read into a struct that
+names only the fields used: serde drops the rest, the stream key the
+answer carries included. IVS ends a session after 60 minutes; the source
+ends it 30 s earlier itself (`Ended::Renewing`) and `keep_connected`
+connects again at once. A connection starts from scratch (session, state,
+emote lists), so nothing has to survive between connections. What RPlay
+works out in each viewer's browser happens in the source too
+(`display.rs`): name colours from the user id, "AnonAru-NNNNN" for hidden
+names in a channel with anonymous chat (the real name is in every message,
+so leaving it out is on us), the streamer's banned words starred out.
+Frames are read loosely like Picarto's (`frames.rs`, with a `Room` that
+follows the channel's managers, banned words and anonymous-chat setting as
+RPlay announces changes); donations carry no sender name, so it's looked
+up (or taken from the sender's earlier chat). The first event and the first
+message of each kind, frames of unknown types and messages the source
+can't read go into the log with their field names only, so a tester's log
+teaches us RPlay's chat without containing it. For a first test there are
+test builds (the `rplay-capture` feature, a box on the hand-started release
+workflow) that also save every chat frame as it came to
+`rplay-capture.jsonl` (`capture.rs`: chat included, values under secret
+sounding names starred out, never the HTTP answers, which carry the stream
+key); release builds don't have that code.
 
 **Demo** sends sample messages of every kind, for styling themes without a
 live chat. **Manual** is fed by the app's test window; it exists exactly as
@@ -518,8 +558,8 @@ checked in this order:
    tier, picked from a list in the app; or of an amount, at least or
    exactly, compared in whole cents as `Amount`), a membership, or gifts
    (a minimum count). Amount rules compare `value` as it is: bits as bits,
-   money only in the tip currency (a ¥69 Super Chat isn't $69), so the
-   reactor watches the tip settings too.
+   RPlay coins as coins, money only in the tip currency (a ¥69 Super Chat
+   isn't $69), so the reactor watches the tip settings too.
 2. **Guards**: who, how many and how often. A minimum role, platforms, a
    crowd, a cooldown for the rule and one per chatter. A struct, not a
    list of guards: each exists once, and "all must pass" needs no rules

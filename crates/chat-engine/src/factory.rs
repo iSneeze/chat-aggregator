@@ -2,7 +2,7 @@
 //!
 //! The actor is generic over a [`SourceFactory`], so tests can hand it
 //! scripted sources ("fails twice, then runs") while production builds the
-//! real Twitch/YouTube/Picarto/StreamElements/Streamlabs/demo sources. This is static dispatch
+//! real Twitch/YouTube/Picarto/RPlay/StreamElements/Streamlabs/demo sources. This is static dispatch
 //! (generics), not a trait object: the compiler generates one actor per factory type.
 
 use std::collections::HashMap;
@@ -15,6 +15,7 @@ use chat_core::secrets::SecretStore;
 use chat_core::tiers::TipSettings;
 use chat_core::{ChatEvent, ChatSource, Reporter, SetupError};
 use chat_picarto::PicartoSource;
+use chat_rplay::RplaySource;
 use chat_streamelements::StreamElementsSource;
 use chat_streamlabs::StreamlabsSource;
 use chat_twitch::TwitchSource;
@@ -62,6 +63,7 @@ pub(crate) enum SourceSpec {
     Twitch(TwitchSource),
     YouTube(YouTubeSource),
     Picarto(PicartoSource),
+    Rplay(RplaySource),
     StreamElements(StreamElementsSource),
     Streamlabs(StreamlabsSource),
     Demo(DemoSource),
@@ -76,6 +78,7 @@ impl ChatSource for SourceSpec {
             SourceSpec::Twitch(s) => s.run(tx, activity).await,
             SourceSpec::YouTube(s) => s.run(tx, activity).await,
             SourceSpec::Picarto(s) => s.run(tx, activity).await,
+            SourceSpec::Rplay(s) => s.run(tx, activity).await,
             SourceSpec::StreamElements(s) => s.run(tx, activity).await,
             SourceSpec::Streamlabs(s) => s.run(tx, activity).await,
             SourceSpec::Demo(s) => s.run(tx, activity).await,
@@ -99,6 +102,10 @@ pub(crate) struct Production {
     /// receiver, so a change reaches the running ones without a reconnect.
     /// The same channel the reactor's amount rules read (`Engine::start`).
     tips: watch::Receiver<TipSettings>,
+    /// RPlay test builds: the settings folder, where RPlay sources write
+    /// their raw chat capture. `None` without one (headless mode).
+    #[cfg(feature = "rplay-capture")]
+    rplay_capture: Option<PathBuf>,
 }
 
 impl Production {
@@ -114,7 +121,16 @@ impl Production {
             emoji_cache,
             secrets,
             tips,
+            #[cfg(feature = "rplay-capture")]
+            rplay_capture: None,
         }
+    }
+
+    /// RPlay test builds: RPlay sources capture their raw chat into `dir`.
+    #[cfg(feature = "rplay-capture")]
+    pub(crate) fn capturing_rplay(mut self, dir: Option<PathBuf>) -> Self {
+        self.rplay_capture = dir;
+        self
     }
 
     fn youtube(&self) -> YouTubeSettings {
@@ -124,9 +140,9 @@ impl Production {
             .clone()
     }
 
-    /// The token of a tip service's source, from the secret store. Read at
-    /// every (re)start: a token stored again since (the source added anew)
-    /// is picked up by "Start".
+    /// The token of a source that has one (a tip service's, RPlay's
+    /// toolkey), from the secret store. Read at every (re)start: a token
+    /// stored again since (the source added anew) is picked up by "Start".
     async fn stored_token(&self, config: &SourceConfig) -> anyhow::Result<String> {
         let Some(token) = config.token() else {
             // Settings that don't pass `validate`: the source's own check
@@ -142,9 +158,9 @@ impl Production {
         };
         stored.ok_or_else(|| {
             SetupError(format!(
-                "no {} is stored for this source: remove it and add it again with the token \
+                "no {} is stored for this source: remove it and add it again with the {} \
                  (headless: run {})",
-                token.what, token.headless_flag
+                token.what, token.what, token.headless_flag
             ))
             .into()
         })
@@ -191,6 +207,21 @@ impl SourceFactory for Production {
             SourceConfig::Picarto { channel } => SourceSpec::Picarto(PicartoSource {
                 channel: chat_picarto::normalize_channel(channel).map_err(SetupError)?,
             }),
+            SourceConfig::Rplay { label } => {
+                let source = RplaySource::new(
+                    chat_rplay::normalize_label(label).map_err(SetupError)?,
+                    // Stored as the bare key; read through the same check,
+                    // so a key stored by hand (headless) may be a link too.
+                    chat_rplay::toolkey_from(&self.stored_token(config).await?)
+                        .map_err(SetupError)?,
+                );
+                #[cfg(feature = "rplay-capture")]
+                let source = match &self.rplay_capture {
+                    Some(dir) => source.capture_into(dir.clone()),
+                    None => source,
+                };
+                SourceSpec::Rplay(source)
+            }
             SourceConfig::StreamElements { account } => {
                 SourceSpec::StreamElements(StreamElementsSource {
                     account: chat_streamelements::normalize_account(account).map_err(SetupError)?,
@@ -335,7 +366,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tip_source_needs_its_stored_token() {
+    async fn a_source_with_a_secret_needs_it_stored() {
         let dir =
             std::env::temp_dir().join(format!("chat-engine-factory-tokens-{}", std::process::id()));
         let store = SecretStore::Dir(dir.clone());
@@ -351,8 +382,11 @@ mod tests {
         let corpo = SourceConfig::Streamlabs {
             label: "Corpo".into(),
         };
+        let rplay = SourceConfig::Rplay {
+            label: "Main".into(),
+        };
 
-        for config in [&streamelements, &corpo] {
+        for config in [&streamelements, &corpo, &rplay] {
             let missing = factory.build(config).await.err().expect("no token yet");
             assert!(needs_attention(&missing), "{missing:#}");
         }
@@ -375,6 +409,19 @@ mod tests {
         assert_eq!(
             (source.label.as_str(), source.token.as_str()),
             ("Corpo", "t0ken-corpo")
+        );
+        // RPlay's toolkey, stored by hand as a whole link: the key is read
+        // out of it.
+        store
+            .save("rplay:Main", "https://rplay.live/x?toolkey=Key-123")
+            .await
+            .unwrap();
+        let Ok(SourceSpec::Rplay(source)) = factory.build(&rplay).await else {
+            panic!("expected an RPlay source");
+        };
+        assert_eq!(
+            (source.label.as_str(), source.toolkey.as_str()),
+            ("Main", "Key-123")
         );
 
         let _ = std::fs::remove_dir_all(dir);

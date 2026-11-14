@@ -5,8 +5,8 @@ title: chat-aggregator
 # chat-aggregator
 
 **All your stream chats in one place.** chat-aggregator is a free desktop
-app for streamers. It collects the live chat from Twitch, YouTube and
-Picarto, plus tips from StreamElements and Streamlabs, and shows them as
+app for streamers. It collects the live chat from Twitch, YouTube, Picarto
+and RPlay, plus tips from StreamElements and Streamlabs, and shows them as
 one chat on your stream.
 
 If you stream to several platforms at once, your viewers sit in several
@@ -68,4 +68,4 @@ chat-aggregator itself does with the data is in our
 [privacy policy](privacy.md).
 
 chat-aggregator is an independent project, not affiliated with or endorsed
-by Twitch, YouTube, Google, Picarto, StreamElements or Streamlabs.
+by Twitch, YouTube, Google, Picarto, RPlay, StreamElements or Streamlabs.

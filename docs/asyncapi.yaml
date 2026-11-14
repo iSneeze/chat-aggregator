@@ -12,8 +12,8 @@ info:
   title: chat-aggregator chat events
   version: 1.0.0
   description: |
-    Live chat from Twitch, YouTube and Picarto (and StreamElements and
-    Streamlabs tips), merged into one stream of JSON events.
+    Live chat from Twitch, YouTube, Picarto and RPlay (and StreamElements
+    and Streamlabs tips), merged into one stream of JSON events.
     Connect a WebSocket and the server pushes one event per text frame.
     Consumers should ignore event and kind types they don't know: new ones
     may be added without a version bump. Renaming or removing anything

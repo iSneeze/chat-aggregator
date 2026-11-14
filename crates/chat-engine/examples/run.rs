@@ -22,8 +22,8 @@
 //!   --init-config [file]  write a commented config file and its first profile
 //!                         (default location) and exit
 //!
-//! Flags (combine freely; --twitch, --youtube, --picarto and --streamlabs may
-//! repeat):
+//! Flags (combine freely; --twitch, --youtube, --picarto, --rplay and
+//! --streamlabs may repeat):
 //!   --demo                sample messages of every kind, including deletions
 //!   --twitch <channel>
 //!   --youtube-own         your own current/next broadcast (the streamer path);
@@ -32,6 +32,8 @@
 //!   --youtube <video_id>  a specific public video (testing path); uses
 //!                         YOUTUBE_API_KEY if set, otherwise the login
 //!   --picarto <channel>   a Picarto channel (its name or a picarto.tv link)
+//!   --rplay <name>        your RPlay chat, of the channel you named so (store
+//!                         its widget link first, see below)
 //!   --streamelements <account id>
 //!                         StreamElements tips (store the token first, see below)
 //!   --streamlabs <name>   Streamlabs tips of the account you named so (store
@@ -70,6 +72,12 @@
 //! Settings → API Tokens; kept in the system keyring; an empty answer
 //! removes it):
 //!   cargo run -p chat-engine --example run -- --streamlabs-token <name>
+//!
+//! RPlay widget link (once per channel, under a name you pick, like "Main";
+//! in your RPlay studio: Dashboard Widget → Generate Widget URLs → Show next
+//! to Stream Chat; only the key in it is kept, in the system keyring; an
+//! empty answer removes it):
+//!   cargo run -p chat-engine --example run -- --rplay-token <name>
 //!
 //! These environment variables override the file's [youtube] settings:
 //!   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET  your OAuth client (docs/youtube-setup.md)
@@ -118,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
             "OBS WebSocket password",
             "in OBS: Tools → WebSocket Server Settings → Show Connect Info",
             "a running engine uses it at its next connection attempt",
+            |password| Ok(password.to_owned()),
         )
         .await;
     }
@@ -143,6 +152,20 @@ async fn main() -> anyhow::Result<()> {
              Token"
         );
         let start = format!("--streamlabs \"{label}\"");
+        return ask_token(source, &found, &start).await;
+    }
+    if args.first().map(String::as_str) == Some("--rplay-token") {
+        let label = args
+            .get(1)
+            .context("--rplay-token needs a name for the channel")?;
+        let source = SourceConfig::Rplay {
+            label: label.clone(),
+        };
+        let found = format!(
+            "for \"{label}\"; RPlay studio: Dashboard Widget → Generate Widget URLs → Show next \
+             to Stream Chat"
+        );
+        let start = format!("--rplay \"{label}\"");
         return ask_token(source, &found, &start).await;
     }
 
@@ -332,6 +355,9 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
             "--streamlabs" => flag_sources.push(SourceConfig::Streamlabs {
                 label: next_value(&mut args, "--streamlabs")?,
             }),
+            "--rplay" => flag_sources.push(SourceConfig::Rplay {
+                label: next_value(&mut args, "--rplay")?,
+            }),
             // A theme name, or a path to any theme folder.
             "--theme" => {
                 let theme = next_value(&mut args, "--theme")?;
@@ -454,30 +480,42 @@ async fn youtube_login(app: &OAuthApp) -> anyhow::Result<()> {
 /// Asks for a secret (`what`, found where `found` says) and keeps it in
 /// the system keyring under `name`, where the engine looks for it, or
 /// removes it. `then`: what to do once it's stored.
-async fn ask_secret(name: &str, what: &str, found: &str, then: &str) -> anyhow::Result<()> {
+/// `prepare` turns what was typed into what's stored (or says what's wrong
+/// with it): RPlay's toolkey comes out of a widget link.
+async fn ask_secret(
+    name: &str,
+    what: &str,
+    found: &str,
+    then: &str,
+    prepare: impl Fn(&str) -> Result<String, String>,
+) -> anyhow::Result<()> {
     println!("{what} ({found}).");
     println!("What you type is visible. Leave it empty to remove a stored one:");
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    let secret = line.trim();
-    if secret.is_empty() {
+    let typed = line.trim();
+    if typed.is_empty() {
         SecretStore::System.delete(name).await?;
         println!("removed the {what}");
     } else {
-        SecretStore::System.save(name, secret).await?;
+        let secret = prepare(typed).map_err(anyhow::Error::msg)?;
+        SecretStore::System.save(name, &secret).await?;
         println!("stored the {what}; {then}");
     }
     Ok(())
 }
 
-/// Asks for the token of a tip service's `source` (see `ask_secret`),
+/// Asks for the token of a `source` that has one (see `ask_secret`),
 /// stored under the name its source reads it from. `start`: the flag that
 /// starts the source.
 async fn ask_token(source: SourceConfig, found: &str, start: &str) -> anyhow::Result<()> {
     source.validate().map_err(anyhow::Error::msg)?;
     let token = source.token().context("this source takes no token")?;
     let then = format!("start with {start}");
-    ask_secret(&token.secret_name, token.what, found, &then).await
+    ask_secret(&token.secret_name, token.what, found, &then, |typed| {
+        source.prepare_token(typed)
+    })
+    .await
 }
 
 /// The argument following a flag, e.g. the channel after --twitch.

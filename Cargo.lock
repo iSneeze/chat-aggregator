@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "chat-app"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "chat-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -1015,12 +1015,13 @@ dependencies = [
 
 [[package]]
 name = "chat-engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chat-core",
  "chat-picarto",
  "chat-reactions",
+ "chat-rplay",
  "chat-server",
  "chat-streamelements",
  "chat-streamlabs",
@@ -1043,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "chat-picarto"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1060,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "chat-reactions"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "chat-core",
@@ -1078,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "chat-render"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1089,20 +1090,23 @@ dependencies = [
 
 [[package]]
 name = "chat-rplay"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
+ "chat-core",
  "chat-websocket",
  "futures-util",
  "jiff",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "chat-server"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1124,7 +1128,7 @@ dependencies = [
 
 [[package]]
 name = "chat-streamelements"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1140,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "chat-streamlabs"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1154,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "chat-twitch"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1166,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "chat-websocket"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1179,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "chat-youtube"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",

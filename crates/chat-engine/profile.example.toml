@@ -18,7 +18,7 @@
 # ?newest=bottom overrides this for that browser source.
 newest = "bottom"
 # What the overlay leaves out (chat reactions and the JSON API still get
-# it): platforms "twitch", "youtube", "picarto", "streamelements",
+# it): platforms "twitch", "youtube", "picarto", "rplay", "streamelements",
 # "streamlabs", and kinds of message "text", "emote_only", "donation", "special" (stickers, gifts),
 # "membership", "gift" (gifted subs), "notice" (raids, announcements). An
 # overlay URL ending in ?hide=streamelements,notice overrides this for that
@@ -84,7 +84,7 @@ queue_secs = 0
 #   { type = "gift", min_count = 5 }          gifted subs/memberships
 # Guards (all optional):
 #   min_role = "everyone" | "subscriber" (= "member") | "vip" | "moderator" | "broadcaster"
-#   platforms = ["twitch", "youtube", "picarto", "streamelements", "streamlabs"]   (default: all)
+#   platforms = ["twitch", "youtube", "picarto", "rplay", "streamelements", "streamlabs"]   (default: all)
 #   crowd = { chatters = 10, within_secs = 30 }   fires only once 10 different
 #       chatters triggered it within 30 s (one chatter counts once; every
 #       platform adds up); then it starts counting again. Not together with
@@ -164,6 +164,16 @@ queue_secs = 0
 # [[sources]]
 # type = "picarto"
 # channel = "your_channel"
+
+# Your RPlay chat, one source per channel, each under a name of your own
+# ("Main", or one per persona). It needs a widget link from your RPlay
+# studio (Dashboard Widget → Generate Widget URLs → Show next to Stream
+# Chat). The key in that link is a secret that can do much more than read
+# chat: it goes into the system keyring under that name, not this file
+# (run with --rplay-token <name> once to store it).
+# [[sources]]
+# type = "rplay"
+# label = "Main"
 
 # Tips through StreamElements. The Account ID and the Overlay Token are on
 # the StreamElements dashboard (your avatar, top right → your channel). The

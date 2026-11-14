@@ -8,6 +8,7 @@ license.workspace = true
 chat-core = { path = "../chat-core" }
 chat-picarto = { path = "../chat-picarto" }
 chat-reactions = { path = "../chat-reactions" }
+chat-rplay = { path = "../chat-rplay" }
 chat-server = { path = "../chat-server" }
 chat-streamelements = { path = "../chat-streamelements" }
 chat-streamlabs = { path = "../chat-streamlabs" }
@@ -21,6 +22,12 @@ directories.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+
+[features]
+# RPlay test builds: RPlay sources write their raw chat frames, chat
+# included, to `rplay-capture.jsonl` next to `config.toml` (chat-rplay's
+# `capture`). Never for a release.
+rplay-capture = ["chat-rplay/capture"]
 
 [dev-dependencies]
 # Google's login endpoints stood in for, for the YouTube login tests.

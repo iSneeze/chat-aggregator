@@ -81,6 +81,10 @@ pub enum Ended {
     /// The server announced a restart (StreamElements does): connect again
     /// right away, to another one.
     Restarting,
+    /// The connection's session runs out on schedule (RPlay's chat ends
+    /// every 60 minutes), so the source ended it just before: connect
+    /// again right away, with a fresh one.
+    Renewing,
     /// Nobody listens to the source's events anymore: stop.
     ReceiverGone,
 }
@@ -125,6 +129,11 @@ where
             Ok(Ended::ReceiverGone) => return Ok(()),
             Ok(Ended::Restarting) => {
                 info!("{service} is restarting its server; reconnecting");
+                activity.set(Activity::Connecting);
+                continue;
+            }
+            Ok(Ended::Renewing) => {
+                info!("{service}: renewing the session");
                 activity.set(Activity::Connecting);
                 continue;
             }
@@ -238,6 +247,15 @@ mod tests {
         // A quick restart keeps the wait as it was; one after a connection
         // that lasted starts it over, like any other end.
         assert_eq!(waits, [3, 6, 0, 12, 60, 3]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_renewal_reconnects_right_away() {
+        let renew = (STABLE_AFTER * 60, Ok(Ended::Renewing));
+        let (_, waits) = run(vec![renew, failed()]).await;
+        // No pause after the renewal (the time is the connection's own),
+        // and the one after it starts over: the session had worked.
+        assert_eq!(waits, [3600, 3]);
     }
 
     #[tokio::test(start_paused = true)]

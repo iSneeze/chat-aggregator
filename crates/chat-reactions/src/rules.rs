@@ -66,9 +66,11 @@ pub enum Trigger {
     },
     /// A paid message of this amount, compared as a number in the
     /// platform's unit (`MessageKind::Donation`'s `value`): bits on Twitch,
-    /// money otherwise. Nothing is converted: money counts only in the tip
-    /// currency (`[tips]`), so a ¥69 Super Chat doesn't play the $69 clip.
-    /// A rule for tips alone adds a platform guard.
+    /// coins on RPlay, money otherwise. Nothing is converted: money counts
+    /// only in the tip currency (`[tips]`), so a ¥69 Super Chat doesn't play
+    /// the $69 clip. Bits and coins both count as they are, so "500" means
+    /// 500 of either (a coin is worth about 5 bits); a rule for one of them
+    /// or for tips alone adds a platform guard.
     PaidAmount {
         amount: Amount,
         #[serde(default)]

@@ -33,6 +33,11 @@ Get the newest build from the
    platform, type your channel name and press **Add**. A light next to
    each source shows how it's doing, with a line of text saying why.
    - Twitch and Picarto only need the channel name.
+   - RPlay needs a widget link from your RPlay studio: open **Dashboard
+     Widget**, click **Generate Widget URLs**, then **Show** next to
+     **Stream Chat**, and copy that link. Keep it to yourself: the key in
+     it opens your channel's live tools, not only the chat (see
+     [Privacy](privacy.md)).
    - YouTube needs a one-time setup first:
      [Connecting YouTube](youtube-setup.md).
    - StreamElements and Streamlabs tips need a token from their dashboard;

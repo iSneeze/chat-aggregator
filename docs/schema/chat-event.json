@@ -18,14 +18,14 @@
           "type": "array"
         },
         "color": {
-          "description": "Name color chosen by the user, as `#rrggbb` (Twitch and Picarto).",
+          "description": "Name color, as `#rrggbb`: chosen by the user (Twitch and Picarto),\nor the one RPlay gives them.",
           "type": [
             "string",
             "null"
           ]
         },
         "id": {
-          "description": "Platform-specific user id (Twitch user id, YouTube channel id,\nPicarto user id).",
+          "description": "Platform-specific user id (Twitch user id, YouTube channel id,\nPicarto user id, RPlay user id).",
           "type": "string"
         },
         "name": {
@@ -199,7 +199,7 @@
               ]
             },
             "currency": {
-              "description": "The ISO code of `value`'s currency (\"EUR\"): YouTube's is the\nviewer's, a StreamElements tip's the streamer's tip page's (if\nthey set it), a Streamlabs tip's the one Streamlabs reports;\n`null` for bits, jewels or an unknown currency.",
+              "description": "The ISO code of `value`'s currency (\"EUR\"): YouTube's is the\nviewer's, a StreamElements tip's the streamer's tip page's (if\nthey set it), a Streamlabs tip's the one Streamlabs reports;\n`null` for bits, coins, jewels or an unknown currency.",
               "type": [
                 "string",
                 "null"
@@ -220,7 +220,7 @@
               ]
             },
             "tier": {
-              "description": "How big the amount is, from 1 (the smallest) to 7, on one scale\nfor every platform (YouTube's Super Chat tiers, see\n`chat_core::tiers`); `null` if the platform has none:\n- YouTube Super Chats and Stickers: YouTube's tier (its colour in\n  YouTube's chat: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange,\n  6 magenta, 7 red), whatever the currency. YouTube's top band\n  may report more than 7.\n- Twitch bits: YouTube's dollar steps × 100: 1 (below 200 bits),\n  2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+), 6 (5,000+),\n  7 (10,000+).\n- StreamElements and Streamlabs tips: from the streamer's own\n  amounts (by default YouTube's steps, in the tip page's\n  currency). A Streamlabs tip in another currency: 1 (its worth\n  is unknown without a conversion).",
+              "description": "How big the amount is, from 1 (the smallest) to 7, on one scale\nfor every platform (YouTube's Super Chat tiers, see\n`chat_core::tiers`); `null` if the platform has none:\n- YouTube Super Chats and Stickers: YouTube's tier (its colour in\n  YouTube's chat: 1 blue, 2 cyan, 3 teal, 4 yellow, 5 orange,\n  6 magenta, 7 red), whatever the currency. YouTube's top band\n  may report more than 7.\n- Twitch bits: YouTube's dollar steps × 100: 1 (below 200 bits),\n  2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+), 6 (5,000+),\n  7 (10,000+).\n- RPlay coins: the bits' steps ÷ 5 (a coin buys about what 5 bits\n  do): 1 (below 40 coins), 2 (40+), 3 (100+), 4 (200+),\n  5 (400+), 6 (1,000+), 7 (2,000+).\n- StreamElements and Streamlabs tips: from the streamer's own\n  amounts (by default YouTube's steps, in the tip page's\n  currency). A Streamlabs tip in another currency: 1 (its worth\n  is unknown without a conversion).",
               "format": "uint32",
               "minimum": 0,
               "type": [
@@ -233,7 +233,7 @@
               "type": "string"
             },
             "value": {
-              "description": "The amount as a number, in the platform's unit: bits for Twitch,\njewels for YouTube gifts, otherwise money in `currency` (`5.0`\nfor \"€5.00\"); `null` if unknown.",
+              "description": "The amount as a number, in the platform's unit: bits for Twitch,\ncoins for RPlay, jewels for YouTube gifts, otherwise money in\n`currency` (`5.0` for \"€5.00\"); `null` if unknown.",
               "format": "double",
               "type": [
                 "number",

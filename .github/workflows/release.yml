@@ -2,7 +2,10 @@
 #
 # - Started by hand (GitHub → Actions → "Release" → "Run workflow"): a test
 #   build. The archives are attached to the run as artifacts (downloading
-#   them needs a GitHub login).
+#   them needs a GitHub login). With "RPlay capture" ticked, it's an RPlay
+#   test build: RPlay's raw chat goes into `rplay-capture.jsonl` in the
+#   settings folder (the app's `rplay-capture` feature), and the archives
+#   say so in their name. A tag build never has it.
 # - Pushing a tag like v0.1.0: the same builds, plus a *draft* GitHub
 #   Release with the archives and their SHA-256 sums. Nothing is public
 #   until the draft is published by hand, after checking it.
@@ -18,6 +21,11 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      rplay_capture:
+        description: "RPlay test build: capture RPlay's raw chat, chat included (never for a release)"
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -46,6 +54,9 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
+      # "true" only for a hand-started run with the box ticked; empty on a
+      # tag push, which has no inputs.
+      RPLAY_CAPTURE: ${{ inputs.rplay_capture }}
     defaults:
       run:
         # Git Bash on Windows: one script for both platforms.
@@ -91,7 +102,13 @@ jobs:
       # recompile what changed.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
-      - run: cargo build --release --locked -p chat-app
+      - name: Build
+        run: |
+          features=()
+          if [ "$RPLAY_CAPTURE" = true ]; then
+            features=(--features rplay-capture)
+          fi
+          cargo build --release --locked -p chat-app "${features[@]}"
 
       # The license texts of everything the app is built from, which have
       # to travel with it (configured in about.toml). Fails on a license
@@ -111,6 +128,9 @@ jobs:
             version=${GITHUB_SHA::7}
           fi
           name=chat-aggregator-$version-${{ matrix.platform }}
+          if [ "$RPLAY_CAPTURE" = true ]; then
+            name=$name-rplay-capture
+          fi
           mkdir -p "dist/$name"
           cp "target/release/${{ matrix.binary }}" LICENSE THIRD-PARTY-LICENSES.html README.md "dist/$name/"
           cd dist

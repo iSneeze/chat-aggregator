@@ -5,14 +5,23 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-
-[dev-dependencies]
-# The raw_rplay example. RPlay's HTTP API gzips its answers even unasked.
-tokio.workspace = true
-anyhow.workspace = true
-reqwest = { workspace = true, features = ["gzip"] }
-serde_json.workspace = true
-jiff.workspace = true
-futures-util.workspace = true
-# The chat itself is an Amazon IVS WebSocket (wss://).
+chat-core = { path = "../chat-core" }
+# The chat is an Amazon IVS WebSocket (wss://).
 chat-websocket = { path = "../chat-websocket" }
+anyhow.workspace = true
+jiff.workspace = true
+# `sink`: the source writes to the socket too (keepalive pings).
+futures-util = { workspace = true, features = ["sink"] }
+# RPlay's HTTP API gzips its answers even unasked: the workspace's
+# reqwest has the `gzip` feature.
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[features]
+# Test builds only: every raw chat frame into `rplay-capture.jsonl` in the
+# settings folder, chat included (src/capture.rs). Switched on through the
+# app's `rplay-capture` feature; release builds never have it.
+capture = []

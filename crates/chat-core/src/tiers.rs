@@ -5,6 +5,8 @@
 //! - YouTube: its own tier, which YouTube works out in every currency.
 //! - Twitch bits: YouTube's dollar steps × 100 (100 bits cost about a
 //!   dollar). Everything below 200 bits is tier 1.
+//! - RPlay coins: the bits' steps ÷ 5 (a coin buys about what 5 bits do).
+//!   Everything below 40 coins is tier 1.
 //! - Tips (StreamElements, Streamlabs): the streamer's own amounts
 //!   ([`TipSettings`], `[tips]` in `config.toml`), in their tip page's
 //!   currency. By default YouTube's steps.
@@ -31,6 +33,22 @@ pub const BITS_TIER_STARTS: [u64; 6] = [200, 500, 1_000, 2_000, 5_000, 10_000];
 /// The tier of a cheer of `bits`.
 pub fn bits_tier(bits: u64) -> u32 {
     tier_of(&BITS_TIER_STARTS, &bits)
+}
+
+/// Where RPlay coins' tiers 2–7 start: the bits' steps ÷ 5, matched by
+/// what viewers pay (decided 2026-11-14). At list prices a coin costs
+/// $0.0798 (50 for $3.99) and 100 bits cost $1.40, so a coin buys what
+/// about 5.7 bits do; from the euro shop's prices (with VAT) or the biggest
+/// packages of both it's about 4.6 to 4.7. Five is in between and round.
+/// The starts also line up with RPlay's packages (100, 200, 400, 1,000
+/// coins) and its own donation colours (which change at 50, 200 and
+/// 1,000), so the overlay's tiers roughly agree with what RPlay's viewers
+/// see.
+pub const COINS_TIER_STARTS: [u64; 6] = [40, 100, 200, 400, 1_000, 2_000];
+
+/// The tier of an RPlay donation of `coins`.
+pub fn coins_tier(coins: u64) -> u32 {
+    tier_of(&COINS_TIER_STARTS, &coins)
 }
 
 /// The tier of a Super Chat of `dollars`, as YouTube would give it (the
@@ -285,6 +303,20 @@ mod tests {
         .map(bits_tier);
         assert_eq!(tiers, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7]);
         assert_eq!(bits_tier(250_000), TOP_TIER);
+    }
+
+    #[test]
+    fn coins_follow_the_bits_steps_divided_by_five() {
+        let tiers = [
+            0, 39, 40, 99, 100, 199, 200, 399, 400, 999, 1_000, 1_999, 2_000,
+        ]
+        .map(coins_tier);
+        assert_eq!(tiers, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7]);
+        assert_eq!(coins_tier(10_500), TOP_TIER);
+        // The same tier as the bits a coin is matched with.
+        for coins in [40, 100, 200, 400, 1_000, 2_000] {
+            assert_eq!(coins_tier(coins), bits_tier(coins * 5), "{coins}");
+        }
     }
 
     #[test]

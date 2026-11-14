@@ -41,10 +41,11 @@ const APPEARANCES: [(Appearance, &str, &str); 4] = [
 ];
 
 /// The overlay's platform switches: label, and what switching it off hides.
-const SHOWN_PLATFORMS: [(&str, &[Hide]); 5] = [
+const SHOWN_PLATFORMS: [(&str, &[Hide]); 6] = [
     ("Twitch", &[Hide::Twitch]),
     ("YouTube", &[Hide::YouTube]),
     ("Picarto", &[Hide::Picarto]),
+    ("RPlay", &[Hide::Rplay]),
     ("StreamElements tips", &[Hide::StreamElements]),
     ("Streamlabs tips", &[Hide::Streamlabs]),
 ];

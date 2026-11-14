@@ -96,8 +96,8 @@ http://127.0.0.1:7878/?hide=donation,special,notice&newest=top
 http://127.0.0.1:7878/?hide=        everything, whatever the app hides
 ```
 
-The names: platforms `twitch`, `youtube`, `picarto`, `streamelements`,
-`streamlabs`;
+The names: platforms `twitch`, `youtube`, `picarto`, `rplay`,
+`streamelements`, `streamlabs`;
 kinds of message `text`, `emote_only`, `donation` (bits, Super Chats,
 tips), `special` (stickers, gifts), `membership`, `gift` (gifted subs),
 `notice` (raids, announcements). Names it doesn't know are skipped.

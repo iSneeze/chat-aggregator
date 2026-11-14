@@ -1,6 +1,6 @@
 # Chat events API
 
-Live chat from Twitch, YouTube and Picarto (and StreamElements and Streamlabs tips), merged into one stream of JSON events,
+Live chat from Twitch, YouTube, Picarto and RPlay (and StreamElements and Streamlabs tips), merged into one stream of JSON events,
 for programs that want to react to chat: games, bots, sound boards, custom
 overlays.
 
@@ -71,8 +71,8 @@ A chat message or a platform event (donation, sub, raid, ...).
 | field       | meaning |
 |-------------|---------|
 | `id`        | platform message id; `delete` events refer to it |
-| `platform`  | `"twitch"`, `"youtube"`, `"picarto"`, `"streamelements"`, `"streamlabs"` (tips: every message is a `donation`), later `"rplay"` |
-| `author`    | `id` (platform user id), `name`, `color` (`#rrggbb`, Twitch and Picarto, else `null`), `badges` (e.g. `broadcaster`, `moderator`, `subscriber`, `member`, `vip`), `avatar_url` (YouTube and Picarto, else `null`) |
+| `platform`  | `"twitch"`, `"youtube"`, `"picarto"`, `"rplay"`, `"streamelements"`, `"streamlabs"` (tips: every message is a `donation`) |
+| `author`    | `id` (platform user id), `name`, `color` (`#rrggbb`, Twitch, Picarto and RPlay, else `null`), `badges` (e.g. `broadcaster`, `moderator`, `subscriber`, `member`, `vip`), `avatar_url` (YouTube and Picarto, else `null`) |
 | `text`      | what the user typed; **may be empty** (e.g. a raid). Event descriptions are in `kind` |
 | `emotes`    | emotes used in `text`, each listed once; in `text` they appear exactly as `code` |
 | `timestamp` | when it was sent, RFC 3339 in UTC; fractional seconds only as precise as needed (`18:41:02Z`, `18:40:44.5Z`, `18:40:44.516Z`), so parse it rather than slicing it |
@@ -84,7 +84,7 @@ A chat message or a platform event (donation, sub, raid, ...).
 |--------------|--------|----------|
 | `text`       | | normal chat |
 | `emote_only` | | only emotes (and spaces) |
-| `donation`   | `amount`, `tier`, `value`, `currency` | Twitch bits, YouTube Super Chat, StreamElements or Streamlabs tip: `"500 bits"`, `"€5.00"`, `"10"` |
+| `donation`   | `amount`, `tier`, `value`, `currency` | Twitch bits, YouTube Super Chat, RPlay donation or mission, StreamElements or Streamlabs tip: `"500 bits"`, `"€5.00"`, `"500 coins"`, `"10"` |
 | `special`    | `image_url`, `amount`, `info`, `tier`, `value`, `currency` (each may be `null`) | YouTube Super Sticker (`info` = sticker description), YouTube gift |
 | `membership` | `info`, `months` | new sub/member, resub, milestone; `months` = how long they've been a member (resub, milestone), `null` for a new one |
 | `gift`       | `count` | gifted subs (Twitch) or memberships (YouTube) |
@@ -105,6 +105,7 @@ unit, and `currency`, its ISO code (`null` for none):
 | `youtube` | the Super Chat's or Sticker's amount (`5.0` for €5.00); a gift's jewels | the viewer's currency (`"EUR"`); `null` for jewels |
 | `streamelements` | the tip's amount (`10.0`) | the streamer's tip currency, if they set it |
 | `streamlabs` | the tip's amount (`10.0`) | the currency Streamlabs reports (`"EUR"`) |
+| `rplay` | RPlay's coins (`500`) | `null` |
 
 Nothing is converted: compare amounts only within one currency (or one
 platform). `value` and `currency` may be `null` (test messages, unknown
@@ -121,6 +122,7 @@ everywhere:
 | `twitch`  | YouTube's dollar steps × 100 bits: 1 (1–199), 2 (200+), 3 (500+), 4 (1,000+), 5 (2,000+), 6 (5,000+), 7 (10,000+) |
 | `streamelements` | where the streamer set their tiers to start, in their tip currency; by default YouTube's steps: 1 (below 2), 2 (2+), 3 (5+), 4 (10+), 5 (20+), 6 (50+), 7 (100+) |
 | `streamlabs` | the same tiers as `streamelements`; a tip in another currency than the streamer's tip currency is 1 (nothing is converted, so its worth is unknown) |
+| `rplay`   | the bits' steps ÷ 5 (at RPlay's and Twitch's prices a coin buys about what 5 bits do): 1 (1–39 coins), 2 (40+), 3 (100+), 4 (200+), 5 (400+), 6 (1,000+), 7 (2,000+) |
 
 (Until 2026-11, Twitch bits had their own scale, 1–5 by Twitch's cheer
 colours.)
