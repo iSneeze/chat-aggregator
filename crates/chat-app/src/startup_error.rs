@@ -1,5 +1,5 @@
-//! The window shown when the app can't start: a broken `config.toml`, the
-//! port already taken, …
+//! The window shown when the app can't start: a broken `config.toml` (or
+//! profile file), the port already taken, …
 //!
 //! Without it, the release build on Windows (which has no console) would
 //! just not appear, and the reason would only be in the log file. The window
@@ -19,7 +19,7 @@ use crate::{appearance, logging};
 /// Which step of starting up failed: decides what advice fits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
-    /// Reading `config.toml`.
+    /// Reading `config.toml` and the active profile's file.
     Config,
     /// Starting the overlay server (binding the port).
     Server,
@@ -58,9 +58,10 @@ fn describe(failed: &StartupError, settings_dir: &Path) -> Problem {
         .map(std::io::Error::kind);
     let (headline, advice) = match (failed.stage, io_kind) {
         (Stage::Config, _) => (
-            "config.toml has a mistake",
-            "Fix it in a text editor (the details below name the line), then start \
-             chat-aggregator again. Nothing in the file was changed.",
+            "The settings have a mistake",
+            "Fix it in a text editor (the details below name the file, config.toml or a \
+             profile's file in the profiles folder, and the line), then start \
+             chat-aggregator again. Nothing in the files was changed.",
         ),
         (Stage::Server, Some(ErrorKind::AddrInUse)) => (
             "The overlay's port is already in use",
@@ -220,7 +221,7 @@ mod tests {
     fn a_broken_config_names_the_line() {
         let error = chat_engine::ConfigFile::parse("[server]\nprot = 7878\n").unwrap_err();
         let problem = failed(Stage::Config, error);
-        assert!(problem.headline.contains("config.toml"), "{problem:?}");
+        assert!(problem.headline.contains("settings"), "{problem:?}");
         assert!(problem.details.contains("prot"), "{problem:?}");
         assert!(problem.details.contains("line 2"), "{problem:?}");
     }

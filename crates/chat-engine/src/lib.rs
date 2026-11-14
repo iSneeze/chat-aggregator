@@ -32,6 +32,7 @@ mod actor;
 mod config;
 mod config_file;
 mod factory;
+mod profiles;
 mod reactions;
 mod settings;
 mod status;
@@ -47,29 +48,36 @@ pub use chat_reactions::{
 };
 pub use chat_server::{ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource, widgets};
 pub use config::{SourceConfig, SourceToken, YouTubeChannel, YouTubeSettings};
-pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, Settings, SourceEntry};
+pub use config_file::{
+    AppSettings, Appearance, ConfigFile, DEFAULT_PROFILE, Loaded, OverlaySettings, ProfileFile,
+    ProfileSettings, ServerSettings, Settings, SourceEntry, normalize_profile_name, same_name,
+};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
 pub use youtube::{YouTubeAccount, YouTubeAccounts, YouTubeLogin};
 // For checking a custom emoji export before using it (the app's import).
 pub use chat_youtube::EmojiMap;
 
 pub use actor::ManualInput;
-use actor::{Actor, Command, Reply};
+use actor::{Actor, Command, Reply, Saving};
 use factory::{Production, SourceFactory};
 use settings::Controls;
 
 pub const DEFAULT_PORT: u16 = 7878;
 pub const DEFAULT_HISTORY: usize = 20;
 
-#[derive(Default)]
 pub struct EngineConfig {
-    /// The settings to start with, usually from `config.toml`
-    /// (`ConfigFile::into_engine_config`). The engine owns them from then
-    /// on: see `EngineHandle::edit_settings`.
+    /// The settings to start with, usually from `config.toml` and the
+    /// active profile's file (`Loaded::into_engine_config`). The engine
+    /// owns them from then on: see `EngineHandle::edit_settings`.
     pub settings: Settings,
-    /// Added in this order: started right away, or listed as switched off
-    /// (`enabled = false`).
+    /// The active profile's sources, added in this order: started right
+    /// away, or listed as switched off (`enabled = false`).
     pub sources: Vec<SourceEntry>,
+    /// The active profile's name: whose settings and sources these are.
+    pub profile: String,
+    /// `config.toml` is still a file from before profiles: the first save
+    /// converts it (`config_file::save_all`).
+    pub old_layout: bool,
     /// The folder of named themes (`themes/` next to `config.toml`): where
     /// the settings' theme name and overlay URLs' `?theme=<name>` are looked
     /// up. `None`: only built-in themes in overlay URLs.
@@ -87,13 +95,33 @@ pub struct EngineConfig {
     /// cache (tests).
     pub emoji_cache_dir: Option<PathBuf>,
     /// Where the engine saves the settings and sources after each change
-    /// (`config.toml`). `None`: never written (headless mode, which leaves
-    /// your file and its comments alone, and tests).
+    /// (`config.toml`; the profiles go in `profiles/` next to it). `None`:
+    /// never written (headless mode, which leaves your files and their
+    /// comments alone, and tests), and no other profiles to switch to.
     pub save_to: Option<PathBuf>,
     /// Where secrets are kept: the YouTube logins (one per channel), the
     /// OBS password (`OBS_PASSWORD`), the tip services' tokens. `None`:
     /// nowhere (tests).
     pub secrets: Option<SecretStore>,
+}
+
+// Written out rather than derived: a derived `Default` would leave the
+// profile without a name.
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            settings: Settings::default(),
+            sources: Vec::new(),
+            profile: DEFAULT_PROFILE.into(),
+            old_layout: false,
+            themes_dir: None,
+            widgets_dir: None,
+            ask_api_origins: false,
+            emoji_cache_dir: None,
+            save_to: None,
+            secrets: None,
+        }
+    }
 }
 
 /// Controls a running engine. Cheap to clone: the UI, headless mode and
@@ -142,7 +170,7 @@ impl EngineHandle {
     pub async fn remove_source(&self, id: SourceId) -> anyhow::Result<()> {
         let removed = self.call(|reply| Command::Remove(id, reply)).await?;
         if let Some(config) = removed {
-            self.forget_secrets_of(id, &config).await;
+            self.forget_secrets_of(&config).await;
         }
         Ok(())
     }
@@ -278,6 +306,7 @@ impl Engine {
         factory: impl FnOnce(watch::Receiver<TipSettings>) -> F,
     ) -> anyhow::Result<Self> {
         let server = &config.settings.server;
+        let overlay = &config.settings.profile.overlay;
         // Localhost only: nothing else on the network can reach it. Bound
         // first: if the port is taken, fail before anything else runs.
         let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, server.port));
@@ -292,11 +321,11 @@ impl Engine {
 
         // The server reads these; the actor changes them (`Controls`).
         let (theme_tx, theme_rx) =
-            watch::channel(server.theme_source(config.themes_dir.as_deref()));
+            watch::channel(overlay.theme_source(config.themes_dir.as_deref()));
         let (stagger_tx, stagger_rx) = watch::channel(server.stagger());
         let (api_tx, api_rx) = watch::channel(server.api);
-        let (newest_tx, newest_rx) = watch::channel(server.newest);
-        let (hide_tx, hide_rx) = watch::channel(server.hide.clone());
+        let (newest_tx, newest_rx) = watch::channel(overlay.newest);
+        let (hide_tx, hide_rx) = watch::channel(overlay.hide.clone());
         let origins = Arc::new(ApiOrigins::new(
             server.api_origins.clone(),
             config.ask_api_origins,
@@ -304,10 +333,11 @@ impl Engine {
         let connections = Arc::new(Connections::default());
         // The reactor reads the rules; the actor changes them (`Controls`)
         // and shows the reactor's report in the status.
-        let (reactions_tx, reactions_rx) = watch::channel(config.settings.reactions.clone());
+        let (reactions_tx, reactions_rx) =
+            watch::channel(config.settings.profile.reactions.clone());
         // The tip settings: read by the tip sources and the reactor's
         // amount rules, changed by the actor (`Controls`).
-        let (tips_tx, tips_rx) = watch::channel(config.settings.tips.clone());
+        let (tips_tx, tips_rx) = watch::channel(config.settings.profile.tips.clone());
         let factory = factory(tips_rx.clone());
         let (reaction_status_tx, reaction_status_rx) = watch::channel(Default::default());
         let state = ServerState {
@@ -344,6 +374,10 @@ impl Engine {
             widgets_connected: 0,
             api_requests: Vec::new(),
             save_error: None,
+            profile: config.profile.clone(),
+            profiles: Vec::new(),
+            profile_switches: 0,
+            converted_to_profiles: false,
             sources: Vec::new(),
             reactions: Default::default(),
         });
@@ -356,7 +390,11 @@ impl Engine {
             status_tx,
             connections,
             reaction_status_rx,
-            config.save_to,
+            Saving {
+                to: config.save_to,
+                profile: config.profile,
+                old_layout: config.old_layout,
+            },
         );
         actor.add_from_config(config.sources);
         tasks.spawn(actor.run(commands_rx, shutdown.clone()));
@@ -623,8 +661,8 @@ mod tests {
         });
 
         let mut settings = local();
-        settings.reactions.warudo.url = url;
-        settings.reactions.rules.push(Rule {
+        settings.profile.reactions.warudo.url = url;
+        settings.profile.reactions.rules.push(Rule {
             name: "bonk".into(),
             enabled: true,
             trigger: Trigger::Command {
@@ -669,7 +707,7 @@ mod tests {
         wait_for(&handle, |s| fired(s) == [1]).await;
 
         handle
-            .edit_settings(|s| s.reactions.paused = true)
+            .edit_settings(|s| s.profile.reactions.paused = true)
             .await
             .unwrap();
         msg.id = "manual-2".into();
@@ -690,10 +728,15 @@ mod tests {
 
         // Settings that `config.toml` couldn't load are refused, not saved.
         let duplicate = handle
-            .edit_settings(|s| s.reactions.rules.push(s.reactions.rules[0].clone()))
+            .edit_settings(|s| {
+                s.profile
+                    .reactions
+                    .rules
+                    .push(s.profile.reactions.rules[0].clone())
+            })
             .await;
         assert!(duplicate.is_err());
-        assert_eq!(handle.settings().borrow().reactions.rules.len(), 1);
+        assert_eq!(handle.settings().borrow().profile.reactions.rules.len(), 1);
         engine.shutdown().await;
     }
 
@@ -721,7 +764,7 @@ mod tests {
 
         engine
             .handle()
-            .edit_settings(|s| s.tips.currency = "EUR".into())
+            .edit_settings(|s| s.profile.tips.currency = "EUR".into())
             .await
             .unwrap();
         assert_eq!(tips.borrow().currency(), Some("EUR"));
@@ -747,8 +790,8 @@ mod tests {
             }
         });
         let mut settings = local();
-        settings.reactions.warudo.url = url;
-        settings.reactions.rules.push(Rule {
+        settings.profile.reactions.warudo.url = url;
+        settings.profile.reactions.rules.push(Rule {
             name: "nice".into(),
             enabled: true,
             trigger: Trigger::PaidAmount {
@@ -796,7 +839,7 @@ mod tests {
                 .is_err()
         );
         handle
-            .edit_settings(|s| s.tips.currency = "EUR".into())
+            .edit_settings(|s| s.profile.tips.currency = "EUR".into())
             .await
             .unwrap();
         input.send(super_chat("manual-2")).await.unwrap();
@@ -1079,8 +1122,8 @@ mod tests {
         handle
             .edit_settings(|s| {
                 s.server.history = 1;
-                s.server.newest = Newest::Top;
-                s.server.theme = Some("minimal".into());
+                s.profile.overlay.newest = Newest::Top;
+                s.profile.overlay.theme = Some("minimal".into());
             })
             .await
             .unwrap();
@@ -1107,13 +1150,13 @@ mod tests {
         let (a, b) = (engine.handle(), engine.handle());
         let (first, second) = tokio::join!(
             a.edit_settings(|s| s.server.history = 5),
-            b.edit_settings(|s| s.server.newest = Newest::Top),
+            b.edit_settings(|s| s.profile.overlay.newest = Newest::Top),
         );
         first.unwrap();
         second.unwrap();
         let settings = a.settings().borrow().clone();
         assert_eq!(settings.server.history, 5);
-        assert_eq!(settings.server.newest, Newest::Top);
+        assert_eq!(settings.profile.overlay.newest, Newest::Top);
         engine.shutdown().await;
     }
 
@@ -1332,19 +1375,22 @@ mod tests {
         let s = wait_for(&handle, |s| s.sources.len() == 2).await;
         assert!(!path.exists(), "nothing changed, nothing written");
 
-        let saved = || ConfigFile::load(&path).unwrap();
+        let saved = || ConfigFile::load(&path, None).unwrap();
         handle
-            .edit_settings(|s| s.server.newest = Newest::Top)
+            .edit_settings(|s| s.profile.overlay.newest = Newest::Top)
             .await
             .unwrap();
-        assert_eq!(saved().server.newest, Newest::Top);
-        assert_eq!(saved().sources, [script("emit:0").into(), switched_off]);
+        assert_eq!(saved().profile.overlay.newest, Newest::Top);
+        assert_eq!(
+            saved().profile.sources,
+            [script("emit:0").into(), switched_off]
+        );
 
         // Switched off and on: remembered.
         let (first, second) = (s.sources[0].id, s.sources[1].id);
         handle.stop_source(first).await.unwrap();
         handle.start_source(second).await.unwrap();
-        let switches: Vec<bool> = saved().sources.iter().map(|e| e.enabled).collect();
+        let switches: Vec<bool> = saved().profile.sources.iter().map(|e| e.enabled).collect();
         assert_eq!(switches, [false, true], "on, even while it's failing");
 
         // Added at the end, removed, changed; the test window's never.
@@ -1352,7 +1398,12 @@ mod tests {
         handle.remove_source(first).await.unwrap();
         handle.update_source(added, script("emit:2")).await.unwrap();
         let (_manual, _input) = handle.add_manual_source().await.unwrap();
-        let configs: Vec<SourceConfig> = saved().sources.into_iter().map(|e| e.config).collect();
+        let configs: Vec<SourceConfig> = saved()
+            .profile
+            .sources
+            .into_iter()
+            .map(|e| e.config)
+            .collect();
         assert_eq!(configs, [script("fail-then-run:99"), script("emit:2")]);
 
         engine.shutdown().await;
@@ -1393,7 +1444,10 @@ mod tests {
             .await
             .unwrap();
         wait_for(&handle, |s| s.save_error.is_none()).await;
-        assert_eq!(ConfigFile::load(&path).unwrap().server.history, 6);
+        assert_eq!(
+            ConfigFile::load(&path, None).unwrap().config.server.history,
+            6
+        );
 
         engine.shutdown().await;
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -1414,7 +1468,10 @@ mod tests {
         .unwrap();
         let _never_awaited = engine.handle().edit_settings(|s| s.server.history = 7);
         engine.shutdown().await;
-        assert_eq!(ConfigFile::load(&path).unwrap().server.history, 7);
+        assert_eq!(
+            ConfigFile::load(&path, None).unwrap().config.server.history,
+            7
+        );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

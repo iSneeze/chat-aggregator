@@ -131,7 +131,11 @@ several switched on is fine).
 
 Under **Add a source**, choose **YouTube (your broadcasts)** → **Add**.
 With several channels connected, pick the channel first; add one source
-per channel you stream on, and switch each on or off in the list.
+per channel you stream on, and switch each on or off in the list. Or give
+each channel a profile of its own (**Profile** menu at the top right of the
+main window): one profile per persona, each with its channel's source, its
+own look and reactions, switched with one click. The logins are shared:
+every profile can use every connected channel.
 
 chat-aggregator finds your current or next broadcast by itself (including
 unlisted and members-only streams), waits cheaply until it starts, and
@@ -155,8 +159,9 @@ uses the same project's quota.
 
 ## Without the app (headless)
 
-The same settings work from the terminal. Create a commented config file
-once:
+The same settings work from the terminal. Create the commented settings
+files once (`config.toml`, and `profiles/Main.toml` for the first
+profile's sources and look):
 
 ```sh
 cargo run -p chat-engine --example run -- --init-config
@@ -165,13 +170,17 @@ cargo run -p chat-engine --example run -- --init-config
 It goes into chat-aggregator's settings folder
 (`~/.config/chat-aggregator/` on Linux, `~/Library/Application
 Support/chat-aggregator/` on macOS, `%APPDATA%\chat-aggregator\` on
-Windows). Fill in the `[youtube]` section and add your broadcasts:
+Windows). Fill in the `[youtube]` section of `config.toml`:
 
 ```toml
 [youtube]
 client_id = "1234567890-abc….apps.googleusercontent.com"
 client_secret = "GOCSPX-…"
+```
 
+and add your broadcasts to the profile, in `profiles/Main.toml`:
+
+```toml
 [[sources]]
 type = "youtube"
 ```
@@ -181,7 +190,8 @@ override the file.) Then log in once per channel, and start:
 
 ```sh
 cargo run -p chat-engine --example run -- --youtube-login    # as in step 5
-cargo run -p chat-engine --example run                       # everything in config.toml
+cargo run -p chat-engine --example run                       # the active profile
+cargo run -p chat-engine --example run -- --profile Indie     # another profile
 cargo run -p chat-engine --example run -- --youtube-logout <channel id>   # to log out
 ```
 
@@ -195,7 +205,8 @@ name = "your channel"
 ```
 
 A YouTube source reads the first channel listed there; for another one,
-add `account = "UC…"` (its channel id) to its `[[sources]]` block.
+add `account = "UC…"` (its channel id) to its `[[sources]]` block in the
+profile's file.
 
 The terminal shows the same status lights per source.
 

@@ -679,11 +679,12 @@ EngineHandle ──Command + oneshot reply──→ actor task ──→ watch<S
 
 ### Settings
 
-The engine owns the settings (`Settings`: everything in `config.toml`
-except the sources). `EngineHandle::settings()` is a `watch` of them, so
+The engine owns the settings (`Settings`: what `config.toml` holds for all
+profiles, and in `profile` the active profile's, its sources aside; see
+[Profiles](#profiles)). `EngineHandle::settings()` is a `watch` of them, so
 every window reads the current ones instead of keeping a copy.
 
-- **A change is a closure**: `edit_settings(|s| s.server.newest = Top)`.
+- **A change is a closure**: `edit_settings(|s| s.profile.overlay.newest = Top)`.
   The actor runs it on the current settings, so two windows changing
   different things at the same moment both get their change in. Sending
   whole new settings instead would let a window undo another one's change
@@ -703,15 +704,53 @@ every window reads the current ones instead of keeping a copy.
 - Each closure is its own type, so the actor's command holds it as a
   `Box<dyn FnOnce(&mut Settings) + Send>`: a trait object, because here
   (unlike the sources) the set of types isn't known in advance.
-- **The engine saves** `config.toml` after every change to the settings
-  or the sources (`EngineConfig::save_to`, the app's file; headless mode
-  has none). A failed save goes into the status (`save_error`), and the
-  main window says so.
+- **The engine saves** `config.toml` and the active profile's file after
+  every change to the settings or the sources (`EngineConfig::save_to`, the
+  app's file; headless mode has none). A failed save goes into the status
+  (`save_error`), and the main window says so.
 - **The last change before quitting still counts**: `edit_settings` sends
   its command right away, not when its future is first awaited, and the
   actor handles the commands already waiting before it stops. The app
   starts the engine's shutdown only after GPUI has closed the windows, so
   the settings window's pending edit (applied when it closes) is saved.
+
+### Profiles
+
+A profile is a setup of its own, for a streamer with several personas: its
+sources, overlay look (`[overlay]`: theme, chat direction, what's hidden),
+tips, chat reactions and widget values, in `profiles/<name>.toml` next to
+`config.toml`. `config.toml` keeps what they share (server, YouTube's
+Google project and connected channels, the app's look) and names the
+active one. YouTube logins are shared too: any profile's source can read
+any connected channel (`account = "UC…"`).
+
+- **The actor owns profiles too** (`profiles.rs` is the handle's side):
+  the active one's name, the list (`list_profiles` at startup, kept up to
+  date after), and a switch counter, all in the status.
+- **A switch** saves first (the profile being left must be on disk: once
+  another is active, its file is all there is of it), then reads the
+  other's file (a broken one is an error, and nothing changes), stops the
+  current sources (the test window's stays: it's no profile's), clears the
+  hub's replay history, hands the new settings to `Controls::apply` (the
+  shared ones are the same, so YouTube doesn't restart), reloads the
+  overlays, adds the new sources and saves `config.toml` naming it. The
+  chat starts over: the overlays reload into an empty history.
+- **New** writes a file (empty, or a copy of the active profile);
+  **rename** of the active profile writes the new file, then `config.toml`,
+  then deletes the old (stopped anywhere, the profile is still there);
+  a change of case only, or an inactive profile, is a plain file rename
+  (written anew and deleted, a case change would delete the file on
+  Windows and macOS, where both names are one file). **Delete** refuses the
+  active one. Names are file names too (`normalize_profile_name`: letters,
+  digits, spaces, `-`, `_`, not Windows' reserved names), and case doesn't
+  count when comparing them, as on Windows and macOS.
+- **Secrets stay while any profile uses them**: a copied profile shares its
+  tip sources' tokens, so `forget_secrets_of` asks the actor
+  (`SecretInUse`), which checks its own sources and the other profiles'
+  files (one it can't read counts as using it).
+- **The switch counter** (`Status::profile_switches`) tells windows when to
+  reload what they hold of a profile: renaming the active profile changes
+  its name, but must not drop what's being typed into its settings.
 
 ### Restarts and health
 
@@ -745,11 +784,29 @@ YouTube and demo sources; tests use scripted ones ("fails twice, then
 runs"). This is static dispatch: the compiler creates one actor per factory
 type, and the production code carries no test hooks.
 
-### The config file
+### The settings files
 
 `config.toml` in the per-OS settings folder (`~/.config/chat-aggregator/` on
-Linux) with `[server]`, `[youtube]`, `[app]`, `[reactions]` and
-`[[sources]]`:
+Linux) with `profile` (the active one), `[server]`, `[youtube]` and
+`[app]`; next to it `profiles/<name>.toml` per profile, with `[overlay]`,
+`[tips]`, `[reactions]`, `[widgets]` and `[[sources]]` (`ConfigFile` and
+`ProfileFile` in `config_file.rs`):
+
+- **Files from before profiles still load**: everything in one
+  `config.toml`, the overlay's settings in `[server]`. A loose first parse
+  (any TOML) tells the layouts apart; then the strict one, straight from
+  the text, so errors still name the line (`OldConfigFile` spells out the
+  old `[server]` rather than `flatten`ing today's into it: serde can't
+  refuse unknown keys next to a flattened struct). The file becomes the
+  profile "Main", unchanged on disk: headless mode never converts it, and
+  the app only at its first save (`save_all`): the profile's file first,
+  then a copy of the old file as `config.old.toml` (once), then the new
+  `config.toml`. Stopped anywhere, `config.toml` is either still the old
+  file, which loads as before, or the new one, whose profile is written.
+  `profile = …` together with profile settings in `config.toml` is a hand
+  edit gone wrong: an error saying where they go now.
+- **Both are written profile file first**, so `config.toml` never names a
+  profile whose file isn't there yet.
 
 - **`deny_unknown_fields`** everywhere: a typo like `vidoe_id` is an error
   naming the line, instead of being silently ignored (which would turn
@@ -763,8 +820,8 @@ Linux) with `[server]`, `[youtube]`, `[app]`, `[reactions]` and
   never at startup: the configured sources are added without saving, so a
   file nobody changed keeps its comments. Saving rewrites the file without
   them (a known limitation). Headless mode never writes it.
-- **`theme`** is a built-in theme's name, a folder name in `themes/`, or
-  the full path of a theme folder anywhere.
+- **`theme`** (in `[overlay]`) is a built-in theme's name, a folder name in
+  `themes/`, or the full path of a theme folder anywhere.
 
 ## The desktop app (`chat-app`)
 
@@ -785,11 +842,21 @@ need a tokio handle. The app reaches the platform crates only through
 
 ### Views and shared state
 
-- **Windows**: the main window (status, theme row, sources, reactions and
-  widgets at a glance, YouTube section, add form), the test messages
-  window, the settings window, the Reactions window and the Widgets
-  window. The side windows open once; clicking again brings them to the
-  front.
+- **Windows**: the main window (status, the profile menu, theme row,
+  sources, reactions and widgets at a glance, YouTube section, add form),
+  the test messages window, the settings window, the Reactions window and
+  the Widgets window. The side windows open once; clicking again brings
+  them to the front.
+- **The profile menu** (`app_view/profiles.rs`, a child module so it can
+  use `AppView`'s private fields) switches, makes, renames and deletes
+  profiles. A switch asks first while a profile's source is running or the
+  Reactions window has unsaved changes. Before it, the settings and widgets
+  windows apply what's still waiting for the typing pause (`flush`: their
+  changes are sent right away, the switch after them, so they reach the
+  profile they were typed in); after it, the side windows load the new
+  profile's values when `AppConfig::switches` moves on (it notifies on a
+  switch, and the engine publishes the new settings before the status that
+  counts it).
 - **The Reactions window** has the rules on the left, the selected rule's
   form on the right and the two programs' connection settings below. A
   rule's switch and Test button act at once, like a source's switch; the
@@ -804,7 +871,7 @@ need a tokio handle. The app reaches the platform crates only through
 - **The Widgets window** lists the built-in widgets, then the widgets
   folder's (files that can't be widgets too, with the reason), and builds
   the form from the selected widget's block: no code per widget. The
-  values live in `Settings::widgets` (only those that fit and differ from
+  values live in the profile's settings (`ProfileSettings::widgets`, only those that fit and differ from
   the defaults, so a widget's new default applies) and go into the URL;
   nothing running reads them. Switches and choices apply at once, typed
   values after the settings window's pause (`APPLY_AFTER`), and so do the

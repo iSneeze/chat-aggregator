@@ -54,6 +54,14 @@ impl Hub {
         guard.messages.drain(..excess);
     }
 
+    /// Forgets the replay history: an overlay (re)loaded from now on starts
+    /// empty. For a new setup (a profile switch), whose chat shouldn't
+    /// begin with the last one's messages. What's already showing stays
+    /// until the overlay reloads.
+    pub fn clear_history(&self) {
+        self.lock_history().messages.clear();
+    }
+
     /// Returns the replay history (oldest first) and a receiver for
     /// everything published afterwards.
     ///
@@ -157,6 +165,18 @@ mod tests {
         hub.set_history(0);
         hub.publish(msg(ChatPlatform::Twitch, "e", "u"));
         assert!(history_ids(&hub).is_empty());
+    }
+
+    #[test]
+    fn clearing_the_history_keeps_its_size() {
+        let hub = Hub::new(2);
+        hub.publish(msg(ChatPlatform::Twitch, "a", "u1"));
+        hub.clear_history();
+        assert!(history_ids(&hub).is_empty());
+        for id in ["b", "c", "d"] {
+            hub.publish(msg(ChatPlatform::Twitch, id, "u1"));
+        }
+        assert_eq!(history_ids(&hub), ["c", "d"]);
     }
 
     #[test]

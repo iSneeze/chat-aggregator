@@ -46,6 +46,9 @@ use crate::reactions_window::ReactionsWindow;
 use crate::settings_window::SettingsWindow;
 use crate::widgets_window::WidgetsWindow;
 use crate::youtube_panel::YouTubePanel;
+use profiles::ProfileForm;
+
+mod profiles;
 
 /// What the add form creates.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -155,6 +158,8 @@ pub struct AppView {
     newest_select: Entity<SelectState<Vec<SharedString>>>,
     /// The "New theme" name field, while that form is open.
     new_theme: Option<Entity<InputState>>,
+    /// The profile name field (new, copy, rename), while it's open.
+    profile_form: Option<ProfileForm>,
     theme_error: Option<String>,
     /// The test messages and settings windows, once opened (they may be
     /// closed since).
@@ -216,13 +221,13 @@ impl AppView {
         let youtube = cx.new(|cx| YouTubePanel::new(engine.clone(), config.clone(), window, cx));
         let themes = themes::list(&config.read(cx).themes_dir());
         let settings = config.read(cx).settings();
-        let current = theme_label(settings.server.theme.as_deref());
+        let current = theme_label(settings.profile.overlay.theme.as_deref());
         let theme_select = cx.new(|cx| {
             let mut select = SelectState::new(theme_items(&themes), None, window, cx);
             select.set_selected_value(&current, window, cx);
             select
         });
-        let current_newest = newest_label(settings.server.newest);
+        let current_newest = newest_label(settings.profile.overlay.newest);
         let newest_select = cx.new(|cx| {
             let items = NEWEST_CHOICES.iter().map(|(_, l)| (*l).into()).collect();
             let mut select = SelectState::new(items, None, window, cx);
@@ -303,6 +308,7 @@ impl AppView {
             theme_select,
             newest_select,
             new_theme: None,
+            profile_form: None,
             theme_error: None,
             manual_window: None,
             settings_window: None,
@@ -322,7 +328,7 @@ impl AppView {
         if themes == self.themes {
             return;
         }
-        let current = theme_label(config.settings().server.theme.as_deref());
+        let current = theme_label(config.settings().profile.overlay.theme.as_deref());
         self.themes = themes;
         let items = theme_items(&self.themes);
         self.theme_select.update(cx, |select, cx| {
@@ -348,7 +354,7 @@ impl AppView {
         edit_settings(
             &self.engine,
             window.window_handle(),
-            move |settings| settings.server.theme = theme,
+            move |settings| settings.profile.overlay.theme = theme,
             cx,
         );
         cx.notify();
@@ -360,7 +366,7 @@ impl AppView {
         edit_settings(
             &self.engine,
             window.window_handle(),
-            move |settings| settings.server.newest = newest,
+            move |settings| settings.profile.overlay.newest = newest,
             cx,
         );
         cx.notify();
@@ -431,7 +437,23 @@ impl AppView {
                     {
                         report(window, cx, format!("Couldn't save the settings: {error}"));
                     }
+                    let switched = current.profile_switches != view.status.profile_switches;
+                    // Once: the first save converted a config.toml from
+                    // before profiles.
+                    if current.converted_to_profiles && !view.status.converted_to_profiles {
+                        window.push_notification(
+                            Notification::info(
+                                "Settings now come in profiles (the menu at the top right): \
+                                 what you had is the first one. The old settings file is \
+                                 kept as config.old.toml.",
+                            ),
+                            cx,
+                        );
+                    }
                     view.status = current;
+                    if switched {
+                        view.profile_switched(window, cx);
+                    }
                     view.ask_about_api_requests(window, cx);
                     cx.notify();
                 });
@@ -698,7 +720,12 @@ impl AppView {
     /// The pause switch: every rule off (or back on) at once, right away.
     fn set_reactions_on(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let handle = window.window_handle();
-        edit_settings(&self.engine, handle, move |s| s.reactions.paused = !on, cx);
+        edit_settings(
+            &self.engine,
+            handle,
+            move |s| s.profile.reactions.paused = !on,
+            cx,
+        );
     }
 
     // ---- drawing ----
@@ -712,7 +739,7 @@ impl AppView {
             Health::Off => "Nothing running",
         };
 
-        let reactions = &self.config.read(cx).settings().reactions;
+        let reactions = &self.config.read(cx).settings().profile.reactions;
         let paused = reactions.paused && !reactions.rules.is_empty();
 
         h_flex()
@@ -727,6 +754,7 @@ impl AppView {
                     .text_color(cx.theme().muted_foreground)
                     .when(paused, |d| d.child("· reactions paused")),
             )
+            .children(self.render_profile_menu(cx))
             .child(
                 Button::new("open-settings")
                     .icon(IconName::Settings)
@@ -791,12 +819,12 @@ impl AppView {
         // A theme folder that isn't there: a name from the themes folder, or
         // a full path set in config.toml. (Built-in themes have no folder.)
         let config = self.config.read(cx);
-        let server = config.settings().server;
-        let missing = server
+        let overlay = config.settings().profile.overlay;
+        let missing = overlay
             .theme_source(Some(&config.themes_dir()))
             .folder()
             .is_some_and(|dir| !dir.is_dir())
-            .then(|| server.theme.clone().unwrap_or_default());
+            .then(|| overlay.theme.clone().unwrap_or_default());
 
         let row = h_flex()
             .gap_2()
@@ -1004,7 +1032,7 @@ impl AppView {
     /// A `Div` (not just `impl IntoElement`): the row it shares with the
     /// widgets sizes it.
     fn render_reactions(&self, cx: &mut Context<Self>) -> Div {
-        let settings = self.config.read(cx).settings().reactions;
+        let settings = self.config.read(cx).settings().profile.reactions;
         let status = &self.status.reactions;
         let muted = cx.theme().muted_foreground;
         let edit = |label: &'static str| {
@@ -1223,6 +1251,7 @@ impl Render for AppView {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_header(cx))
+            .children(self.render_profile_form(cx))
             .child(self.render_overlay(cx))
             .child(self.render_sources(cx))
             .child(
@@ -1365,8 +1394,10 @@ mod tests {
 
     use chat_engine::SourceConfig;
 
+    use super::profiles::{ProfileAction, side_view};
     use super::{AppView, NewSource};
     use crate::app_config::AppConfig;
+    use crate::settings_window::SettingsWindow;
 
     /// The window as the app builds it (the view inside a `Root`, which
     /// notifications need), a real engine on its own tokio runtime, and a
@@ -1587,11 +1618,20 @@ mod tests {
         };
         // `None` while there's no file yet.
         let saved = || {
-            ConfigFile::load(&ui.settings_dir.join("config.toml"))
+            ConfigFile::load(&ui.settings_dir.join("config.toml"), None)
                 .ok()
-                .map(|file| file.server.theme)
+                .map(|file| file.profile.overlay.theme)
         };
-        let engines = || ui.engine.handle().settings().borrow().server.theme.clone();
+        let engines = || {
+            ui.engine
+                .handle()
+                .settings()
+                .borrow()
+                .profile
+                .overlay
+                .theme
+                .clone()
+        };
 
         pick(cx, "Minimal");
         run_until(cx, || saved() == Some(Some("minimal".into())));
@@ -1620,8 +1660,8 @@ mod tests {
             "created from the defaults"
         );
         let saved = || {
-            ConfigFile::load(&ui.settings_dir.join("config.toml"))
-                .is_ok_and(|file| file.server.theme.as_deref() == Some("Cozy Night"))
+            ConfigFile::load(&ui.settings_dir.join("config.toml"), None)
+                .is_ok_and(|file| file.profile.overlay.theme.as_deref() == Some("Cozy Night"))
         };
         run_until(cx, saved);
         assert_eq!(
@@ -1629,7 +1669,8 @@ mod tests {
                 .handle()
                 .settings()
                 .borrow()
-                .server
+                .profile
+                .overlay
                 .theme
                 .as_deref(),
             Some("Cozy Night"),
@@ -1664,19 +1705,32 @@ mod tests {
         drop(ui);
 
         let mut config = EngineConfig::default();
-        config.settings.reactions.rules.push(chat_engine::Rule {
-            name: "bonk".into(),
-            enabled: true,
-            trigger: chat_engine::Trigger::Command {
-                command: "!bonk".into(),
-            },
-            guards: chat_engine::Guards::default(),
-            action: chat_engine::Action::Warudo {
-                action: "throw_item".into(),
-            },
-        });
+        config
+            .settings
+            .profile
+            .reactions
+            .rules
+            .push(chat_engine::Rule {
+                name: "bonk".into(),
+                enabled: true,
+                trigger: chat_engine::Trigger::Command {
+                    command: "!bonk".into(),
+                },
+                guards: chat_engine::Guards::default(),
+                action: chat_engine::Action::Warudo {
+                    action: "throw_item".into(),
+                },
+            });
         let ui = open_with(cx, config);
-        let paused = || ui.engine.handle().settings().borrow().reactions.paused;
+        let paused = || {
+            ui.engine
+                .handle()
+                .settings()
+                .borrow()
+                .profile
+                .reactions
+                .paused
+        };
         cx.update_window(ui.window.into(), |_, window, cx| {
             window.render_frame(cx);
             window.click("reactions-on", cx);
@@ -1685,7 +1739,7 @@ mod tests {
         run_until(cx, paused);
         let path = ui.settings_dir.join("config.toml");
         run_until(cx, || {
-            ConfigFile::load(&path).is_ok_and(|file| file.reactions.paused)
+            ConfigFile::load(&path, None).is_ok_and(|file| file.profile.reactions.paused)
         });
     }
 
@@ -1723,8 +1777,8 @@ mod tests {
         );
         let path = ui.settings_dir.join("config.toml");
         let saved_sources = || {
-            ConfigFile::load(&path)
-                .map(|file| file.sources)
+            ConfigFile::load(&path, None)
+                .map(|file| file.profile.sources)
                 .unwrap_or_default()
         };
         cx.update_window(ui.window.into(), |_, window, cx| {
@@ -1759,8 +1813,8 @@ mod tests {
         })
         .unwrap();
         let saved_sources = || {
-            ConfigFile::load(&path)
-                .map(|file| file.sources)
+            ConfigFile::load(&path, None)
+                .map(|file| file.profile.sources)
                 .unwrap_or_default()
         };
         run_until(cx, || saved_sources().len() == 1);
@@ -1817,8 +1871,8 @@ mod tests {
         let ui = open(cx);
         let path = ui.settings_dir.join("config.toml");
         let saved_sources = || {
-            ConfigFile::load(&path)
-                .map(|file| file.sources)
+            ConfigFile::load(&path, None)
+                .map(|file| file.profile.sources)
                 .unwrap_or_default()
         };
         cx.update_window(ui.window.into(), |_, window, cx| {
@@ -1847,11 +1901,17 @@ mod tests {
         })
         .unwrap();
         run_until(cx, || {
-            ConfigFile::load(&ui.settings_dir.join("config.toml"))
-                .is_ok_and(|file| file.server.newest == chat_engine::Newest::Top)
+            ConfigFile::load(&ui.settings_dir.join("config.toml"), None)
+                .is_ok_and(|file| file.profile.overlay.newest == chat_engine::Newest::Top)
         });
         assert_eq!(
-            ui.engine.handle().settings().borrow().server.newest,
+            ui.engine
+                .handle()
+                .settings()
+                .borrow()
+                .profile
+                .overlay
+                .newest,
             chat_engine::Newest::Top
         );
     }
@@ -2027,8 +2087,8 @@ mod tests {
         );
         // And the site is saved.
         run_until(cx, || {
-            ConfigFile::load(&ui.settings_dir.join("config.toml"))
-                .is_ok_and(|file| file.server.api_origins == [GAME])
+            ConfigFile::load(&ui.settings_dir.join("config.toml"), None)
+                .is_ok_and(|file| file.config.server.api_origins == [GAME])
         });
     }
 
@@ -2041,7 +2101,7 @@ mod tests {
         run_until_window(cx, &ui, |window| window.try_find("dialog").is_none());
         let answer = ui._runtime.block_on(connecting).unwrap();
         assert!(answer.contains(" 403 "), "{answer}");
-        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml"));
+        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml"), None);
         assert!(saved.is_err(), "nothing to save");
     }
 
@@ -2056,5 +2116,199 @@ mod tests {
         run_until_window(cx, &ui, |window| window.try_find("dialog").is_none());
         let answer = ui._runtime.block_on(connecting).unwrap();
         assert!(answer.contains(" 403 "), "{answer}");
+    }
+
+    // ---- profiles ----
+
+    /// Runs `change` on the main window's view, with its window.
+    fn in_view(
+        cx: &mut TestAppContext,
+        ui: &Ui,
+        change: impl FnOnce(&mut AppView, &mut gpui_kit::Window, &mut gpui_kit::Context<AppView>),
+    ) {
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            ui.view.update(cx, |view, cx| change(view, window, cx));
+        })
+        .unwrap();
+    }
+
+    /// Selects all of the focused field's text, so typing replaces it.
+    fn select_all(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
+        let keys = if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        };
+        window.press(keys, cx);
+    }
+
+    fn profile(ui: &Ui) -> String {
+        ui.engine.handle().status().borrow().profile.clone()
+    }
+
+    #[gpui_kit::test]
+    fn a_new_profile_is_made_and_switched_to(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("profile-menu").is_some());
+        })
+        .unwrap();
+        // What the menu's "New profile…" does.
+        in_view(cx, &ui, |view, window, cx| {
+            view.open_profile_form(ProfileAction::New { copy: false }, window, cx);
+        });
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("profile-name", cx);
+            window.input("a/b", cx);
+            window.click("profile-submit", cx);
+        })
+        .unwrap();
+        let error = ui.view.read_with(cx, |view, _| {
+            view.profile_form.as_ref().and_then(|f| f.error.clone())
+        });
+        assert!(
+            error.is_some_and(|e| e.contains('/')),
+            "checked in the form"
+        );
+
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("profile-name", cx);
+            select_all(window, cx);
+            window.input(" Indie ", cx);
+            window.click("profile-submit", cx);
+        })
+        .unwrap();
+        // Nothing running: no question, switched to at once.
+        run_until(cx, || profile(&ui) == "Indie");
+        let status = ui.engine.handle().status().borrow().clone();
+        assert_eq!(status.profiles, ["Indie", "Main"]);
+        assert!(ui.view.read_with(cx, |view, _| view.profile_form.is_none()));
+
+        // And renamed, the active one.
+        in_view(cx, &ui, |view, window, cx| {
+            view.open_profile_form(ProfileAction::Rename("Indie".into()), window, cx);
+        });
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("profile-name", cx);
+            select_all(window, cx);
+            window.input("Solo", cx);
+            window.click("profile-submit", cx);
+        })
+        .unwrap();
+        run_until(cx, || profile(&ui) == "Solo");
+    }
+
+    #[gpui_kit::test]
+    fn switching_asks_first_while_chat_comes_in(cx: &mut TestAppContext) {
+        let ui = open_with(
+            cx,
+            EngineConfig {
+                sources: vec![SourceConfig::Demo.into()],
+                ..EngineConfig::default()
+            },
+        );
+        let handle = ui.engine.handle();
+        run_until(cx, || {
+            let status = handle.status().borrow().clone();
+            status
+                .sources
+                .iter()
+                .any(|s| matches!(s.state, chat_engine::SourceState::Running(_)))
+        });
+        ui._runtime
+            .block_on(handle.create_profile("Indie", false))
+            .unwrap();
+        // Indie's own look.
+        let mut indie = chat_engine::ProfileFile::default();
+        indie.overlay.newest = chat_engine::Newest::Top;
+        indie
+            .save(&ConfigFile::profile_path(&ui.settings_dir, "Indie"))
+            .unwrap();
+
+        in_view(cx, &ui, |view, window, cx| {
+            view.ask_switch("Indie".into(), window, cx);
+        });
+        run_until_window(cx, &ui, |window| window.try_find("dialog").is_some());
+        assert_eq!(profile(&ui), "Main", "not before the answer");
+        click_in_dialog(cx, &ui, "ok"); // "Switch"
+        run_until(cx, || profile(&ui) == "Indie");
+        // The main window learns of it from the status, a moment later.
+        let top = super::newest_label(chat_engine::Newest::Top);
+        let shown = |cx: &mut TestAppContext| {
+            ui.view.read_with(cx, |view, cx| {
+                view.newest_select.read(cx).selected_value().cloned()
+            })
+        };
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if shown(cx).as_ref() == Some(&top) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(shown(cx), Some(top), "the pickers show Indie's look");
+        let status = handle.status().borrow().clone();
+        assert!(status.sources.is_empty(), "Indie has none");
+    }
+
+    #[gpui_kit::test]
+    fn typed_settings_stay_with_the_profile_they_were_typed_in(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let handle = ui.engine.handle();
+        ui._runtime
+            .block_on(handle.create_profile("Indie", false))
+            .unwrap();
+        ui._runtime
+            .block_on(handle.edit_settings(|s| {
+                s.profile.overlay.hide = vec![chat_engine::Hide::Twitch];
+            }))
+            .unwrap();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("open-settings", cx);
+        })
+        .unwrap();
+        let settings_window = ui
+            .view
+            .read_with(cx, |view, _| view.settings_window.unwrap());
+        let settings = ui
+            .view
+            .read_with(cx, |view, cx| {
+                side_view::<SettingsWindow>(view.settings_window, cx)
+            })
+            .unwrap();
+        let type_currency = |cx: &mut TestAppContext, text: &'static str| {
+            cx.update_window(settings_window.into(), |_, window, cx| {
+                settings.update(cx, |view, cx| view.type_tip_currency(text, window, cx));
+            })
+            .unwrap();
+        };
+        let load = |name: &str| {
+            chat_engine::ProfileFile::load(&ConfigFile::profiles_dir(&ui.settings_dir), name)
+                .unwrap()
+        };
+
+        // Typed in Main, and switched within the typing pause.
+        type_currency(cx, "EUR");
+        in_view(cx, &ui, |view, window, cx| {
+            view.ask_switch("Indie".into(), window, cx);
+        });
+        run_until(cx, || profile(&ui) == "Indie");
+        assert_eq!(
+            load("Main").tips.currency(),
+            Some("EUR"),
+            "where it was typed"
+        );
+        assert_eq!(load("Indie").tips.currency(), None);
+
+        // Typed in Indie: nothing of Main's comes along.
+        type_currency(cx, "USD");
+        cx.executor()
+            .advance_clock(crate::settings_window::APPLY_AFTER * 2);
+        run_until(cx, || load("Indie").tips.currency() == Some("USD"));
+        assert!(load("Indie").overlay.hide.is_empty(), "Main's stay Main's");
+        assert_eq!(load("Main").tips.currency(), Some("EUR"));
     }
 }

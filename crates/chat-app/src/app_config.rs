@@ -5,11 +5,13 @@
 //!
 //! One `AppConfig` is shared by all windows as a GPUI `Entity`. Windows
 //! that `cx.observe` it redraw whenever the settings change, whichever
-//! window (or the engine itself, e.g. "Allow" adding a site) changed them.
+//! window (or the engine itself, e.g. "Allow" adding a site) changed them,
+//! and when another profile becomes the active one ([`AppConfig::switches`])
+//! or the active one is renamed.
 
 use std::path::PathBuf;
 
-use chat_engine::{ConfigFile, EngineHandle, Settings};
+use chat_engine::{ConfigFile, EngineHandle, Settings, Status};
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Entity};
 use tokio::sync::watch;
 
@@ -18,6 +20,8 @@ use crate::app_view::report;
 pub struct AppConfig {
     /// The engine's settings: a `watch` always holds the latest ones.
     settings: watch::Receiver<Settings>,
+    /// The engine's status, for the active profile.
+    status: watch::Receiver<Status>,
     /// The folder `config.toml` is in; the app's other files go next to it.
     settings_dir: PathBuf,
 }
@@ -29,12 +33,35 @@ impl AppConfig {
     pub fn new(engine: &EngineHandle, settings_dir: PathBuf, cx: &mut App) -> Entity<Self> {
         let config = cx.new(|_| Self {
             settings: engine.settings(),
+            status: engine.status(),
             settings_dir,
         });
         let mut changes = engine.settings();
         let weak = config.downgrade();
         cx.spawn(async move |cx| {
             while changes.changed().await.is_ok() {
+                if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+        // Another profile active, or the active one renamed: said once, not
+        // with every status (that changes with each message's count). The
+        // engine sends the new profile's settings before the status that
+        // counts the switch, so an observer that sees the new count finds
+        // its settings too.
+        let mut status = engine.status();
+        let weak = config.downgrade();
+        let profile = |status: &Status| (status.profile_switches, status.profile.clone());
+        cx.spawn(async move |cx| {
+            let mut shown = profile(&status.borrow_and_update());
+            while status.changed().await.is_ok() {
+                let current = profile(&status.borrow_and_update());
+                if current == shown {
+                    continue;
+                }
+                shown = current;
                 if weak.update(cx, |_, cx| cx.notify()).is_err() {
                     return;
                 }
@@ -49,6 +76,20 @@ impl AppConfig {
     /// changing them).
     pub fn settings(&self) -> Settings {
         self.settings.borrow().clone()
+    }
+
+    /// The active profile's name: whose settings `settings` has.
+    pub fn profile(&self) -> String {
+        self.status.borrow().profile.clone()
+    }
+
+    /// Counts the switches to another profile (`Status::profile_switches`).
+    /// A window holding a profile's settings (a draft, a form) notes this
+    /// when it loads them, and loads them again when it has moved on. Not
+    /// the name: renaming the active profile keeps its settings, and
+    /// whatever is being typed into them.
+    pub fn switches(&self) -> u64 {
+        self.status.borrow().profile_switches
     }
 
     /// The folder with the overlay themes, next to the config file.

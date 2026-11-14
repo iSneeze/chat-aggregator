@@ -1,0 +1,188 @@
+# One chat-aggregator profile: its overlay look, tips, chat reactions,
+# widget settings and sources. A profile is a file in the "profiles" folder
+# next to config.toml, named after the profile (profiles/Main.toml); which
+# one is active is in config.toml. The app switches between them, and
+# creates, renames and deletes them.
+#
+# Lines starting with # are comments. Remove the # in front of a setting to
+# use it.
+
+[overlay]
+# Overlay theme: "minimal" (built in: one line per message), or the name of
+# a folder in the "themes" folder next to config.toml, containing overlay.css
+# and/or message.html (without it: the built-in default). The full path of
+# a theme folder elsewhere works too.
+# theme = "my theme"
+# Where new messages appear in the overlay: "bottom" (the chat grows upward)
+# or "top" (it grows downward). An overlay URL ending in ?newest=top or
+# ?newest=bottom overrides this for that browser source.
+newest = "bottom"
+# What the overlay leaves out (chat reactions and the JSON API still get
+# it): platforms "twitch", "youtube", "picarto", "streamelements",
+# "streamlabs", and kinds of message "text", "emote_only", "donation", "special" (stickers, gifts),
+# "membership", "gift" (gifted subs), "notice" (raids, announcements). An
+# overlay URL ending in ?hide=streamelements,notice overrides this for that
+# browser source (?hide= alone shows everything there).
+# hide = ["streamelements"]
+
+# Tips (StreamElements, Streamlabs). Nothing is ever converted between
+# currencies.
+[tips]
+# Your tip page's currency, as 3 letters: StreamElements tips show in it
+# ("€10.00"), and amount rules count Super Chats and Streamlabs tips in it.
+# A Streamlabs tip in another currency gets tier 1. Without it,
+# StreamElements tips show as plain numbers and amount rules ignore Super
+# Chats and Streamlabs tips.
+# currency = "EUR"
+# Paid messages get a tier from 1 to 7, on one scale for every platform:
+# YouTube's Super Chat tiers ($1+, $2+, $5+, $10+, $20+, $50+, $100+);
+# Twitch bits count 100 per dollar (200+ bits is tier 2, …, 10,000+ tier
+# 7). Tips' tiers 2 to 7 start at these amounts, in your currency (below the
+# first is tier 1); by default YouTube's steps:
+tiers = [2, 5, 10, 20, 50, 100]
+
+# Chat reactions: chat makes things happen in other programs. Each rule has
+# a trigger (which messages), optional guards (who, how often) and an
+# action (what happens where). Chat only picks a rule: nothing a chatter
+# writes is passed on. Demo messages never fire rules; the app's test
+# messages do.
+[reactions]
+# true switches every rule off at once (outputs stay connected).
+paused = false
+
+# Warudo: in a blueprint, add an "On WebSocket Action" node; its Action is
+# the name a rule sends. Connected only while a rule sends to it.
+[reactions.warudo]
+# Warudo's own default; another computer's address in a two-PC setup.
+url = "ws://127.0.0.1:19190"
+# How long a reaction may wait while Warudo can't be reached (not started
+# yet, restarting), in seconds, up to 300. 0 drops it.
+queue_secs = 0
+
+# OBS: switch on "Enable WebSocket server" in OBS under Tools → WebSocket
+# Server Settings. Connected only while a rule sends to it. The password
+# (Show Connect Info there) isn't kept in this file but in your system's
+# keyring: store it in the app's Reactions window (headless: `run
+# --obs-password`).
+[reactions.obs]
+url = "ws://127.0.0.1:4455"
+# As for Warudo.
+queue_secs = 0
+
+# One [[reactions.rules]] block per rule. Every matching rule fires.
+#
+# Triggers:
+#   { type = "command", command = "!bonk" }   first word of a message, any case
+#   { type = "keyword", keyword = "hype" }    a word or phrase anywhere, any case
+#   { type = "emote", emote = "Kappa" }       a real emote (exact case)
+#   { type = "paid" }                         bits, Super Chats, Super Stickers, tips;
+#   { type = "paid", min_tier = 4 }           ... of at least this tier (1 to 7, see [tips])
+#   { type = "paid_amount", amount = 50 }     ... of at least this amount: tips and
+#       Super Chats in your tip currency (no conversion), Twitch in bits
+#   { type = "paid_amount", amount = 69, compare = "exactly" }   ... of just this amount
+#   { type = "membership" }                   new subscriber/member, resub
+#   { type = "gift", min_count = 5 }          gifted subs/memberships
+# Guards (all optional):
+#   min_role = "everyone" | "subscriber" (= "member") | "vip" | "moderator" | "broadcaster"
+#   platforms = ["twitch", "youtube", "picarto", "streamelements", "streamlabs"]   (default: all)
+#   crowd = { chatters = 10, within_secs = 30 }   fires only once 10 different
+#       chatters triggered it within 30 s (one chatter counts once; every
+#       platform adds up); then it starts counting again. Not together with
+#       user_cooldown_secs.
+#   cooldown_secs = 10        the rule rests this long after firing (nothing
+#       counts towards a crowd meanwhile)
+#   user_cooldown_secs = 60   ... and this long for the chatter who fired it
+# Actions (names exactly as in OBS):
+#   { target = "warudo", action = "throw_item" }
+#   { target = "obs_filter", source = "Mic", filter = "Chipmunk", seconds = 30 }
+#       a filter on for 30 s, then off again (without seconds: stays on);
+#       firing again meanwhile makes it last longer
+#   { target = "obs_source", scene = "Main", source = "Confetti", seconds = 5 }
+#       a source shown for 5 s, then hidden again (without seconds: stays)
+#   { target = "obs_media", source = "Airhorn" }
+#       a media source played from the start
+# Something that was already on before a reaction stays on afterwards.
+#
+# [[reactions.rules]]
+# name = "bonk"
+# trigger = { type = "command", command = "!bonk" }
+# guards = { cooldown_secs = 10, user_cooldown_secs = 60 }
+# action = { target = "warudo", action = "throw_item" }
+#
+# [[reactions.rules]]
+# name = "chipmunk"
+# trigger = { type = "paid", min_tier = 4 }
+# guards = { cooldown_secs = 60 }
+# action = { target = "obs_filter", source = "Mic", filter = "Chipmunk", seconds = 30 }
+#
+# [[reactions.rules]]
+# name = "nice"
+# trigger = { type = "paid_amount", amount = 69, compare = "exactly" }
+# guards = { platforms = ["streamelements"] }
+# action = { target = "obs_media", source = "Nice" }
+#
+# [[reactions.rules]]
+# name = "respects"
+# trigger = { type = "keyword", keyword = "F" }
+# guards = { crowd = { chatters = 10, within_secs = 30 }, cooldown_secs = 120 }
+# action = { target = "obs_source", scene = "Main", source = "Candles", seconds = 10 }
+
+# Widgets: pages that show chat their own way, at
+# http://127.0.0.1:7878/widgets/<name> (the built-in live-emoji and
+# danmaku, and the ones imported in the app, kept in the "widgets" folder
+# next to config.toml). The values picked in the app's Widgets window, one
+# table per widget, only those that differ from the widget's defaults; the
+# app puts them into the widget's URL ("Copy URL"):
+# [widgets.live-emoji]
+# mode = "calm"
+# size = 72
+#
+# [widgets.danmaku]
+# life = 9
+# paid = "bottom"
+
+# One [[sources]] block per chat to read. Add `enabled = false` to keep a
+# source listed in the app but switched off.
+
+# [[sources]]
+# type = "twitch"
+# channel = "your_channel"
+
+# Your own YouTube broadcasts (needs the login: run with --youtube-login).
+# Without `account`, the first channel in [[youtube.accounts]]; with
+# several channels, name the one this source reads by its channel id:
+# [[sources]]
+# type = "youtube"
+# account = "UC…"
+
+# A specific YouTube video instead:
+# [[sources]]
+# type = "youtube"
+# video_id = "VIDEO_ID"   # the part after watch?v= in the URL
+
+# A Picarto channel (its name, or the link to it):
+# [[sources]]
+# type = "picarto"
+# channel = "your_channel"
+
+# Tips through StreamElements. The Account ID and the Overlay Token are on
+# the StreamElements dashboard (your avatar, top right → your channel). The
+# token is a secret: it goes into the system keyring, not this file (run
+# with --streamelements-token <account id> once to store it).
+# [[sources]]
+# type = "streamelements"
+# account = "0123456789abcdef01234567"
+
+# Tips through Streamlabs, one source per account, each under a name of
+# your own ("Main", or one per persona). The Socket API Token is on the
+# Streamlabs dashboard (Settings → API Settings → API Tokens → Your Socket
+# API Token). It's a secret: it goes into the system keyring under that
+# name, not this file (run with --streamlabs-token <name> once to store
+# it).
+# [[sources]]
+# type = "streamlabs"
+# label = "Main"
+
+# Sample messages of every kind, for trying out themes:
+[[sources]]
+type = "demo"

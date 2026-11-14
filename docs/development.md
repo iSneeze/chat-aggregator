@@ -42,8 +42,9 @@ source in the terminal:
 
 ```sh
 cargo run -p chat-engine --example run -- --demo            # every message kind, no account needed
-cargo run -p chat-engine --example run -- --init-config     # once: write a commented config.toml
-cargo run -p chat-engine --example run                      # start everything in the config file
+cargo run -p chat-engine --example run -- --init-config     # once: write config.toml and profiles/Main.toml
+cargo run -p chat-engine --example run                      # start the active profile
+cargo run -p chat-engine --example run -- --profile Indie   # another profile
 cargo run -p chat-engine --example run -- --youtube-login   # once per channel; see youtube-setup.md
 cargo run -p chat-engine --example run -- --twitch <channel> --youtube-own   # sources as flags instead
 ```
@@ -51,9 +52,11 @@ cargo run -p chat-engine --example run -- --twitch <channel> --youtube-own   # s
 Then open `http://127.0.0.1:7878/` in a browser, or add it as a Browser
 Source in OBS.
 
-- Both read the same config file, in the per-OS settings folder
-  (`~/.config/chat-aggregator/config.toml` on Linux). The app saves its
-  changes there; headless mode only reads it.
+- Both read the same settings, in the per-OS settings folder
+  (`~/.config/chat-aggregator/` on Linux): `config.toml` with what all
+  profiles share and which one is active, and a file per profile in
+  `profiles/` with its sources and look. The app saves its changes there;
+  headless mode only reads them.
 - Sources can be combined. Every flag is listed at the top of
   [`run.rs`](https://github.com/iSneeze/chat-aggregator/blob/master/crates/chat-engine/examples/run.rs).
 - YouTube needs your own Google Cloud project, headless too:

@@ -74,7 +74,7 @@ struct Started {
 /// with the step (`Stage`), so the error window can give fitting advice.
 fn start(config_path: PathBuf, settings_dir: &Path) -> Result<Started, StartupError> {
     let file =
-        ConfigFile::load_or_default(&config_path).map_err(StartupError::at(Stage::Config))?;
+        ConfigFile::load_or_default(&config_path, None).map_err(StartupError::at(Stage::Config))?;
 
     // Two workers are plenty for chat; tokio's default is one per CPU core.
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -59,14 +59,15 @@ impl Controls {
         if now.api != was.api {
             self.api.send_replace(now.api);
         }
+        // A removed site's clients are disconnected.
+        if now.api_origins != was.api_origins {
+            self.origins.set_allowed(now.api_origins.clone());
+        }
+        let (was, now) = (&old.profile.overlay, &new.profile.overlay);
         // Read by overlays for every message: no reload, the next message
         // follows it.
         if now.hide != was.hide {
             self.hide.send_replace(now.hide.clone());
-        }
-        // A removed site's clients are disconnected.
-        if now.api_origins != was.api_origins {
-            self.origins.set_allowed(now.api_origins.clone());
         }
         // An overlay takes up both when it connects (the direction is
         // written into its page), so either change reloads the overlays,
@@ -81,12 +82,13 @@ impl Controls {
         } else if now.newest != was.newest {
             self.reload_overlays();
         }
-        if new.reactions != old.reactions {
-            self.reactions.send_replace(new.reactions.clone());
+        let (was, now) = (&old.profile, &new.profile);
+        if now.reactions != was.reactions {
+            self.reactions.send_replace(now.reactions.clone());
         }
         // Read for the next message or tip: no restart of anything.
-        if new.tips != old.tips {
-            self.tips.send_replace(new.tips.clone());
+        if now.tips != was.tips {
+            self.tips.send_replace(now.tips.clone());
         }
         // (A new port only applies at the next start: the server keeps its
         // socket until then.)
@@ -177,7 +179,7 @@ mod tests {
         let (controls, server) = controls();
         let old = Settings::default();
         let mut new = old.clone();
-        new.tips.currency = "EUR".into();
+        new.profile.tips.currency = "EUR".into();
         assert!(!controls.apply(&old, &new), "no YouTube restart");
         assert!(changed(&server.tips));
         assert_eq!(server.tips.borrow().currency(), Some("EUR"));
@@ -190,7 +192,7 @@ mod tests {
         let (controls, server) = controls();
         let old = Settings::default();
         let mut new = old.clone();
-        new.server.hide = vec![Hide::StreamElements];
+        new.profile.overlay.hide = vec![Hide::StreamElements];
         controls.apply(&old, &new);
         assert!(changed(&server.hide));
         assert_eq!(*server.hide.borrow(), [Hide::StreamElements]);
@@ -202,7 +204,7 @@ mod tests {
         let (controls, server) = controls();
         let old = Settings::default();
         let mut new = old.clone();
-        new.reactions.paused = true;
+        new.profile.reactions.paused = true;
         assert!(!controls.apply(&old, &new));
         assert!(changed(&server.reactions));
         assert!(server.reactions.borrow().paused);
@@ -214,7 +216,7 @@ mod tests {
         let (controls, server) = controls();
         let old = Settings::default();
         let mut new = old.clone();
-        new.server.newest = Newest::Top;
+        new.profile.overlay.newest = Newest::Top;
         controls.apply(&old, &new);
         assert_eq!(*server.newest.borrow(), Newest::Top);
         assert!(changed(&server.theme), "overlays reload");
@@ -226,8 +228,8 @@ mod tests {
         let (controls, server) = controls();
         let old = Settings::default();
         let mut new = old.clone();
-        new.server.theme = Some("minimal".into());
-        new.server.newest = Newest::Top;
+        new.profile.overlay.theme = Some("minimal".into());
+        new.profile.overlay.newest = Newest::Top;
         controls.apply(&old, &new);
         assert_eq!(
             *server.theme.borrow(),

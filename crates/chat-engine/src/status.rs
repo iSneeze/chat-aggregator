@@ -142,6 +142,21 @@ pub struct Status {
     /// Why saving `config.toml` failed the last time; `None` once a save
     /// works again (and always, if the engine has no file to save to).
     pub save_error: Option<String>,
+    /// The active profile: whose settings and sources these are.
+    pub profile: String,
+    /// All profiles, the active one too, sorted by name (case doesn't
+    /// count). Empty if the engine has no settings folder (headless mode,
+    /// tests): nothing to switch to.
+    pub profiles: Vec<String>,
+    /// How often another profile became the active one since the engine
+    /// started. Windows holding a profile's settings (a draft, a form)
+    /// reload when this changes; renaming the active profile changes its
+    /// name, but not this.
+    pub profile_switches: u64,
+    /// This run converted a `config.toml` from before profiles into today's
+    /// layout (the old file is kept as `config.old.toml` next to it): worth
+    /// telling the streamer once.
+    pub converted_to_profiles: bool,
     /// In the order they were added.
     pub sources: Vec<SourceStatus>,
     /// Chat reactions: the outputs in use, with a light each
@@ -226,6 +241,10 @@ mod tests {
             widgets_connected: 0,
             api_requests: vec![],
             save_error: None,
+            profile: "Main".into(),
+            profiles: vec![],
+            profile_switches: 0,
+            converted_to_profiles: false,
             sources: vec![],
             reactions: ReactionStatus::default(),
         };

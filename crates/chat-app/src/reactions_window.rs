@@ -507,6 +507,9 @@ enum Tested {
 pub struct ReactionsWindow {
     engine: EngineHandle,
     config: Entity<AppConfig>,
+    /// The profile switch whose rules and connections the window shows
+    /// (`AppConfig::switches`).
+    loaded_for: u64,
     status: ReactionStatus,
     /// The saved rule the form shows, by its name as saved; `None`: a new
     /// rule.
@@ -539,8 +542,8 @@ impl ReactionsWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let all_settings = config.read(cx).settings();
-        let settings = all_settings.reactions;
-        let tips = all_settings.tips;
+        let settings = all_settings.profile.reactions;
+        let tips = all_settings.profile.tips;
         let inputs = Inputs::new(window, cx);
         let tier_select =
             cx.new(|cx| SelectState::new(tier_items(&tips), Some(IndexPath::new(0)), window, cx));
@@ -562,8 +565,14 @@ impl ReactionsWindow {
 
         let subscriptions = vec![
             // Settings changed (a switch here, the pause in the main
-            // window, new tip amounts in Settings): redraw.
-            cx.observe_in(&config, window, |this, _, window, cx| {
+            // window, new tip amounts in Settings): redraw. Another profile
+            // brings its own rules and connections.
+            cx.observe_in(&config, window, |this, config, window, cx| {
+                let switches = config.read(cx).switches();
+                if switches != this.loaded_for {
+                    this.loaded_for = switches;
+                    this.load_profile(window, cx);
+                }
                 this.relabel_tiers(window, cx);
                 cx.notify();
             }),
@@ -581,9 +590,11 @@ impl ReactionsWindow {
         Self::watch_status(&engine, window, cx);
         Self::ask_before_closing(window, cx);
 
+        let loaded_for = config.read(cx).switches();
         let mut view = Self {
             engine,
             config,
+            loaded_for,
             status: ReactionStatus::default(),
             editing: None,
             inputs,
@@ -649,7 +660,7 @@ impl ReactionsWindow {
     // ---- the rule form ----
 
     fn rules(&self, cx: &App) -> Vec<Rule> {
-        self.config.read(cx).settings().reactions.rules
+        self.config.read(cx).settings().profile.reactions.rules
     }
 
     fn form(&self, cx: &App) -> Form {
@@ -657,13 +668,14 @@ impl ReactionsWindow {
     }
 
     /// Unsaved changes anywhere in the window: the rule form, the
-    /// connection settings, a typed password not yet stored.
-    fn unsaved(&self, cx: &App) -> bool {
+    /// connection settings, a typed password not yet stored. (The main
+    /// window asks before a profile switch would drop them.)
+    pub(crate) fn unsaved(&self, cx: &App) -> bool {
         self.form(cx) != self.loaded || self.outputs_unsaved(cx)
     }
 
     fn outputs_unsaved(&self, cx: &App) -> bool {
-        let settings = self.config.read(cx).settings().reactions;
+        let settings = self.config.read(cx).settings().profile.reactions;
         let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
         // As a number: "030" is what's saved as 30.
         let queue = |input: &Entity<InputState>| number(&text(input), "").ok();
@@ -718,6 +730,29 @@ impl ReactionsWindow {
         cx.notify();
     }
 
+    /// Another profile is active: its first rule in the form, its
+    /// connections in their fields. Unsaved changes are dropped: the main
+    /// window asked before switching.
+    fn load_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = self.config.read(cx).settings().profile.reactions;
+        let first = settings.rules.first().map(|rule| rule.name.clone());
+        self.load(first, window, cx);
+        let o = &self.outputs;
+        let fields = [
+            (&o.warudo_url, settings.warudo.url.clone()),
+            (&o.warudo_queue, settings.warudo.queue_secs.to_string()),
+            (&o.obs_url, settings.obs.url.clone()),
+            (&o.obs_queue, settings.obs.queue_secs.to_string()),
+            (&o.obs_password, String::new()),
+        ];
+        for (input, value) in fields {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+        self.tests.clear();
+        self.warudo_error = None;
+        self.obs_error = None;
+    }
+
     /// Selects `tier` in the tier list (`None`: "Any amount").
     fn show_tier(&self, tier: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
         let index = IndexPath::new(tier.map_or(0, |t| t as usize));
@@ -729,7 +764,7 @@ impl ReactionsWindow {
     /// New tip settings: the tier list says the new amounts, and keeps the
     /// picked tier (its labels changed, so the list would drop it).
     fn relabel_tiers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let tips = self.config.read(cx).settings().tips;
+        let tips = self.config.read(cx).settings().profile.tips;
         if tips == self.tier_labels_for {
             return;
         }
@@ -771,7 +806,7 @@ impl ReactionsWindow {
         let original = self.editing.clone();
         let name = rule.name.clone();
         let saving = self.engine.edit_settings(move |s| {
-            let rules = &mut s.reactions.rules;
+            let rules = &mut s.profile.reactions.rules;
             match original.and_then(|old| rules.iter().position(|r| r.name == old)) {
                 Some(i) => rules[i] = rule,
                 None => rules.push(rule),
@@ -824,7 +859,7 @@ impl ReactionsWindow {
         let gone = name.clone();
         let removing = self
             .engine
-            .edit_settings(move |s| s.reactions.rules.retain(|r| r.name != gone));
+            .edit_settings(move |s| s.profile.reactions.rules.retain(|r| r.name != gone));
         cx.spawn_in(window, async move |this, cx| {
             let result = removing.await;
             let _ = this.update_in(cx, |view, window, cx| match result {
@@ -848,7 +883,13 @@ impl ReactionsWindow {
             &self.engine,
             handle,
             move |s| {
-                if let Some(rule) = s.reactions.rules.iter_mut().find(|r| r.name == name) {
+                if let Some(rule) = s
+                    .profile
+                    .reactions
+                    .rules
+                    .iter_mut()
+                    .find(|r| r.name == name)
+                {
                     rule.enabled = on;
                 }
             },
@@ -919,8 +960,8 @@ impl ReactionsWindow {
             &self.engine,
             handle,
             move |s| match target {
-                Target::Warudo => s.reactions.warudo = WarudoSettings { url, queue_secs },
-                Target::Obs => s.reactions.obs = ObsSettings { url, queue_secs },
+                Target::Warudo => s.profile.reactions.warudo = WarudoSettings { url, queue_secs },
+                Target::Obs => s.profile.reactions.obs = ObsSettings { url, queue_secs },
             },
             cx,
         );
@@ -1139,7 +1180,7 @@ impl ReactionsWindow {
                 );
                 // What the number is compared with, so "69" isn't a
                 // surprise on another platform.
-                let hint = match self.config.read(cx).settings().tips.currency() {
+                let hint = match self.config.read(cx).settings().profile.tips.currency() {
                     Some(code) => {
                         format!("Tips and Super Chats in {code}, Twitch in bits. No conversion.")
                     }
@@ -1578,18 +1619,20 @@ pub(crate) fn confirm(
     window: &mut Window,
     cx: &mut App,
     title: String,
-    description: &'static str,
+    description: impl Into<SharedString>,
     ok: &'static str,
     on_ok: impl Fn(&mut Window, &mut App) + 'static,
 ) {
     // The builder may run again on redraws (it's an `Fn`), so what it
-    // hands on is shared, not moved: an `Rc`.
+    // hands on is shared, not moved: an `Rc` (and `SharedString`, which is
+    // one too, for text).
     let on_ok = std::rc::Rc::new(on_ok);
+    let description = description.into();
     window.open_alert_dialog(cx, move |alert, _, _| {
         let on_ok = on_ok.clone();
         alert
             .title(title.clone())
-            .description(description)
+            .description(description.clone())
             .ok_text(ok)
             .show_cancel(true)
             .on_ok(move |_, window, cx| {
@@ -1660,11 +1703,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut config = EngineConfig::default();
         config.settings.server.port = 0;
-        config.settings.reactions.rules = rules.iter().map(|name| rule(name)).collect();
+        config.settings.profile.reactions.rules = rules.iter().map(|name| rule(name)).collect();
         // Port 1, where nothing listens: Warudo's usual port may have the
         // real Warudo behind it on a developer's machine, and then a test
         // press would really reach it.
-        config.settings.reactions.warudo.url = "ws://127.0.0.1:1".into();
+        config.settings.profile.reactions.warudo.url = "ws://127.0.0.1:1".into();
         config.save_to = Some(dir.join("config.toml"));
         // A folder, not the real keyring.
         config.secrets = Some(SecretStore::Dir(dir.join("secrets")));
@@ -1693,6 +1736,7 @@ mod tests {
 
     fn names(ui: &Ui) -> Vec<String> {
         settings(ui)
+            .profile
             .reactions
             .rules
             .into_iter()
@@ -1791,7 +1835,7 @@ mod tests {
         act(cx, &ui, |window, cx| window.click("rule-save", cx));
 
         run_until(cx, |_| !names(&ui).is_empty());
-        let saved = &settings(&ui).reactions.rules[0];
+        let saved = &settings(&ui).profile.reactions.rules[0];
         assert_eq!(saved.name, "chipmunk");
         assert!(saved.enabled);
         assert_eq!(saved.trigger, Trigger::Gift { min_count: 10 });
@@ -1817,8 +1861,8 @@ mod tests {
         // Saved: nothing unsaved any more.
         assert!(!ui.view.read_with(cx, |view, cx| view.unsaved(cx)));
         // And in the file.
-        let file = ConfigFile::load(&ui.dir.join("config.toml")).unwrap();
-        assert_eq!(file.reactions.rules.len(), 1);
+        let file = ConfigFile::load(&ui.dir.join("config.toml"), None).unwrap();
+        assert_eq!(file.profile.reactions.rules.len(), 1);
     }
 
     #[gpui_kit::test]
@@ -1832,7 +1876,7 @@ mod tests {
         type_into(cx, &ui, "rule-warudo-action", "nice");
         act(cx, &ui, |window, cx| window.click("rule-save", cx));
         run_until(cx, |_| !names(&ui).is_empty());
-        let saved = settings(&ui).reactions.rules[0].clone();
+        let saved = settings(&ui).profile.reactions.rules[0].clone();
         assert_eq!(
             saved.trigger,
             Trigger::PaidAmount {
@@ -1850,7 +1894,7 @@ mod tests {
         });
         act(cx, &ui, |window, cx| window.click("rule-save", cx));
         run_until(cx, |_| {
-            settings(&ui).reactions.rules[0].trigger == Trigger::Paid { min_tier: Some(5) }
+            settings(&ui).profile.reactions.rules[0].trigger == Trigger::Paid { min_tier: Some(5) }
         });
         // Opened again, the list shows it.
         let view = ui.view.clone();
@@ -1885,7 +1929,7 @@ mod tests {
         let edit = ui
             .engine
             .handle()
-            .edit_settings(|s| s.tips.currency = "EUR".into());
+            .edit_settings(|s| s.profile.tips.currency = "EUR".into());
         ui._runtime.block_on(edit).unwrap();
         run_until(cx, |cx| label(cx).is_some_and(|l| l.contains("€10.00+")));
         // Still tier 4, under its new label.
@@ -1934,7 +1978,7 @@ mod tests {
         set_text(cx, &ui, |inputs| &inputs.user_cooldown, "0");
         act(cx, &ui, |window, cx| window.click("rule-save", cx));
         run_until(cx, |_| !names(&ui).is_empty());
-        let saved = settings(&ui).reactions.rules[0].clone();
+        let saved = settings(&ui).profile.reactions.rules[0].clone();
         assert_eq!(
             saved.guards.crowd,
             Some(Crowd {
@@ -1964,8 +2008,8 @@ mod tests {
     fn the_list_switch_applies_at_once(cx: &mut TestAppContext) {
         let ui = open(cx, &["a", "b"]);
         act(cx, &ui, |window, cx| window.click(("rule-on", 1usize), cx));
-        run_until(cx, |_| !settings(&ui).reactions.rules[1].enabled);
-        assert!(settings(&ui).reactions.rules[0].enabled);
+        run_until(cx, |_| !settings(&ui).profile.reactions.rules[1].enabled);
+        assert!(settings(&ui).profile.reactions.rules[0].enabled);
     }
 
     #[gpui_kit::test]
@@ -2004,6 +2048,62 @@ mod tests {
         act(cx, &ui, |window, cx| window.click(("rule", 0usize), cx));
         assert!(!dialog_open(cx, &ui));
         assert_eq!(editing(cx, &ui).as_deref(), Some("a"));
+    }
+
+    #[gpui_kit::test]
+    fn another_profile_brings_its_own_rules_and_connections(cx: &mut TestAppContext) {
+        let ui = open(cx, &["a", "b"]);
+        let handle = ui.engine.handle();
+        ui._runtime
+            .block_on(handle.create_profile("Indie", false))
+            .unwrap();
+        let mut indie = chat_engine::ProfileFile::default();
+        indie.reactions.rules = vec![rule("wave")];
+        indie.reactions.warudo.url = "ws://127.0.0.1:2".into();
+        indie
+            .save(&ConfigFile::profile_path(&ui.dir, "Indie"))
+            .unwrap();
+        type_into(cx, &ui, "rule-name", "x"); // "ax": the main window asked
+
+        ui._runtime
+            .block_on(handle.switch_profile("Indie"))
+            .unwrap();
+        run_until(cx, |cx| editing(cx, &ui).as_deref() == Some("wave"));
+        let (name, warudo, unsaved) = ui.view.read_with(cx, |view, cx| {
+            let text = |input: &Entity<InputState>| input.read(cx).value().to_string();
+            (
+                text(&view.inputs.name),
+                text(&view.outputs.warudo_url),
+                view.unsaved(cx),
+            )
+        });
+        assert_eq!(name, "wave");
+        assert_eq!(warudo, "ws://127.0.0.1:2");
+        assert!(!unsaved, "nothing of Main's left over");
+
+        // Renamed: the same profile, so what's typed stays.
+        type_into(cx, &ui, "rule-name", "s"); // "waves"
+        ui._runtime
+            .block_on(handle.rename_profile("Indie", "Solo"))
+            .unwrap();
+        run_until(cx, |cx| {
+            ui.view
+                .read_with(cx, |view, cx| view.config.read(cx).profile() == "Solo")
+        });
+        // The window hears of the rename a moment later (a GPUI task woken
+        // from the engine's thread): give it that moment, then look.
+        let name = |cx: &mut TestAppContext| {
+            ui.view
+                .read_with(cx, |view, cx| view.inputs.name.read(cx).value().to_string())
+        };
+        for _ in 0..30 {
+            cx.run_until_parked();
+            if name(cx) != "waves" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(name(cx), "waves");
     }
 
     #[gpui_kit::test]
@@ -2087,9 +2187,11 @@ mod tests {
         .unwrap();
         type_into(cx, &ui, "warudo-queue", "30"); // "0030"
         act(cx, &ui, |window, cx| window.click("warudo-save", cx));
-        run_until(cx, |_| settings(&ui).reactions.warudo.queue_secs == 30);
+        run_until(cx, |_| {
+            settings(&ui).profile.reactions.warudo.queue_secs == 30
+        });
         assert_eq!(
-            settings(&ui).reactions.warudo.url,
+            settings(&ui).profile.reactions.warudo.url,
             "ws://192.168.1.20:19190"
         );
         assert!(!ui.view.read_with(cx, |view, cx| view.unsaved(cx)));

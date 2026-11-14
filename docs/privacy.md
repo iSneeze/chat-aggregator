@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy policy
 
-_Effective 2026-11-08._
+_Effective 2026-11-14._
 
 chat-aggregator is a program that runs **on your own computer**. It has no
 servers, no user accounts and no analytics. The developers never receive
@@ -90,14 +90,21 @@ keeps only the tips: each tipper's name, amount, currency and message.
   is kept the same way, under the name you gave that account in the app,
   until you remove that source (which deletes it). It is never written to
   the settings file; the name is.
+- A copied profile shares its tip sources, and with them their tokens: a
+  token is deleted once no source of any profile uses it any more
+  (removing the last such source, or deleting the last profile with one).
 - **Your settings** (for example your Google project's client id and
   secret, an optional API key, channel names, overlay theme, a copy of your
   custom emoji list) are stored in chat-aggregator's settings folder on your
-  computer.
+  computer: what all profiles share in `config.toml`, and each profile's
+  sources and settings in its own file in the `profiles` folder, until you
+  delete that profile in the app. Settings from a version before profiles
+  are kept as they were in `config.old.toml`, for going back; delete it
+  whenever you like.
 - **Widgets you import** (web pages that show chat their own way, see
   [Widgets](widgets.md)) are copied into the `widgets` folder in the
   settings folder, and the settings you pick for widgets are stored in the
-  settings file, until you remove the widget in the app.
+  profile's file, until you remove the widget in the app.
 - **Learned emoji** (codes like `:_hypeWave:` and their picture links) are
   stored per channel in the `youtube-emojis` folder in the settings folder,
   so they work right away next time. They stay until you delete that

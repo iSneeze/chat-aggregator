@@ -112,9 +112,9 @@ impl Draft {
             api: server.api,
             api_key: settings.youtube.api_key.clone().unwrap_or_default(),
             learn_emojis: settings.youtube.learn_emojis,
-            hide: server.hide.clone(),
-            tip_currency: settings.tips.currency.clone(),
-            tip_tiers: settings.tips.tiers.map(|amount| amount.to_string()),
+            hide: settings.profile.overlay.hide.clone(),
+            tip_currency: settings.profile.tips.currency.clone(),
+            tip_tiers: settings.profile.tips.tiers.map(|amount| amount.to_string()),
         }
     }
 
@@ -152,10 +152,10 @@ impl Draft {
         // below move fields out of it.
         // Each on its own: a half-typed tier doesn't hold back the currency.
         if let Ok(currency) = self.tip_currency() {
-            settings.tips.currency = currency;
+            settings.profile.tips.currency = currency;
         }
         if let Ok(tiers) = self.tip_tiers() {
-            settings.tips.tiers = tiers;
+            settings.profile.tips.tiers = tiers;
         }
         let server = &mut settings.server;
         server.history = self.history;
@@ -163,7 +163,7 @@ impl Draft {
         server.stagger_max_ms = self.stagger_max_ms;
         server.port = self.port;
         server.api = self.api;
-        server.hide = self.hide;
+        settings.profile.overlay.hide = self.hide;
         settings.youtube.api_key = Some(self.api_key).filter(|key| !key.is_empty());
         settings.youtube.learn_emojis = self.learn_emojis;
     }
@@ -175,6 +175,9 @@ pub struct SettingsWindow {
     /// For reporting problems from places that don't get the window
     /// (the timer, the settings fields' callbacks).
     window: AnyWindowHandle,
+    /// The profile switch whose overlay and tip settings the draft holds
+    /// (`AppConfig::switches`).
+    loaded_for: u64,
     draft: Draft,
     /// The pending "apply the draft" timer. Storing a new one drops the old
     /// one, and dropping a GPUI `Task` cancels it: that's the whole debounce.
@@ -196,6 +199,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let draft = Draft::new(&config.read(cx).settings());
+        let loaded_for = config.read(cx).switches();
         // Our own input (not gpui-kit's settings text field) to mask it.
         let api_key = cx.new(|cx| {
             InputState::new(window, cx)
@@ -226,8 +230,16 @@ impl SettingsWindow {
                 }
             }),
             // The allowed sites change from the main window too ("Allow"
-            // in its question): redraw the list when they do.
-            cx.observe(&config, |_, _, cx| cx.notify()),
+            // in its question): redraw the list when they do. Another
+            // profile brings its own overlay and tip settings.
+            cx.observe_in(&config, window, |this, config, window, cx| {
+                let switches = config.read(cx).switches();
+                if switches != this.loaded_for {
+                    this.loaded_for = switches;
+                    this.load_profile(window, cx);
+                }
+                cx.notify();
+            }),
             // Closing the window within the pause mustn't lose the last
             // edit: apply it now. (Problems then only go to the log: there's
             // no window left to show them in.)
@@ -250,6 +262,7 @@ impl SettingsWindow {
             engine,
             config,
             window: window.window_handle(),
+            loaded_for,
             draft,
             pending: None,
             dirty: false,
@@ -289,6 +302,51 @@ impl SettingsWindow {
             move |settings| draft.write_to(settings),
             cx,
         );
+    }
+
+    /// Applies edits still waiting for the typing pause right away: before
+    /// a profile switch, so they reach the profile they were made in.
+    pub(crate) fn flush(&mut self, cx: &mut App) {
+        if self.dirty {
+            self.pending = None;
+            self.apply(cx);
+        }
+    }
+
+    /// Types `text` as the tip currency, as if by hand: for tests outside
+    /// this module (the main window's profile switch).
+    #[cfg(test)]
+    pub(crate) fn type_tip_currency(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.to_string();
+        self.tip_currency
+            .update(cx, |input, cx| input.set_value(text.clone(), window, cx));
+        // `set_value` doesn't report a change (only typing does): say it.
+        self.change(|draft| draft.tip_currency = text, cx);
+    }
+
+    /// Another profile is active: the draft takes its overlay and tip
+    /// settings (the rest is shared by all profiles, and stays). Anything
+    /// still pending was flushed before the switch (`flush`).
+    fn load_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let fresh = Draft::new(&self.config.read(cx).settings());
+        self.pending = None;
+        self.dirty = false;
+        self.draft.hide = fresh.hide;
+        self.draft.tip_currency = fresh.tip_currency.clone();
+        self.draft.tip_tiers = fresh.tip_tiers.clone();
+        // `set_value` doesn't report a change (only typing does), so the
+        // draft isn't marked as edited by this.
+        self.tip_currency.update(cx, |input, cx| {
+            input.set_value(fresh.tip_currency, window, cx)
+        });
+        for (input, tier) in self.tip_tiers.iter().zip(fresh.tip_tiers) {
+            input.update(cx, |input, cx| input.set_value(tier, window, cx));
+        }
     }
 
     fn set_api(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -371,6 +429,7 @@ impl SettingsWindow {
     fn pages(&self, cx: &mut Context<Self>) -> Vec<SettingPage> {
         let view = cx.entity().downgrade();
         let settings_dir = self.config.read(cx).settings_dir();
+        let profile = self.config.read(cx).profile();
 
         let look = {
             let (read, write) = (view.clone(), view.clone());
@@ -569,12 +628,13 @@ impl SettingsWindow {
                     ]),
                 SettingGroup::new()
                     .title("Platforms shown")
-                    .description(
+                    .description(format!(
                         "Switched off: that platform's messages stay out of the overlay. \
                          Chat reactions and the JSON API still get them. Applies to new \
                          messages right away; an overlay URL with ?hide=… chooses for \
-                         itself.",
-                    )
+                         itself. Saved with the profile \"{profile}\", as is everything \
+                         below."
+                    ))
                     .items(SHOWN_PLATFORMS.iter().map(|(label, items)| {
                         SettingItem::new(*label, shown_switch(&view, items).default_value(true))
                     })),
@@ -587,15 +647,18 @@ impl SettingsWindow {
                     })),
             ]),
             SettingPage::new("Paid messages").groups([
-                SettingGroup::new().title("Tips").item(
-                    SettingItem::new("Tip currency", tip_currency).description(
+                SettingGroup::new()
+                    .title("Tips")
+                    .description(format!(
+                        "Saved with the profile \"{profile}\", as are the tiers."
+                    ))
+                    .item(SettingItem::new("Tip currency", tip_currency).description(
                         "Your tip page's currency (StreamElements, Streamlabs), as 3 letters \
                          (EUR, USD). Nothing is converted: StreamElements tips show in it, \
                          and amount rules count Super Chats in it too. A Streamlabs tip in \
                          another currency gets tier 1. Empty: StreamElements tips show as \
                          plain numbers.",
-                    ),
-                ),
+                    )),
                 SettingGroup::new()
                     .title("Tiers")
                     .description(
@@ -915,8 +978,12 @@ mod tests {
             self.engine.hub().subscribe().0.len()
         }
 
-        fn saved(&self) -> Option<ConfigFile> {
-            ConfigFile::load(&self.path).ok()
+        /// The settings as saved (both files), `None` before the first
+        /// save.
+        fn saved(&self) -> Option<chat_engine::Settings> {
+            let dir = self.path.parent().unwrap();
+            let loaded = ConfigFile::load(&self.path, None).ok()?;
+            Some(loaded.into_engine_config(dir).settings)
         }
     }
 
@@ -967,7 +1034,7 @@ mod tests {
         type_tip(&ui, cx, None, "eur");
         cx.executor().advance_clock(APPLY_AFTER * 2);
         run_until(cx, || ui.saved().is_some());
-        let saved = ui.saved().unwrap().tips;
+        let saved = ui.saved().unwrap().profile.tips;
         assert_eq!(saved.currency, "EUR", "the currency, in capitals");
         assert_eq!(
             saved.tiers,
@@ -981,10 +1048,13 @@ mod tests {
         cx.executor().advance_clock(APPLY_AFTER * 2);
         run_until(cx, || {
             ui.saved()
-                .is_some_and(|f| f.tips.tiers[2] == Amount::whole(12))
+                .is_some_and(|f| f.profile.tips.tiers[2] == Amount::whole(12))
         });
-        assert_eq!(ui.engines().tips.tier(Amount::whole(12)), 4);
-        assert_eq!(ui.engines().tips.tier(Amount::of(11.99).unwrap()), 3);
+        assert_eq!(ui.engines().profile.tips.tier(Amount::whole(12)), 4);
+        assert_eq!(
+            ui.engines().profile.tips.tier(Amount::of(11.99).unwrap()),
+            3
+        );
     }
 
     #[gpui_kit::test]
@@ -994,7 +1064,7 @@ mod tests {
         cx.executor().advance_clock(APPLY_AFTER * 2);
         run_until(cx, || {
             ui.saved()
-                .is_some_and(|f| f.tips.tiers[5] == Amount::whole(500))
+                .is_some_and(|f| f.profile.tips.tiers[5] == Amount::whole(500))
         });
         // What the table's button does (the table is on another page than
         // the one the window opens on).
@@ -1004,7 +1074,9 @@ mod tests {
         })
         .unwrap();
         cx.executor().advance_clock(APPLY_AFTER * 2);
-        run_until(cx, || ui.saved().is_some_and(|f| f.tips.is_default()));
+        run_until(cx, || {
+            ui.saved().is_some_and(|f| f.profile.tips.is_default())
+        });
     }
 
     #[gpui_kit::test]
@@ -1089,28 +1161,35 @@ mod tests {
     #[gpui_kit::test]
     fn what_the_overlay_shows_applies_at_once_and_is_saved(cx: &mut TestAppContext) {
         let ui = open(cx, "hide");
-        assert!(ui.engines().server.hide.is_empty(), "everything by default");
+        assert!(
+            ui.engines().profile.overlay.hide.is_empty(),
+            "everything by default"
+        );
         ui.view().update(cx, |this, cx| {
             this.set_shown(&[Hide::StreamElements], false, cx)
         });
         run_until(cx, || {
             ui.saved()
-                .is_some_and(|f| f.server.hide == [Hide::StreamElements])
+                .is_some_and(|f| f.profile.overlay.hide == [Hide::StreamElements])
         });
         // "Chat" hides emote-only messages too; kept sorted.
         ui.view().update(cx, |this, cx| {
             this.set_shown(&[Hide::Text, Hide::EmoteOnly], false, cx)
         });
         let all = [Hide::StreamElements, Hide::Text, Hide::EmoteOnly];
-        run_until(cx, || ui.saved().is_some_and(|f| f.server.hide == all));
-        assert_eq!(ui.engines().server.hide, all);
+        run_until(cx, || {
+            ui.saved().is_some_and(|f| f.profile.overlay.hide == all)
+        });
+        assert_eq!(ui.engines().profile.overlay.hide, all);
 
         // Back on.
         ui.view().update(cx, |this, cx| {
             this.set_shown(&[Hide::StreamElements], true, cx)
         });
         let chat = [Hide::Text, Hide::EmoteOnly];
-        run_until(cx, || ui.saved().is_some_and(|f| f.server.hide == chat));
+        run_until(cx, || {
+            ui.saved().is_some_and(|f| f.profile.overlay.hide == chat)
+        });
     }
 
     #[gpui_kit::test]

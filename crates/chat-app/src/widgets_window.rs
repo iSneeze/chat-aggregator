@@ -300,6 +300,9 @@ pub struct WidgetsWindow {
     /// The overlay's address (`http://127.0.0.1:7878/`): the widgets are
     /// served next to it, so their URLs follow a new port.
     server: String,
+    /// The profile switch whose widget values the form shows
+    /// (`AppConfig::switches`).
+    loaded_for: u64,
     entries: Vec<Entry>,
     /// The widget shown on the right, by name.
     selected: String,
@@ -325,10 +328,21 @@ impl WidgetsWindow {
     ) -> Self {
         let entries = scan(&config.read(cx).widgets_dir());
         let server = engine.status().borrow().overlay_url.clone();
+        let loaded_for = config.read(cx).switches();
         let subscriptions = vec![
             // The JSON API switched on, here or in the settings: the
-            // banner goes.
-            cx.observe(&config, |_, _, cx| cx.notify()),
+            // banner goes. Another profile: its values in the form.
+            cx.observe_in(&config, window, |this, config, window, cx| {
+                let switches = config.read(cx).switches();
+                if switches != this.loaded_for {
+                    this.loaded_for = switches;
+                    let saved = config.read(cx).settings().profile.widgets;
+                    let values = saved.get(&this.selected).cloned().unwrap_or_default();
+                    // Anything typed was flushed before the switch.
+                    this.open_form(values, window, cx);
+                }
+                cx.notify();
+            }),
             // Back from editing a widget's file or the widgets folder: show
             // them as they are now.
             cx.observe_window_activation(window, |this, window, cx| {
@@ -354,6 +368,7 @@ impl WidgetsWindow {
             config,
             window: window.window_handle(),
             server,
+            loaded_for,
             entries,
             selected: String::new(),
             form: None,
@@ -401,7 +416,14 @@ impl WidgetsWindow {
         if self.dirty {
             self.apply(cx);
         }
-        let saved = self.config.read(cx).settings().widgets.get(&name).cloned();
+        let saved = self
+            .config
+            .read(cx)
+            .settings()
+            .profile
+            .widgets
+            .get(&name)
+            .cloned();
         self.selected = name;
         self.open_form(saved.unwrap_or_default(), window, cx);
     }
@@ -448,6 +470,7 @@ impl WidgetsWindow {
                     .config
                     .read(cx)
                     .settings()
+                    .profile
                     .widgets
                     .get(&self.selected)
                     .cloned()
@@ -617,7 +640,7 @@ impl WidgetsWindow {
             &self.engine,
             window.window_handle(),
             move |s| {
-                s.widgets.remove(&name);
+                s.profile.widgets.remove(&name);
             },
             cx,
         );
@@ -668,7 +691,7 @@ impl WidgetsWindow {
             &self.engine,
             window.window_handle(),
             move |s| {
-                s.widgets.remove(&name);
+                s.profile.widgets.remove(&name);
             },
             cx,
         );
@@ -734,6 +757,15 @@ impl WidgetsWindow {
         cx.notify();
     }
 
+    /// Applies what's typed right away, without waiting for the pause:
+    /// before a profile switch, so it reaches the profile it was typed in.
+    pub(crate) fn flush(&mut self, cx: &mut App) {
+        if self.dirty {
+            self.pending = None;
+            self.apply(cx);
+        }
+    }
+
     /// A switch or choice: applies at once, along with what's typed.
     fn pick(&mut self, setting: usize, value: Value, cx: &mut Context<Self>) {
         let Some(form) = &mut self.form else {
@@ -766,9 +798,9 @@ impl WidgetsWindow {
             self.window,
             move |s| {
                 if values.is_empty() {
-                    s.widgets.remove(&name);
+                    s.profile.widgets.remove(&name);
                 } else {
-                    s.widgets.insert(name, values);
+                    s.profile.widgets.insert(name, values);
                 }
             },
             cx,
@@ -1189,7 +1221,7 @@ mod tests {
 
         /// The values the engine has for the widget `name`.
         fn saved(&self, name: &str) -> Option<Values> {
-            self.settings().widgets.get(name).cloned()
+            self.settings().profile.widgets.get(name).cloned()
         }
 
         fn saved_value(&self, name: &str, setting: &str) -> Option<Value> {
@@ -1405,8 +1437,9 @@ mod tests {
         assert_eq!(clipboard(cx), Some(format!("{base}?mode=calm&size=72")));
         let file = ui.dir.join("config.toml");
         run_until(cx, |_| {
-            ConfigFile::load(&file)
-                .is_ok_and(|f| f.widgets["live-emoji"].get("size") == Some(&Value::Number(72.)))
+            ConfigFile::load(&file, None).is_ok_and(|f| {
+                f.profile.widgets["live-emoji"].get("size") == Some(&Value::Number(72.))
+            })
         });
 
         // Copy takes what's typed, within the pause too.
@@ -1515,7 +1548,11 @@ mod tests {
                 ("mode".to_string(), Value::Text("calm".into())),
                 ("size".to_string(), Value::Number(72.)),
             ]);
-            config.settings.widgets.insert("live-emoji".into(), values);
+            config
+                .settings
+                .profile
+                .widgets
+                .insert("live-emoji".into(), values);
         });
         let size = live_emoji("size");
         assert_eq!(shown(cx, &ui, size), "72");
@@ -1539,7 +1576,8 @@ mod tests {
         assert_eq!(shown(cx, &ui, size), "56", "the block's default");
         let file = ui.dir.join("config.toml");
         run_until(cx, |_| {
-            ConfigFile::load(&file).is_ok_and(|f| !f.widgets.contains_key("live-emoji"))
+            ConfigFile::load(&file, None)
+                .is_ok_and(|f| !f.profile.widgets.contains_key("live-emoji"))
         });
         // The typed "100" was dropped, not saved after all.
         cx.executor().advance_clock(APPLY_AFTER * 2);
@@ -1562,7 +1600,11 @@ mod tests {
     fn a_typed_value_that_doesnt_fit_is_not_saved(cx: &mut TestAppContext) {
         let ui = open(cx, |config, _| {
             let values = Values::from([("size".to_string(), Value::Number(72.))]);
-            config.settings.widgets.insert("live-emoji".into(), values);
+            config
+                .settings
+                .profile
+                .widgets
+                .insert("live-emoji".into(), values);
         });
         let size = live_emoji("size");
         for typed in ["9999", "big"] {
@@ -1698,7 +1740,11 @@ mod tests {
             std::fs::write(widgets.join("test-widget.html"), page("Test Widget", 56)).unwrap();
             std::fs::write(widgets.join("broken.html"), "<p>Not a widget.</p>").unwrap();
             let values = Values::from([("size".to_string(), Value::Number(72.))]);
-            config.settings.widgets.insert("test-widget".into(), values);
+            config
+                .settings
+                .profile
+                .widgets
+                .insert("test-widget".into(), values);
         });
         assert_eq!(names(cx, &ui), listed(&["broken", "test-widget"]));
         let has_remove = |cx: &mut TestAppContext| {

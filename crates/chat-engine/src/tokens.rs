@@ -8,6 +8,7 @@
 use chat_core::SetupError;
 use tracing::warn;
 
+use crate::actor::Command;
 use crate::{EngineHandle, SourceConfig, SourceId};
 
 impl EngineHandle {
@@ -45,21 +46,21 @@ impl EngineHandle {
             .await?
     }
 
-    /// After source `removed` (with settings `config`) was removed: deletes
-    /// the token it used, unless another source still uses it. A failure is
-    /// only logged: the source is gone either way, and adding it again
-    /// replaces the token.
-    pub(crate) async fn forget_secrets_of(&self, removed: SourceId, config: &SourceConfig) {
+    /// After a source with settings `config` was removed (or a profile
+    /// with it deleted): deletes the token it used, unless another source
+    /// still uses it, in any profile. A failure is only logged: the source
+    /// is gone either way, and adding it again replaces the token.
+    pub(crate) async fn forget_secrets_of(&self, config: &SourceConfig) {
         let Some(name) = config.token().map(|token| token.secret_name) else {
             return;
         };
-        // The status may not show the removal yet (it's published after the
-        // actor's answer), hence the id check.
-        let still_used = self.status.borrow().sources.iter().any(|source| {
-            source.id != removed
-                && (source.config.as_ref().and_then(SourceConfig::token))
-                    .is_some_and(|token| token.secret_name == name)
-        });
+        // Asked of the actor, which knows the other profiles' files too
+        // (a copied profile shares its tip sources' tokens). If it's gone,
+        // kept: better an unused token than a missing one.
+        let still_used = self
+            .call(|reply| Command::SecretInUse(name.clone(), reply))
+            .await
+            .unwrap_or(true);
         if still_used {
             return;
         }

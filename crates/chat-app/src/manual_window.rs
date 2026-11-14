@@ -250,7 +250,7 @@ impl ManualWindow {
                 let amount: Amount = value(&self.amount)
                     .parse()
                     .map_err(|e| format!("the amount: {e}"))?;
-                let tips = self.engine.settings().borrow().tips.clone();
+                let tips = self.engine.settings().borrow().profile.tips.clone();
                 let mut kind = donation(self.platform, amount, &tips)?;
                 // "none": a theme's look without a tier (like a YouTube
                 // jewel gift's).
@@ -369,7 +369,7 @@ impl ManualWindow {
 
     /// The amount, with what it's in next to it.
     fn amount_field(&self, cx: &App) -> impl IntoElement + use<> {
-        let tips = self.engine.settings().borrow().tips.clone();
+        let tips = self.engine.settings().borrow().profile.tips.clone();
         let control = h_flex()
             .gap_2()
             .items_center()
@@ -733,9 +733,9 @@ mod tests {
     fn test_tips_follow_the_tip_settings(cx: &mut TestAppContext) {
         let ui = open(cx);
         let settings = ui.engine.handle().edit_settings(|s| {
-            s.tips.currency = "EUR".into();
+            s.profile.tips.currency = "EUR".into();
             // Tier 5 from 69.
-            s.tips.tiers = [3, 6, 9, 69, 100, 420].map(chat_core::tiers::Amount::whole);
+            s.profile.tips.tiers = [3, 6, 9, 69, 100, 420].map(chat_core::tiers::Amount::whole);
         });
         ui.runtime.block_on(settings).unwrap();
         cx.update_window(ui.window.into(), |_, window, cx| {

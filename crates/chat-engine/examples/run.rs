@@ -1,18 +1,26 @@
 //! Runs the engine headless: sources in, overlay out, status in the terminal.
 //!
 //!   cargo run -p chat-engine --example run                  # everything from your config file
-//!   cargo run -p chat-engine --example run -- --init-config # create a commented config file
-//!   cargo run -p chat-engine --example run -- --demo        # quick test, ignores the file's sources
+//!   cargo run -p chat-engine --example run -- --init-config # create commented config files
+//!   cargo run -p chat-engine --example run -- --demo        # quick test, ignores the profile's sources
+//!   cargo run -p chat-engine --example run -- --profile Indie   # another profile than the active one
 //!
 //! Then add http://127.0.0.1:7878/ as a Browser Source in OBS.
 //!
-//! Settings ([server], [youtube]) come from the config file: `--config <file>`,
-//! or the default one (~/.config/chat-aggregator/config.toml on Linux) if it
-//! exists. Its [[sources]] are used unless you give source flags, which then
-//! replace them. Other flags override the file.
+//! Settings come from the config file (`--config <file>`, or the default one,
+//! ~/.config/chat-aggregator/config.toml on Linux, if it exists): [server] and
+//! [youtube] from it, the overlay look, tips, reactions and [[sources]] from
+//! the active profile's file next to it (profiles/<name>.toml; the profile
+//! config.toml names, or `--profile`). The profile's [[sources]] are used
+//! unless you give source flags, which then replace them. Other flags
+//! override the files. Headless mode never writes them: a config file from
+//! before profiles is read as it is (only as its own profile), and the app
+//! converts it.
 //!
 //!   --config <file>       use this config file
-//!   --init-config [file]  write a commented config file (default location) and exit
+//!   --profile <name>      use this profile instead of the one config.toml names
+//!   --init-config [file]  write a commented config file and its first profile
+//!                         (default location) and exit
 //!
 //! Flags (combine freely; --twitch, --youtube, --picarto and --streamlabs may
 //! repeat):
@@ -30,7 +38,7 @@
 //!                         its token first, see below)
 //!   --theme <name|dir>    overlay theme: "minimal" (built in), a folder name in
 //!                         "themes" next to the config file, or a path to any
-//!                         theme folder (like `theme` in the config file)
+//!                         theme folder (like `theme` in the profile's [overlay])
 //!   --port <n>            default 7878
 //!   --history <n>         messages replayed to a new overlay, default 20
 //!   --stagger <ms>        spacing of message bursts in the overlay, default 250 (0 = off)
@@ -76,8 +84,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use chat_engine::widgets::{self, Widget};
 use chat_engine::{
-    ConfigFile, Engine, EngineConfig, Health, Newest, OBS_PASSWORD, SecretStore, SourceConfig,
-    Status, YouTubeChannel, YouTubeSettings,
+    ConfigFile, DEFAULT_PROFILE, Engine, EngineConfig, Health, Newest, OBS_PASSWORD, SecretStore,
+    SourceConfig, Status, YouTubeChannel, YouTubeSettings,
 };
 use chat_youtube::oauth::{self, Account, OAuthApp};
 
@@ -96,9 +104,11 @@ async fn main() -> anyhow::Result<()> {
             None => ConfigFile::default_path()?,
         };
         ConfigFile::write_template(&path)?;
+        let dir = path.parent().unwrap_or(Path::new(""));
         println!(
-            "wrote {}; edit it, then start without arguments",
-            path.display()
+            "wrote {} and {}; edit them, then start without arguments",
+            path.display(),
+            ConfigFile::profile_path(dir, DEFAULT_PROFILE).display()
         );
         return Ok(());
     }
@@ -159,10 +169,14 @@ async fn main() -> anyhow::Result<()> {
     }
     if config.sources.is_empty() {
         bail!(
-            "no sources: add [[sources]] to your config file (create one with --init-config), \
-             or try --demo (see the top of examples/run.rs)"
+            "no sources in profile \"{}\": add [[sources]] to its file (profiles/{}.toml next \
+             to the config file; create both with --init-config), or try --demo (see the top \
+             of examples/run.rs)",
+            config.profile,
+            config.profile
         );
     }
+    println!("  profile:  {}", config.profile);
 
     let api = config.settings.server.api;
     let widgets_dir = config.widgets_dir.clone();
@@ -266,10 +280,11 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
         Some(path) => PathBuf::from(path),
         None => ConfigFile::default_path()?,
     };
+    let profile = flag_value(args, "--profile")?;
     let mut file = if flag_value(args, "--config")?.is_some() {
-        ConfigFile::load(&config_path)?
+        ConfigFile::load(&config_path, profile)?
     } else {
-        ConfigFile::load_or_default(&config_path)?
+        ConfigFile::load_or_default(&config_path, profile)?
     };
     // Themes live next to the config file.
     let settings_dir = config_path
@@ -280,10 +295,16 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
     let mut flag_sources = Vec::new();
     let mut args = args.iter().cloned().peekable();
     while let Some(flag) = args.next() {
-        let server = &mut file.server;
+        // Two `&mut` into `file` at once are fine: they borrow different
+        // fields, which the compiler can tell apart.
+        let server = &mut file.config.server;
+        let overlay = &mut file.profile.overlay;
         match flag.as_str() {
             "--config" => {
                 next_value(&mut args, "--config")?; // already loaded above
+            }
+            "--profile" => {
+                next_value(&mut args, "--profile")?; // same
             }
             "--youtube-login" => {}
             // Its channel id, if any, was read above.
@@ -314,7 +335,7 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
             // A theme name, or a path to any theme folder.
             "--theme" => {
                 let theme = next_value(&mut args, "--theme")?;
-                server.theme = Some(if theme.contains(['/', '\\']) {
+                overlay.theme = Some(if theme.contains(['/', '\\']) {
                     // A path as typed here means "from where I am"; in the
                     // settings, only a full path does (a relative one would
                     // be a folder inside "themes").
@@ -333,7 +354,7 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
             "--stagger-max" => server.stagger_max_ms = parse(&mut args, "--stagger-max")?,
             "--api" => server.api = true,
             "--newest" => {
-                server.newest = match next_value(&mut args, "--newest")?.as_str() {
+                overlay.newest = match next_value(&mut args, "--newest")?.as_str() {
                     "bottom" => Newest::Bottom,
                     "top" => Newest::Top,
                     other => bail!("--newest takes bottom or top, not {other:?}"),
@@ -345,9 +366,9 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
     // Source flags replace the file's sources, so a quick `--demo` doesn't
     // also start everything from your config.
     if !flag_sources.is_empty() {
-        file.sources = flag_sources.into_iter().map(Into::into).collect();
+        file.profile.sources = flag_sources.into_iter().map(Into::into).collect();
     }
-    apply_env(&mut file.youtube);
+    apply_env(&mut file.config.youtube);
     Ok(file.into_engine_config(&settings_dir))
 }
 

@@ -15,8 +15,9 @@ editor, share, and switch between in the app.
   owner. Donations show their amount in the platform's tier colour, subs
   and gifts in green, all in the same line.
 
-Pick them in the app's theme list, or `theme = "minimal"` in
-`config.toml`. They're built into the app and improve with its updates,
+Pick them in the app's theme list, or `theme = "minimal"` under
+`[overlay]` in a profile's file (`profiles/<name>.toml`). Each profile has
+its own theme. They're built into the app and improve with its updates,
 so they can't be edited in place; **New theme…** starts a folder of your
 own from a copy of Default.
 
@@ -38,7 +39,7 @@ themes/
 The folder name is the theme's name. Every file is optional: anything a
 theme doesn't have comes from the built-in theme. Most themes only need
 `overlay.css`. (A theme folder somewhere else works too: put its full path
-in `config.toml`, e.g. `theme = "/home/me/obs/my-theme"`.)
+in the profile's file, e.g. `theme = "/home/me/obs/my-theme"`.)
 
 ## Making a theme
 
