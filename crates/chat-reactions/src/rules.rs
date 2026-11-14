@@ -98,9 +98,9 @@ pub enum Compare {
     Exactly,
 }
 
-/// Who may fire a rule, and how often. A struct rather than a list of
-/// guards: each guard exists once, and "all of them must pass" needs no
-/// explaining. A list could hold two contradicting role guards.
+/// Who may fire a rule, how many must, and how often. A struct rather than
+/// a list of guards: each guard exists once, and "all of them must pass"
+/// needs no explaining. A list could hold two contradicting role guards.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Guards {
@@ -109,11 +109,39 @@ pub struct Guards {
     /// Only messages from these platforms; empty: all.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<ChatPlatform>,
+    /// Fires only once enough different chatters triggered it (see
+    /// [`Crowd`]); `None`: the first one does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crowd: Option<Crowd>,
     /// After firing, the rule rests this long, whoever triggers it.
     pub cooldown_secs: u32,
     /// After firing for a chatter, the rule rests this long for them.
     pub user_cooldown_secs: u32,
 }
+
+/// "10 different chatters within 30 seconds": a rule for the chat as a
+/// whole. One chatter repeating it counts once, so nobody fires it alone,
+/// and chatters from every platform add up.
+///
+/// One struct in an `Option` rather than two numbers with "0 is off": the
+/// two only mean something together, and this way a crowd can't exist
+/// with one of them missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Crowd {
+    /// How many different chatters, from 2 to [`MAX_CROWD`].
+    pub chatters: usize,
+    /// Within how many seconds, counted back from the latest one: 1 to
+    /// [`MAX_CROWD_SECS`].
+    pub within_secs: u32,
+}
+
+/// The biggest crowd. More is almost certainly a typo, and it also caps
+/// how many chatters a rule has to remember while one gathers.
+pub const MAX_CROWD: usize = 1000;
+
+/// The longest a crowd may take to gather: an hour, like effects.
+pub const MAX_CROWD_SECS: u32 = 3600;
 
 impl Guards {
     /// No guards at all: not written to the file.
@@ -267,6 +295,23 @@ impl Rule {
             }
             _ => {}
         }
+        if let Some(crowd) = &self.guards.crowd {
+            // A crowd of one is just the rule without a crowd.
+            if !(2..=MAX_CROWD).contains(&crowd.chatters) {
+                return Err("a crowd is 2 to 1000 chatters");
+            }
+            if !(1..=MAX_CROWD_SECS).contains(&crowd.within_secs) {
+                return Err("a crowd gathers within 1 to 3600 seconds");
+            }
+            // Each chatter counts once already, and which of them a
+            // per-chatter cooldown should rest after firing has no clear
+            // answer.
+            if self.guards.user_cooldown_secs > 0 {
+                return Err(
+                    "a crowd counts each chatter once already: leave the per-chatter cooldown at 0",
+                );
+            }
+        }
         let empty = |name: &str| name.trim().is_empty();
         let (names, seconds) = match &self.action {
             Action::Warudo { action } => (vec![action], None),
@@ -393,6 +438,10 @@ struct RuleState {
     /// When the rule last fired for each chatter. Chatter ids are only
     /// unique within a platform, hence the pair.
     users: HashMap<(ChatPlatform, String), Instant>,
+    /// The crowd gathering so far: each chatter with when they last
+    /// joined in. Never more than the crowd's size, since it starts over
+    /// once it's complete.
+    crowd: HashMap<(ChatPlatform, String), Instant>,
     /// Since the engine started, for the status.
     fired: u64,
 }
@@ -440,7 +489,14 @@ impl Rules {
             }
             let state = self.state.entry(rule.name.clone()).or_default();
             let chatter = (msg.platform, msg.author.id.clone());
+            // Nothing counts towards a crowd while the rule rests, so it
+            // doesn't go off again the moment its cooldown ends.
             if state.resting(&rule.guards, &chatter, now) {
+                continue;
+            }
+            if let Some(crowd) = rule.guards.crowd
+                && !state.gathered(crowd, &chatter, now)
+            {
                 continue;
             }
             // Only now, with every guard passed, do the cooldowns start:
@@ -480,6 +536,23 @@ impl RuleState {
                 .users
                 .get(chatter)
                 .is_some_and(|&at| within(at, guards.user_cooldown_secs))
+    }
+
+    /// Counts `chatter` into the crowd; whether it's complete now. A
+    /// complete crowd starts over, or the next chatter would fire the rule
+    /// again at once.
+    fn gathered(&mut self, crowd: Crowd, chatter: &(ChatPlatform, String), now: Instant) -> bool {
+        // Those who joined in too long ago drop out first. A map rather
+        // than a list ordered by time: it's at most a crowd's size, and a
+        // chatter repeating themselves just moves their time forward.
+        let window = seconds(crowd.within_secs);
+        self.crowd.retain(|_, at| now.duration_since(*at) < window);
+        self.crowd.insert(chatter.clone(), now);
+        if self.crowd.len() < crowd.chatters {
+            return false;
+        }
+        self.crowd.clear();
+        true
     }
 
     fn record(&mut self, guards: &Guards, chatter: (ChatPlatform, String), now: Instant) {
@@ -841,6 +914,83 @@ pub(crate) mod tests {
         assert_eq!(list.check(&a, now).len(), 1);
         assert!(list.check(&a, after(now, 20)).is_empty(), "a still rests");
         assert_eq!(list.check(&b, after(now, 21)).len(), 1, "the rule doesn't");
+    }
+
+    fn crowd(chatters: usize, within_secs: u32) -> Guards {
+        Guards {
+            crowd: Some(Crowd {
+                chatters,
+                within_secs,
+            }),
+            ..Guards::default()
+        }
+    }
+
+    #[test]
+    fn a_crowd_fires_once_enough_different_chatters_join_in() {
+        let mut list = rules(vec![rule("f", command("F"), crowd(3, 30))]);
+        let start = Instant::now();
+        let f = |id: &str| by(message("F"), id, &[]);
+        assert!(list.check(&f("1"), start).is_empty());
+        assert!(
+            list.check(&f("1"), after(start, 1)).is_empty(),
+            "the same chatter again counts once"
+        );
+        let mut same_id_elsewhere = f("1");
+        same_id_elsewhere.platform = ChatPlatform::YouTube;
+        assert!(
+            list.check(&same_id_elsewhere, after(start, 2)).is_empty(),
+            "ids are per platform: that's a second chatter"
+        );
+        assert_eq!(names(list.check(&f("3"), after(start, 3))), ["f"]);
+        // Complete crowds start over: the next one doesn't fire it again.
+        assert!(list.check(&f("4"), after(start, 4)).is_empty());
+        assert!(list.check(&f("5"), after(start, 5)).is_empty());
+        assert_eq!(list.check(&f("6"), after(start, 6)).len(), 1);
+    }
+
+    #[test]
+    fn a_crowd_forgets_who_joined_in_too_long_ago() {
+        let mut list = rules(vec![rule("f", command("F"), crowd(2, 30))]);
+        let start = Instant::now();
+        let f = |id: &str| by(message("F"), id, &[]);
+        list.check(&f("1"), start);
+        assert!(
+            list.check(&f("2"), after(start, 30)).is_empty(),
+            "30 s later, the first one is out"
+        );
+        assert_eq!(list.check(&f("3"), after(start, 31)).len(), 1);
+
+        // Joining in again keeps a chatter in.
+        let mut list = rules(vec![rule("f", command("F"), crowd(2, 30))]);
+        list.check(&f("1"), start);
+        list.check(&f("1"), after(start, 25));
+        assert_eq!(list.check(&f("2"), after(start, 50)).len(), 1);
+    }
+
+    #[test]
+    fn a_crowd_counts_who_passes_the_guards_and_not_while_resting() {
+        let guards = Guards {
+            min_role: Role::Subscriber,
+            cooldown_secs: 60,
+            ..crowd(2, 600)
+        };
+        let mut list = rules(vec![rule("f", command("F"), guards)]);
+        let start = Instant::now();
+        let viewer = |id: &str| by(message("F"), id, &[]);
+        let sub = |id: &str| by(message("F"), id, &["subscriber"]);
+        assert!(list.check(&viewer("v1"), start).is_empty());
+        assert!(list.check(&sub("s1"), start).is_empty());
+        assert!(
+            list.check(&viewer("v2"), start).is_empty(),
+            "viewers don't count"
+        );
+        assert_eq!(list.check(&sub("s2"), start).len(), 1);
+        // Resting: this one doesn't count towards the next crowd...
+        assert!(list.check(&sub("s3"), after(start, 10)).is_empty());
+        // ...so the first one after the rest doesn't complete it.
+        assert!(list.check(&sub("s4"), after(start, 61)).is_empty());
+        assert_eq!(list.check(&sub("s5"), after(start, 62)).len(), 1);
     }
 
     #[test]

@@ -41,9 +41,9 @@ mod youtube;
 pub use chat_core::SetupError;
 pub use chat_core::secrets::SecretStore;
 pub use chat_reactions::{
-    Action, Compare, DEFAULT_OBS_URL, DEFAULT_WARUDO_URL, Guards, MAX_EFFECT_SECS, MAX_QUEUE_SECS,
-    OBS_PASSWORD, ObsSettings, OutputState, OutputStatus, ReactionSettings, ReactionStatus, Role,
-    Rule, RuleStatus, Target, Trigger, WarudoSettings,
+    Action, Compare, Crowd, DEFAULT_OBS_URL, DEFAULT_WARUDO_URL, Guards, MAX_EFFECT_SECS,
+    MAX_QUEUE_SECS, OBS_PASSWORD, ObsSettings, OutputState, OutputStatus, ReactionSettings,
+    ReactionStatus, Role, Rule, RuleStatus, Target, Trigger, WarudoSettings,
 };
 pub use chat_server::{ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource, widgets};
 pub use config::{SourceConfig, SourceToken, YouTubeSettings};

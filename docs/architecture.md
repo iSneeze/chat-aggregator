@@ -496,15 +496,27 @@ checked in this order:
    (a minimum count). Amount rules compare `value` as it is: bits as bits,
    money only in the tip currency (a ¥69 Super Chat isn't $69), so the
    reactor watches the tip settings too.
-2. **Guards**: who and how often. A minimum role, platforms, a cooldown
-   for the rule and one per chatter. A struct, not a list of guards: each
-   exists once, and "all must pass" needs no rules about duplicates.
+2. **Guards**: who, how many and how often. A minimum role, platforms, a
+   crowd, a cooldown for the rule and one per chatter. A struct, not a
+   list of guards: each exists once, and "all must pass" needs no rules
+   about duplicates.
    - **Roles** come from badges, which platforms name differently (Twitch
      `broadcaster`, YouTube `owner`): translated in one place
      (`Role::of`) into an ordered enum, so the guard is `role >= min_role`.
    - **Cooldowns start only when every guard has passed.** Otherwise a
      viewer spamming a mods-only command would keep it resting for the
      mods.
+   - **A crowd** ("10 different chatters within 30 s") makes a rule about
+     the chat as a whole. It counts chatters, not messages, by (platform,
+     user id): one person spamming counts once, so nobody fires it alone,
+     and Twitch and YouTube chatters add up, which a bot on one platform
+     can't do. Only messages that passed the role and platform guards
+     count, and none while the rule rests, so it doesn't go off the moment
+     its cooldown ends. A complete crowd fires and starts over. It's an
+     `Option<Crowd>` (both numbers or none) and remembers at most a
+     crowd's size of chatters, each with when they last joined in.
+     Refused together with a per-chatter cooldown: each chatter counts
+     once already, and which of them should rest has no clear answer.
 3. **Action**: what happens where (`target`). Every rule that matches
    fires, not just the first.
 
@@ -524,9 +536,9 @@ checked in this order:
   which is how a streamer tries a rule out.
 - **The rules are pure logic** (`rules.rs`): no network, and the time comes
   in as an argument, so "61 seconds later" is a plain unit test. Cooldowns
-  are remembered by rule name, so editing a rule doesn't reset them; per
-  chatter by (platform, user id), forgotten once over when the map grows
-  large.
+  (and a crowd gathering) are remembered by rule name, so editing a rule
+  doesn't reset them; per chatter by (platform, user id), forgotten once
+  over when the map grows large.
 - **Outputs own their connection.** Each is a task that connects, reports
   its state (a status light: red while the program can't be reached, as
   only the streamer can fix that), reconnects by itself with a short

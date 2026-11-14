@@ -116,7 +116,12 @@ queue_secs = 0
 # Guards (all optional):
 #   min_role = "everyone" | "subscriber" (= "member") | "vip" | "moderator" | "broadcaster"
 #   platforms = ["twitch", "youtube", "picarto", "streamelements", "streamlabs"]   (default: all)
-#   cooldown_secs = 10        the rule rests this long after firing
+#   crowd = { chatters = 10, within_secs = 30 }   fires only once 10 different
+#       chatters triggered it within 30 s (one chatter counts once; every
+#       platform adds up); then it starts counting again. Not together with
+#       user_cooldown_secs.
+#   cooldown_secs = 10        the rule rests this long after firing (nothing
+#       counts towards a crowd meanwhile)
 #   user_cooldown_secs = 60   ... and this long for the chatter who fired it
 # Actions (names exactly as in OBS):
 #   { target = "warudo", action = "throw_item" }
@@ -146,6 +151,12 @@ queue_secs = 0
 # trigger = { type = "paid_amount", amount = 69, compare = "exactly" }
 # guards = { platforms = ["streamelements"] }
 # action = { target = "obs_media", source = "Nice" }
+#
+# [[reactions.rules]]
+# name = "respects"
+# trigger = { type = "keyword", keyword = "F" }
+# guards = { crowd = { chatters = 10, within_secs = 30 }, cooldown_secs = 120 }
+# action = { target = "obs_source", scene = "Main", source = "Candles", seconds = 10 }
 
 # Widgets: pages that show chat their own way, at
 # http://127.0.0.1:7878/widgets/<name> (the built-in live-emoji and

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use chat_core::ChatPlatform;
 use chat_core::tiers::{Amount, TipSettings};
 use chat_engine::{
-    Action, Compare, EngineHandle, Guards, Health, MAX_QUEUE_SECS, ObsSettings, OutputState,
+    Action, Compare, Crowd, EngineHandle, Guards, Health, MAX_QUEUE_SECS, ObsSettings, OutputState,
     ReactionStatus, Role, Rule, Target, Trigger, WarudoSettings,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -138,6 +138,9 @@ struct Form {
     role: Role,
     /// The ticked ones; all ticked is the same as no platform guard.
     platforms: Vec<ChatPlatform>,
+    /// How many different chatters; empty: no crowd.
+    crowd: String,
+    crowd_secs: String,
     cooldown: String,
     user_cooldown: String,
     action: ActionKind,
@@ -163,6 +166,8 @@ impl Form {
             min_count: "1".into(),
             role: Role::Everyone,
             platforms: all_platforms(),
+            crowd: String::new(),
+            crowd_secs: String::new(),
             cooldown: "0".into(),
             user_cooldown: "0".into(),
             action: ActionKind::Warudo,
@@ -216,6 +221,10 @@ impl Form {
                 .into_iter()
                 .filter(|p| guards.platforms.contains(p))
                 .collect();
+        }
+        if let Some(crowd) = guards.crowd {
+            form.crowd = crowd.chatters.to_string();
+            form.crowd_secs = crowd.within_secs.to_string();
         }
         form.cooldown = guards.cooldown_secs.to_string();
         form.user_cooldown = guards.user_cooldown_secs.to_string();
@@ -301,9 +310,28 @@ impl Form {
         } else {
             self.platforms.clone()
         };
+        // Both numbers or neither: one alone is a half-typed crowd, not
+        // "no crowd".
+        let crowd = match (
+            optional_number(&self.crowd, "The crowd")?,
+            optional_number(&self.crowd_secs, "The crowd's seconds")?,
+        ) {
+            (None, None) => None,
+            (Some(chatters), Some(within_secs)) => Some(Crowd {
+                chatters: chatters as usize,
+                within_secs,
+            }),
+            (Some(_), None) => {
+                return Err("Enter within how many seconds the crowd must gather.".into());
+            }
+            (None, Some(_)) => {
+                return Err("Enter how many different chatters make the crowd.".into());
+            }
+        };
         let guards = Guards {
             min_role: self.role,
             platforms,
+            crowd,
             cooldown_secs: number(&self.cooldown, "The cooldown")?,
             user_cooldown_secs: number(&self.user_cooldown, "The per-chatter cooldown")?,
         };
@@ -377,6 +405,8 @@ struct Inputs {
     emote: Entity<InputState>,
     amount: Entity<InputState>,
     min_count: Entity<InputState>,
+    crowd: Entity<InputState>,
+    crowd_secs: Entity<InputState>,
     cooldown: Entity<InputState>,
     user_cooldown: Entity<InputState>,
     warudo_action: Entity<InputState>,
@@ -398,6 +428,8 @@ impl Inputs {
             emote: input("e.g. Kappa or :_hypeWave:"),
             amount: input("e.g. 69 or 4.20"),
             min_count: input("1"),
+            crowd: input("off"),
+            crowd_secs: input(""),
             cooldown: input("0"),
             user_cooldown: input("0"),
             warudo_action: input("the Action of an On WebSocket Action node"),
@@ -419,6 +451,8 @@ impl Inputs {
             emote: text(&self.emote),
             amount: text(&self.amount),
             min_count: text(&self.min_count),
+            crowd: text(&self.crowd),
+            crowd_secs: text(&self.crowd_secs),
             cooldown: text(&self.cooldown),
             user_cooldown: text(&self.user_cooldown),
             warudo_action: text(&self.warudo_action),
@@ -441,6 +475,8 @@ impl Inputs {
         set(&self.emote, &form.emote);
         set(&self.amount, &form.amount);
         set(&self.min_count, &form.min_count);
+        set(&self.crowd, &form.crowd);
+        set(&self.crowd_secs, &form.crowd_secs);
         set(&self.cooldown, &form.cooldown);
         set(&self.user_cooldown, &form.user_cooldown);
         set(&self.warudo_action, &form.warudo_action);
@@ -1216,6 +1252,17 @@ impl ReactionsWindow {
                             }))
                     }),
             );
+        let crowd = h_flex()
+            .gap_2()
+            .items_center()
+            .child(div().w(px(64.)).child(input(&i.crowd, "rule-crowd")))
+            .child(div().text_color(muted).child("different chatters within"))
+            .child(
+                div()
+                    .w(px(64.))
+                    .child(input(&i.crowd_secs, "rule-crowd-secs")),
+            )
+            .child(div().text_color(muted).child("s"));
         let cooldowns = h_flex()
             .gap_2()
             .items_center()
@@ -1276,6 +1323,7 @@ impl ReactionsWindow {
                         .child(trigger_field)
                         .child(labelled("Who", roles, cx))
                         .child(labelled("Where", platforms, cx))
+                        .child(labelled("Crowd", crowd, cx))
                         .child(labelled("Cooldown", cooldowns, cx))
                         .child(labelled("Then", actions, cx))
                         .children(action_fields)
@@ -1502,6 +1550,13 @@ fn summary(rule: &Rule) -> String {
         Trigger::Gift { min_count: 1 } => "gift".into(),
         Trigger::Gift { min_count } => format!("{min_count}+ gifts"),
     };
+    let when = match rule.guards.crowd {
+        Some(crowd) => format!(
+            "{when}, {} chatters in {} s",
+            crowd.chatters, crowd.within_secs
+        ),
+        None => when,
+    };
     let secs = |seconds: &Option<u32>| seconds.map(|s| format!(" for {s} s")).unwrap_or_default();
     let then = match &rule.action {
         Action::Warudo { action } => format!("Warudo {action}"),
@@ -1553,14 +1608,16 @@ mod tests {
 
     use chat_core::tiers::Amount;
     use chat_engine::{
-        Action, Compare, ConfigFile, Engine, EngineConfig, Guards, Rule, SecretStore, Settings,
-        Trigger,
+        Action, Compare, ConfigFile, Crowd, Engine, EngineConfig, Guards, Rule, SecretStore,
+        Settings, Trigger,
     };
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
 
-    use super::{ReactionsWindow, Tested, summary};
+    use gpui_kit::component::input::InputState;
+
+    use super::{Inputs, ReactionsWindow, Tested, summary};
     use crate::app_config::AppConfig;
 
     struct Ui {
@@ -1674,15 +1731,25 @@ mod tests {
         });
     }
 
-    /// Replaces a field's text (typing would add to it).
-    fn set_name(cx: &mut TestAppContext, ui: &Ui, name: &str) {
+    /// Replaces a field's text (typing would add to it). `field` picks
+    /// the field: a plain function pointer, as it borrows nothing.
+    fn set_text(
+        cx: &mut TestAppContext,
+        ui: &Ui,
+        field: fn(&Inputs) -> &Entity<InputState>,
+        text: &str,
+    ) {
         let view = ui.view.clone();
-        let name = name.to_string();
+        let text = text.to_string();
         cx.update_window(ui.window.into(), |_, window, cx| {
-            let input = view.read(cx).inputs.name.clone();
-            input.update(cx, |input, cx| input.set_value(name, window, cx));
+            let input = field(&view.read(cx).inputs).clone();
+            input.update(cx, |input, cx| input.set_value(text, window, cx));
         })
         .unwrap();
+    }
+
+    fn set_name(cx: &mut TestAppContext, ui: &Ui, name: &str) {
+        set_text(cx, ui, |inputs| &inputs.name, name);
     }
 
     fn dialog_open(cx: &mut TestAppContext, ui: &Ui) -> bool {
@@ -1844,6 +1911,41 @@ mod tests {
         let error = ui.view.read_with(cx, |view, _| view.form_error.clone());
         assert!(error.is_some_and(|e| e.contains("already")));
         assert_eq!(names(&ui), ["bonk"]);
+    }
+
+    #[gpui_kit::test]
+    fn a_crowd_takes_both_numbers_and_no_per_chatter_cooldown(cx: &mut TestAppContext) {
+        let ui = open(cx, &[]);
+        let error = |cx: &mut TestAppContext| ui.view.read_with(cx, |v, _| v.form_error.clone());
+        type_into(cx, &ui, "rule-name", "respects");
+        type_into(cx, &ui, "rule-command", "F");
+        type_into(cx, &ui, "rule-warudo-action", "candles");
+        // Half a crowd isn't saved as no crowd.
+        type_into(cx, &ui, "rule-crowd", "10");
+        act(cx, &ui, |window, cx| window.click("rule-save", cx));
+        assert!(error(cx).is_some_and(|e| e.contains("seconds")));
+        // Refused together (decided 2026-11-13), in config.toml's words.
+        type_into(cx, &ui, "rule-crowd-secs", "30");
+        type_into(cx, &ui, "rule-user-cooldown", "5"); // "05"
+        act(cx, &ui, |window, cx| window.click("rule-save", cx));
+        assert!(error(cx).is_some_and(|e| e.contains("per-chatter")));
+        assert!(names(&ui).is_empty());
+
+        set_text(cx, &ui, |inputs| &inputs.user_cooldown, "0");
+        act(cx, &ui, |window, cx| window.click("rule-save", cx));
+        run_until(cx, |_| !names(&ui).is_empty());
+        let saved = settings(&ui).reactions.rules[0].clone();
+        assert_eq!(
+            saved.guards.crowd,
+            Some(Crowd {
+                chatters: 10,
+                within_secs: 30,
+            })
+        );
+        assert_eq!(summary(&saved), "F, 10 chatters in 30 s → Warudo candles");
+        // Loaded back into the form, it reads the same: nothing unsaved.
+        run_until(cx, |cx| editing(cx, &ui).as_deref() == Some("respects"));
+        assert!(!ui.view.read_with(cx, |view, cx| view.unsaved(cx)));
     }
 
     #[gpui_kit::test]

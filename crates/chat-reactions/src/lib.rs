@@ -24,7 +24,10 @@ mod rules;
 mod warudo;
 
 pub use reactor::{OutputState, OutputStatus, ReactionRequest, ReactionStatus, RuleStatus, run};
-pub use rules::{Action, Compare, Guards, MAX_EFFECT_SECS, Role, Rule, Target, Trigger};
+pub use rules::{
+    Action, Compare, Crowd, Guards, MAX_CROWD, MAX_CROWD_SECS, MAX_EFFECT_SECS, Role, Rule, Target,
+    Trigger,
+};
 
 /// Warudo's own default: its "On WebSocket Action" blueprint node listens
 /// here.
@@ -193,9 +196,30 @@ mod tests {
             name = "big tip"
             trigger = { type = "paid_amount", amount = 50.5 }
             action = { target = "obs_media", source = "Wow" }
+
+            [[rules]]
+            name = "respects"
+            trigger = { type = "keyword", keyword = "F" }
+            guards = { crowd = { chatters = 10, within_secs = 30 }, cooldown_secs = 120 }
+            action = { target = "obs_source", scene = "Main", source = "Candles", seconds = 10 }
             "#,
         )
         .unwrap();
+        assert_eq!(
+            settings.rules[7].guards,
+            Guards {
+                crowd: Some(Crowd {
+                    chatters: 10,
+                    within_secs: 30,
+                }),
+                cooldown_secs: 120,
+                ..Guards::default()
+            }
+        );
+        assert_eq!(
+            settings.rules[0].guards.crowd, None,
+            "no crowd: one will do"
+        );
         assert!(settings.paused);
         assert_eq!(settings.warudo.url, "ws://192.168.1.20:19190");
         assert_eq!(settings.warudo.queue_secs, 30);
@@ -288,6 +312,8 @@ mod tests {
             "[[rules]]\nname = \"a\"\ntrigger = { type = \"command\", comand = \"!a\" }\naction = { target = \"warudo\", action = \"a\" }",
             "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\nguards = { cooldown = 5 }\naction = { target = \"warudo\", action = \"a\" }",
             "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\nguards = { min_role = \"mod\" }\naction = { target = \"warudo\", action = \"a\" }",
+            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\nguards = { crowd = { chatters = 3, within = 30 } }\naction = { target = \"warudo\", action = \"a\" }",
+            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\nguards = { crowd = { chatters = 3 } }\naction = { target = \"warudo\", action = \"a\" }",
             "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\naction = { target = \"warduo\", action = \"a\" }",
             "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\naction = { target = \"obs_filter\", source = \"Mic\", filtr = \"x\" }",
             "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\naction = { target = \"obs_media\", source = \"Mic\", seconds = 3 }",
@@ -318,8 +344,32 @@ mod tests {
             ..ReactionSettings::default()
         };
 
+        let crowd = |chatters, within_secs, user_cooldown_secs| Rule {
+            guards: Guards {
+                crowd: Some(Crowd {
+                    chatters,
+                    within_secs,
+                }),
+                user_cooldown_secs,
+                ..Guards::default()
+            },
+            ..rule("crowd", command("F"), "x")
+        };
+
         assert_eq!(with(vec![rule("a", command("!a"), "x")]).check(), Ok(()));
+        assert_eq!(with(vec![crowd(2, 1, 0)]).check(), Ok(()));
+        assert_eq!(
+            with(vec![crowd(MAX_CROWD, MAX_CROWD_SECS, 0)]).check(),
+            Ok(())
+        );
         let bad = [
+            // A crowd of one, or too big or too long to make sense.
+            with(vec![crowd(1, 30, 0)]),
+            with(vec![crowd(MAX_CROWD + 1, 30, 0)]),
+            with(vec![crowd(10, 0, 0)]),
+            with(vec![crowd(10, MAX_CROWD_SECS + 1, 0)]),
+            // Decided 2026-11-13: a crowd has no per-chatter cooldown.
+            with(vec![crowd(10, 30, 60)]),
             with(vec![rule(" ", command("!a"), "x")]),
             with(vec![
                 rule("a", command("!a"), "x"),
@@ -411,6 +461,12 @@ mod tests {
             enabled = false
             trigger = { type = "gift", min_count = 5 }
             action = { target = "warudo", action = "confetti" }
+
+            [[rules]]
+            name = "respects"
+            trigger = { type = "keyword", keyword = "F" }
+            guards = { crowd = { chatters = 10, within_secs = 30 } }
+            action = { target = "warudo", action = "candles" }
             "#,
         )
         .unwrap();
@@ -422,9 +478,14 @@ mod tests {
             "only written when off:\n{text}"
         );
         assert_eq!(
-            text.matches("guards").count(),
-            1,
+            text.matches("[rules.guards]").count(),
+            2,
             "no guards aren't written:\n{text}"
+        );
+        assert_eq!(
+            text.matches("[rules.guards.crowd]").count(),
+            1,
+            "no crowd isn't written:\n{text}"
         );
     }
 }
