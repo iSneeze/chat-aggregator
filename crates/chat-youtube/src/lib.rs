@@ -21,7 +21,7 @@
 //! `Video` is one-shot: it resolves once and completes when the stream ends.
 
 pub use crate::emoji::EmojiMap;
-pub use crate::resolver::{Auth, channel_title, rest_client};
+pub use crate::resolver::{Auth, OwnChannel, own_channel, rest_client};
 use std::path::PathBuf;
 use std::time::Duration;
 

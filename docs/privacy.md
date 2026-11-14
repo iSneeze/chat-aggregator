@@ -29,7 +29,8 @@ or change anything on your channel.
 
 From YouTube, with your permission:
 
-- your channel's name, to confirm which account you logged in with;
+- your channel's name and id, to confirm which channel you logged in with
+  and to keep each channel's login apart;
 - your live broadcasts (their ids, status and scheduled start time), to
   find the stream to follow;
 - the live chat of your broadcasts, or of a video whose id you enter:
@@ -68,11 +69,15 @@ keeps only the tips: each tipper's name, amount, currency and message.
 
 ## What is stored, where, and for how long
 
-- **Your YouTube login** (a refresh token) is stored in your operating
-  system's credential store (Keychain on macOS, Credential Manager on
-  Windows, Secret Service on Linux). If none is available, it's stored in a
-  file in chat-aggregator's settings folder that only your user account can
-  read. It stays there until you log out or revoke access (see below).
+- **Your YouTube logins** (a refresh token per channel you connect) are
+  stored in your operating system's credential store (Keychain on macOS,
+  Credential Manager on Windows, Secret Service on Linux), each under its
+  channel's id. If none is available, they're stored in files in
+  chat-aggregator's settings folder that only your user account can read.
+  Each stays there until you log out of that channel or revoke access (see
+  below). The connected channels' ids and names are written to the
+  settings file, so the app knows which logins it has; the logins
+  themselves never are.
 - **Your OBS WebSocket password**, if you store one for chat reactions
   (in the Reactions window), is kept the same way as the YouTube login
   (credential store, or a private file without one) until you remove it
@@ -155,9 +160,10 @@ keeps only the tips: each tipper's name, amount, currency and message.
 
 ## Removing access and data
 
-- Log out in chat-aggregator (**Log out** in the app's YouTube section,
-  `--youtube-logout` in the command-line version): this deletes the stored
-  login from your computer.
+- Log out in chat-aggregator (**Log out** next to the channel in the app's
+  YouTube section, `--youtube-logout <channel id>` in the command-line
+  version): this deletes that channel's stored login from your computer,
+  and the app takes the channel off its list.
 - Remove the StreamElements source in chat-aggregator: this deletes the
   stored Overlay Token from your computer. To make a token useless
   everywhere, create a new one on the StreamElements dashboard.

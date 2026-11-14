@@ -1,5 +1,6 @@
 //! The YouTube section of the window: entering your Google project's
-//! client, logging in through the browser, "connected as …", logging out.
+//! client, connecting channels through the browser (one login per channel:
+//! a streamer may have several), "connected as …", logging one out.
 //!
 //! The engine does the login itself (`EngineHandle::youtube_login` and
 //! friends): it has the client from the settings and the tokio runtime the
@@ -8,7 +9,7 @@
 //! through the shared `AppConfig`): the settings window changes the API key
 //! too, so the panel keeps no copy of its own that could go stale.
 
-use chat_engine::{EngineHandle, Health, YouTubeAccount, YouTubeSettings};
+use chat_engine::{EngineHandle, Health, YouTubeAccount, YouTubeAccounts, YouTubeSettings};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
@@ -33,39 +34,24 @@ enum Emoji {
     Importing,
 }
 
-enum Login {
-    /// Looking for a stored login (at start, or after new credentials).
+/// The connected channels, as the engine last said.
+enum Accounts {
+    /// Asking the engine (at start, or after new credentials).
     Checking,
-    NotConnected {
-        error: Option<String>,
-    },
-    /// Waiting for the user to finish in the browser. Dropping the task
-    /// cancels the login: the GPUI task drops the engine's login, which
-    /// stops its task and with it the local server waiting for Google.
-    LoggingIn {
-        _task: Task<()>,
-    },
-    /// `channel` is `None` if the name couldn't be fetched (e.g. offline).
-    Connected {
-        channel: Option<String>,
-    },
-}
-
-impl From<YouTubeAccount> for Login {
-    fn from(account: YouTubeAccount) -> Self {
-        match account {
-            YouTubeAccount::NotSetUp | YouTubeAccount::LoggedOut => {
-                Login::NotConnected { error: None }
-            }
-            YouTubeAccount::LoggedIn { channel } => Login::Connected { channel },
-        }
-    }
+    /// In the order they were connected; none yet: empty.
+    Listed(Vec<YouTubeAccount>),
 }
 
 pub struct YouTubePanel {
     engine: EngineHandle,
     config: Entity<AppConfig>,
-    login: Login,
+    accounts: Accounts,
+    /// A login waiting for the user to finish in the browser. Dropping the
+    /// task cancels it: the GPUI task drops the engine's login, which stops
+    /// its task and with it the local server waiting for Google.
+    logging_in: Option<Task<()>>,
+    /// Why the last check or login failed.
+    login_error: Option<String>,
     emoji: Emoji,
     /// Showing the client id/secret form.
     editing: bool,
@@ -104,7 +90,9 @@ impl YouTubePanel {
         let mut panel = Self {
             engine,
             config,
-            login: Login::Checking,
+            accounts: Accounts::Checking,
+            logging_in: None,
+            login_error: None,
             emoji,
             editing: !set_up,
             form_error: None,
@@ -113,7 +101,7 @@ impl YouTubePanel {
             _subscriptions: subscriptions,
         };
         if set_up {
-            panel.check_login(cx);
+            panel.check_accounts(cx);
         }
         panel
     }
@@ -123,27 +111,35 @@ impl YouTubePanel {
         self.config.read(cx).settings().youtube
     }
 
-    /// Asks the engine whose login is stored (with the client in the
-    /// settings, including one saved a moment before).
-    fn check_login(&mut self, cx: &mut Context<Self>) {
-        self.login = Login::Checking;
+    /// Asks the engine which channels are connected and whether their
+    /// logins work (with the client in the settings, including one saved a
+    /// moment before). The list shown so far stays until the answer comes.
+    fn check_accounts(&mut self, cx: &mut Context<Self>) {
         let engine = self.engine.clone();
         cx.spawn(async move |this, cx| {
-            let login = match engine.youtube_account().await {
-                Ok(account) => Login::from(account),
-                Err(e) => Login::NotConnected {
-                    error: Some(format!("{e:#}")),
-                },
-            };
+            let result = engine.youtube_accounts().await;
             let _ = this.update(cx, |panel, cx| {
-                panel.login = login;
+                match result {
+                    Ok(YouTubeAccounts::SetUp(accounts)) => {
+                        panel.accounts = Accounts::Listed(accounts);
+                    }
+                    // The client form shows: nothing to list.
+                    Ok(YouTubeAccounts::NotSetUp) => panel.accounts = Accounts::Listed(Vec::new()),
+                    Err(e) => {
+                        panel.accounts = Accounts::Listed(Vec::new());
+                        panel.login_error = Some(format!("{e:#}"));
+                    }
+                }
                 cx.notify();
             });
         })
         .detach();
     }
 
+    /// Connects a channel: Google asks which account and channel. A new one
+    /// joins the list; one connected already gets the new login.
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.login_error = None;
         let engine = self.engine.clone();
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = match engine.youtube_login().await {
@@ -152,52 +148,56 @@ impl YouTubePanel {
                     let url = login.url().to_string();
                     let _ = this.update(cx, |_, cx| cx.open_url(&url));
                     // ...then however the login ends there. (The engine
-                    // restarts the YouTube sources with it.)
+                    // lists the channel and restarts the YouTube sources.)
                     login.finish().await
                 }
                 Err(e) => Err(e),
             };
-            // Replacing `LoggingIn` drops this very task: fine, it's done.
             let _ = this.update_in(cx, |panel, window, cx| {
-                if let Ok(YouTubeAccount::LoggedIn { .. }) = result {
-                    window.push_notification(
-                        gpui_kit::component::notification::Notification::success(
-                            "Connected to YouTube",
-                        ),
+                // Drops this very task: fine, it's done.
+                panel.logging_in = None;
+                match result {
+                    Ok(channel) => window.push_notification(
+                        gpui_kit::component::notification::Notification::success(format!(
+                            "Connected to YouTube as \"{}\"",
+                            channel.name
+                        )),
                         cx,
-                    );
+                    ),
+                    Err(e) => panel.login_error = Some(format!("{e:#}")),
                 }
-                panel.login = match result {
-                    Ok(account) => Login::from(account),
-                    Err(e) => Login::NotConnected {
-                        error: Some(format!("{e:#}")),
-                    },
-                };
+                panel.check_accounts(cx);
                 cx.notify();
             });
         });
-        self.login = Login::LoggingIn { _task: task };
+        self.logging_in = Some(task);
         cx.notify();
     }
 
-    /// Dropping the waiting login (with `LoggingIn`) cancels it.
+    /// Dropping the waiting login cancels it.
     fn cancel_login(&mut self, cx: &mut Context<Self>) {
-        self.login = Login::NotConnected { error: None };
+        self.logging_in = None;
         cx.notify();
     }
 
-    fn log_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.login = Login::NotConnected { error: None };
+    fn log_out(&mut self, account: YouTubeAccount, window: &mut Window, cx: &mut Context<Self>) {
+        self.login_error = None;
+        // Gone from the list right away; the check afterwards confirms it.
+        if let Accounts::Listed(accounts) = &mut self.accounts {
+            accounts.retain(|listed| *listed != account);
+        }
         cx.notify();
-        // The YouTube sources notice the missing login (the engine restarts
-        // them) and turn red.
+        // The YouTube sources that used it notice the missing login (the
+        // engine restarts them) and turn red.
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
-            if let Err(e) = engine.youtube_logout().await {
-                let _ = this.update_in(cx, |_, window, cx| {
+            let result = engine.youtube_logout(&account).await;
+            let _ = this.update_in(cx, |panel, window, cx| {
+                if let Err(e) = result {
                     report(window, cx, format!("Couldn't log out: {e:#}"));
-                });
-            }
+                }
+                panel.check_accounts(cx);
+            });
         })
         .detach();
     }
@@ -347,8 +347,10 @@ impl YouTubePanel {
             cx,
         );
         // Asked after the change was sent: the engine answers with the new
-        // client.
-        self.check_login(cx);
+        // client (whose logins are others: none of the old list).
+        self.accounts = Accounts::Checking;
+        self.login_error = None;
+        self.check_accounts(cx);
     }
 
     /// Only offer "Cancel" if there's a working client to go back to.
@@ -441,42 +443,64 @@ impl YouTubePanel {
 
     fn render_login(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        let (health, text): (Health, String) = match &self.login {
-            Login::Checking => (Health::Warning, "Checking the login…".into()),
-            Login::NotConnected { .. } => (Health::Off, "Not connected".into()),
-            Login::LoggingIn { .. } => (
-                Health::Warning,
-                "Waiting for the browser: finish the login there…".into(),
-            ),
-            Login::Connected {
-                channel: Some(name),
-            } => (Health::Ok, format!("Connected as \"{name}\"")),
-            Login::Connected { channel: None } => (Health::Ok, "Connected".into()),
+        let accounts = match &self.accounts {
+            Accounts::Listed(accounts) => accounts.as_slice(),
+            Accounts::Checking => &[],
         };
+        let logging_in = self.logging_in.is_some();
+        // One channel sits in the first row (as it always did: a row less
+        // in the window); several get a row each below it, as does the one
+        // while a login waits in the first row.
+        let listed_below = accounts.len() >= 2 || (logging_in && !accounts.is_empty());
 
         let mut buttons = h_flex().gap_2();
-        buttons = match &self.login {
-            Login::NotConnected { .. } => buttons.child(
-                Button::new("youtube-connect")
-                    .label("Connect YouTube")
-                    .primary()
-                    .on_click(cx.listener(|panel, _, window, cx| panel.connect(window, cx))),
-            ),
-            Login::LoggingIn { .. } => buttons.child(
+        // What the first row says, as data: drawn below, once `cx` is free
+        // again (`account_line` needs it to make its buttons).
+        let status = if logging_in {
+            buttons = buttons.child(
                 Button::new("youtube-cancel-login")
                     .label("Cancel")
                     .small()
                     .on_click(cx.listener(|panel, _, _, cx| panel.cancel_login(cx))),
-            ),
-            Login::Connected { .. } => buttons.child(
-                Button::new("youtube-logout")
-                    .label("Log out")
+            );
+            Some((
+                Health::Warning,
+                "Waiting for the browser: finish the login there…".to_string(),
+            ))
+        } else if let Accounts::Checking = self.accounts {
+            Some((Health::Warning, "Checking the login…".into()))
+        } else if accounts.is_empty() {
+            buttons = buttons.child(
+                Button::new("youtube-connect")
+                    .label("Connect YouTube")
+                    .primary()
+                    .on_click(cx.listener(|panel, _, window, cx| panel.connect(window, cx))),
+            );
+            Some((Health::Off, "Not connected".into()))
+        } else {
+            buttons = buttons.child(
+                Button::new("youtube-add")
+                    .label("Add channel")
                     .small()
-                    .on_click(cx.listener(|panel, _, window, cx| panel.log_out(window, cx))),
-            ),
-            Login::Checking => buttons,
+                    .tooltip("Connect another YouTube channel (Google asks which)")
+                    .on_click(cx.listener(|panel, _, window, cx| panel.connect(window, cx))),
+            );
+            if listed_below {
+                None
+            } else {
+                let (health, text, own) = self.account_line(0, &accounts[0], true, cx);
+                buttons = buttons.children(own);
+                Some((health, text))
+            }
         };
-        if !matches!(self.login, Login::LoggingIn { .. }) {
+        let first = h_flex().gap_2().items_center().flex_wrap().child(title());
+        let first = match status {
+            Some((health, text)) => first
+                .child(light(health, cx))
+                .child(div().flex_1().child(text)),
+            None => first.child(div().flex_1()),
+        };
+        if !logging_in {
             buttons = buttons.child(
                 Button::new("youtube-change-client")
                     .label("Change client")
@@ -485,24 +509,69 @@ impl YouTubePanel {
             );
         }
 
-        let error = match &self.login {
-            Login::NotConnected { error: Some(e) } => Some(e.clone()),
-            _ => None,
-        };
-        v_flex()
-            .gap_1()
-            .child(
+        let rows = listed_below.then(|| {
+            accounts.iter().enumerate().map(|(i, account)| {
+                let (health, text, buttons) = self.account_line(i, account, false, cx);
                 h_flex()
                     .gap_2()
                     .items_center()
                     .flex_wrap()
-                    .child(title())
                     .child(light(health, cx))
                     .child(div().flex_1().child(text))
-                    .child(buttons),
+                    .child(h_flex().gap_2().children(buttons))
+            })
+        });
+        v_flex()
+            .gap_1()
+            .child(first.child(buttons))
+            .children(rows.into_iter().flatten())
+            .children(
+                self.login_error
+                    .clone()
+                    .map(|e| div().text_sm().text_color(muted).child(e)),
             )
-            .children(error.map(|e| div().text_sm().text_color(muted).child(e)))
             .into_any_element()
+    }
+
+    /// One connected channel: its light, what to say about it (`inline`:
+    /// alone in the first row, so a whole sentence) and its buttons.
+    fn account_line(
+        &self,
+        i: usize,
+        account: &YouTubeAccount,
+        inline: bool,
+        cx: &mut Context<Self>,
+    ) -> (Health, String, Vec<Button>) {
+        let name = account.channel.as_ref().map(|c| c.name.as_str());
+        let (health, text) = match (name, account.logged_in, inline) {
+            (Some(name), true, true) => (Health::Ok, format!("Connected as \"{name}\"")),
+            (Some(name), true, false) => (Health::Ok, name.to_string()),
+            // The login of an older version, whose channel isn't known yet.
+            (None, true, true) => (Health::Ok, "Connected".into()),
+            (None, true, false) => (Health::Ok, "Connected (channel not looked up yet)".into()),
+            (Some(name), false, _) => (Health::Error, format!("\"{name}\": login expired")),
+            (None, false, _) => (Health::Error, "Login expired".into()),
+        };
+        let mut buttons = Vec::new();
+        if !account.logged_in {
+            buttons.push(
+                Button::new(("youtube-relogin", i))
+                    .label("Log in again")
+                    .small()
+                    .primary()
+                    .on_click(cx.listener(|panel, _, window, cx| panel.connect(window, cx))),
+            );
+        }
+        let account = account.clone();
+        buttons.push(
+            Button::new(("youtube-logout", i))
+                .label("Log out")
+                .small()
+                .on_click(cx.listener(move |panel, _, window, cx| {
+                    panel.log_out(account.clone(), window, cx)
+                })),
+        );
+        (health, text, buttons)
     }
 }
 

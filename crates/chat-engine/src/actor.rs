@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{info, warn};
 
-use crate::config::SourceConfig;
+use crate::config::{SourceConfig, YouTubeSettings};
 use crate::config_file::{ConfigFile, Settings, SourceEntry};
 use crate::factory::{SourceFactory, is_login_required, needs_attention};
 use crate::settings::Controls;
@@ -57,8 +57,10 @@ pub(crate) enum Command {
         allow: bool,
         reply: Reply<()>,
     },
-    /// The stored YouTube login changed: someone logged in or out.
-    YouTubeLoginChanged(Reply<()>),
+    /// The stored YouTube logins changed (one made, moved or removed): the
+    /// change brings the connected channels in the settings up to date.
+    /// Answers whether they're saved.
+    YouTubeLoginsChanged(SettingsChange, Reply<bool>),
     /// The OAuth client in the current settings (`SetupError`: none yet).
     YouTubeClient(Reply<OAuthApp>),
     /// Use this custom emoji export, and load it even if it's the file
@@ -224,8 +226,9 @@ impl SlotSource {
         }
     }
 
+    /// For logs: without the settings, a YouTube account is its id.
     fn label(&self) -> String {
-        label(self.config())
+        label(self.config(), &YouTubeSettings::default())
     }
 }
 
@@ -414,7 +417,7 @@ impl<F: SourceFactory> Actor<F> {
                 let _ = reply.send(result);
             }
             Command::EditSettings(change, reply) => {
-                let _ = reply.send(self.edit_settings(change));
+                let _ = reply.send(self.edit_settings(change).map(drop));
             }
             Command::AnswerApiRequest {
                 origin,
@@ -435,10 +438,17 @@ impl<F: SourceFactory> Actor<F> {
                 }
                 let _ = reply.send(Ok(()));
             }
-            Command::YouTubeLoginChanged(reply) => {
-                info!("YouTube login changed");
-                self.restart_youtube();
-                let _ = reply.send(Ok(()));
+            Command::YouTubeLoginsChanged(change, reply) => {
+                info!("YouTube logins changed");
+                let result = self.edit_settings(change).map(|restarted| {
+                    // A channel logged in again changes no setting, but
+                    // it's a new login all the same.
+                    if !restarted {
+                        self.restart_youtube();
+                    }
+                    self.save_to.is_some() && self.save_error.is_none()
+                });
+                let _ = reply.send(result);
             }
             Command::YouTubeClient(reply) => {
                 let app = self.settings.borrow().youtube.oauth_app();
@@ -569,12 +579,14 @@ impl<F: SourceFactory> Actor<F> {
     /// chat reactions invalid, as `config.toml` would be refused at
     /// startup: the app's forms check most of it themselves, but the engine
     /// is what keeps the file loadable.
-    fn edit_settings(&mut self, change: SettingsChange) -> anyhow::Result<()> {
+    /// Answers whether that restarted the YouTube sources (new YouTube
+    /// settings do).
+    fn edit_settings(&mut self, change: SettingsChange) -> anyhow::Result<bool> {
         let old = self.settings.borrow().clone();
         let mut new = old.clone();
         change(&mut new);
         if new == old {
-            return Ok(());
+            return Ok(false);
         }
         if new.tips != old.tips {
             new.tips.check().map_err(|e| anyhow!(e))?;
@@ -594,7 +606,7 @@ impl<F: SourceFactory> Actor<F> {
             self.restart_youtube();
         }
         self.save();
-        Ok(())
+        Ok(youtube_changed)
     }
 
     /// Restarts every YouTube source that is meant to run, with a fresh
@@ -745,11 +757,13 @@ impl<F: SourceFactory> Actor<F> {
     /// Sends the current status to watchers, but only if it changed: a
     /// watcher (the UI) is woken up only when there's something new to show.
     fn publish(&self) {
+        let youtube = self.settings.borrow().youtube.clone();
         let sources = self
             .slots
             .iter()
             .map(|(id, slot)| SourceStatus {
                 id: *id,
+                label: label(slot.source.config(), &youtube),
                 config: slot.source.config().cloned(),
                 state: slot.state(),
                 messages: slot.stats.messages.load(Ordering::Relaxed),

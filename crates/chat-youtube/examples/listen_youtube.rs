@@ -1,6 +1,6 @@
 use anyhow::Context;
 use chat_core::{ChatEvent, ChatMessage, ChatSource, MessageKind, Reporter};
-use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
+use chat_youtube::oauth::{self, Account, OAuthApp, TokenProvider};
 use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
 
 #[tokio::main]
@@ -13,35 +13,38 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // usage: listen_youtube <video_id>            (API key)
-    //        listen_youtube --login               (OAuth: log in once in the browser)
-    //        listen_youtube --own                 (OAuth, your own broadcast)
-    //        listen_youtube --member <video_id>   (OAuth, e.g. members-only stream)
-    //        listen_youtube --logout
+    // usage: listen_youtube <video_id>                      (API key)
+    //        listen_youtube --login                         (OAuth: log in once in the browser;
+    //                                                        prints the channel id)
+    //        listen_youtube --own <channel_id>              (OAuth, your own broadcast)
+    //        listen_youtube --member <channel_id> <video_id> (OAuth, e.g. members-only stream)
+    //        listen_youtube --logout <channel_id>
     // OAuth needs YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET (docs/youtube-setup.md).
     // optional: YOUTUBE_EMOJIS=<export.json> from scripts/yt-emoji-export.user.js
     let args: Vec<String> = std::env::args().collect();
 
-    let target = match (args.get(1).map(String::as_str), args.get(2)) {
-        (Some("--login"), _) => return login(&app_from_env()?).await,
-        (Some("--logout"), _) => {
-            oauth::logout(&app_from_env()?).await?;
+    let arg = |i: usize| args.get(i).map(String::as_str);
+    let target = match (arg(1), arg(2), arg(3)) {
+        (Some("--login"), None, None) => return login(&app_from_env()?).await,
+        (Some("--logout"), Some(channel), None) => {
+            oauth::logout(&app_from_env()?, &Account::Channel(channel.into())).await?;
             println!("logged out");
             return Ok(());
         }
-        (Some("--own"), _) => YouTubeTarget::OwnBroadcast {
-            login: stored_login().await?,
+        (Some("--own"), Some(channel), None) => YouTubeTarget::OwnBroadcast {
+            login: stored_login(channel).await?,
         },
-        (Some("--member"), Some(video_id)) => YouTubeTarget::Video {
+        (Some("--member"), Some(channel), Some(video_id)) => YouTubeTarget::Video {
             id: video_id.to_string(),
-            auth: Auth::OAuth(stored_login().await?),
+            auth: Auth::OAuth(stored_login(channel).await?),
         },
-        (Some(video_id), None) => YouTubeTarget::Video {
+        (Some(video_id), None, None) if !video_id.starts_with("--") => YouTubeTarget::Video {
             id: video_id.to_string(),
             auth: Auth::ApiKey(env("YOUTUBE_API_KEY")),
         },
         _ => anyhow::bail!(
-            "usage: listen_youtube <video_id> | --login | --own | --member <video_id> | --logout"
+            "usage: listen_youtube <video_id> | --login | --own <channel_id> \
+             | --member <channel_id> <video_id> | --logout <channel_id>"
         ),
     };
 
@@ -124,8 +127,8 @@ fn print_message(msg: &ChatMessage) {
     );
 }
 
-/// Logs in once: the browser shows Google's consent page, the refresh token
-/// ends up in the system keyring.
+/// Logs in once per channel: the browser shows Google's consent page, the
+/// refresh token ends up in the system keyring under the channel picked.
 async fn login(app: &OAuthApp) -> anyhow::Result<()> {
     let pending = oauth::begin_login(app).await?;
     println!(
@@ -133,19 +136,19 @@ async fn login(app: &OAuthApp) -> anyhow::Result<()> {
         pending.url()
     );
     let _ = webbrowser::open(pending.url());
-    pending.complete().await?;
-
-    let auth = Auth::OAuth(TokenProvider::from_store(app.clone()).await?);
-    let channel = chat_youtube::channel_title(&chat_youtube::rest_client(), &auth).await?;
-    println!("logged in as \"{channel}\"");
+    let channel = pending.complete().await?;
+    println!(
+        "logged in as \"{}\"; use it with --own {}",
+        channel.title, channel.id
+    );
     Ok(())
 }
 
-/// The login stored by `--login`.
-async fn stored_login() -> anyhow::Result<TokenProvider> {
-    TokenProvider::from_store(app_from_env()?)
+/// The login `--login` stored for `channel`.
+async fn stored_login(channel: &str) -> anyhow::Result<TokenProvider> {
+    TokenProvider::from_store(app_from_env()?, Account::Channel(channel.into()))
         .await
-        .context("run `listen_youtube --login` first")
+        .context("run `listen_youtube --login` first (with that channel)")
 }
 
 /// Your OAuth client from `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`.

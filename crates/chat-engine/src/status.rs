@@ -8,7 +8,7 @@ use chat_core::Activity;
 use chat_reactions::{OutputState, ReactionStatus};
 use jiff::Timestamp;
 
-use crate::config::SourceConfig;
+use crate::config::{SourceConfig, YouTubeSettings};
 
 /// Identifies a source for its whole life in the engine, across restarts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -66,6 +66,9 @@ pub enum Health {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceStatus {
     pub id: SourceId,
+    /// Short name for status displays: "Twitch: your_channel", "YouTube:
+    /// <the account's channel name>", "Test messages".
+    pub label: String,
     /// Its settings; `None` for the app's test window source, which has
     /// none: the window feeds it, and closing the window removes it.
     pub config: Option<SourceConfig>,
@@ -76,10 +79,6 @@ pub struct SourceStatus {
 }
 
 impl SourceStatus {
-    pub fn label(&self) -> String {
-        label(self.config.as_ref())
-    }
-
     pub fn health(&self) -> Health {
         match &self.state {
             SourceState::Stopped | SourceState::Finished => Health::Off,
@@ -118,10 +117,11 @@ impl SourceStatus {
     }
 }
 
-/// Short name for status displays and logs: from the settings, or the test
-/// window's (which has none).
-pub(crate) fn label(config: Option<&SourceConfig>) -> String {
-    config.map_or_else(|| "Test messages".into(), SourceConfig::label)
+/// Short name for status displays and logs: from the source's settings
+/// (and the YouTube accounts' names), or the test window's (which has
+/// none).
+pub(crate) fn label(config: Option<&SourceConfig>, youtube: &YouTubeSettings) -> String {
+    config.map_or_else(|| "Test messages".into(), |c| c.label_with(youtube))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -187,6 +187,7 @@ mod tests {
     fn status(state: SourceState) -> SourceStatus {
         SourceStatus {
             id: SourceId(1),
+            label: "Demo".into(),
             config: Some(SourceConfig::Demo),
             state,
             messages: 0,

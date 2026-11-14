@@ -348,7 +348,11 @@ mod tests {
                     config: twitch("other_channel"),
                     enabled: false,
                 },
-                SourceConfig::YouTube { video_id: None }.into(),
+                SourceConfig::YouTube {
+                    video_id: None,
+                    account: None,
+                }
+                .into(),
             ]
         );
 

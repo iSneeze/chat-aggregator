@@ -51,6 +51,14 @@ learn_emojis = true
 # scripts/yt-emoji-export.user.js (optional):
 # emojis = "/path/to/youtube-emojis.json"
 
+# The connected channels, one block each. The app adds one at each login
+# ("Connect YouTube", "Add channel") and removes it at "Log out"; the
+# command-line login (--youtube-login) prints the block to add here. The
+# login itself is in the system keyring, not in this file.
+# [[youtube.accounts]]
+# channel_id = "UC…"
+# name = "your channel"
+
 [app]
 # The desktop app's look: "system" (follows light/dark mode), "light",
 # "dark" or "high-contrast". Headless mode ignores this.
@@ -179,9 +187,12 @@ queue_secs = 0
 # type = "twitch"
 # channel = "your_channel"
 
-# Your own YouTube broadcasts (needs the login: run with --youtube-login):
+# Your own YouTube broadcasts (needs the login: run with --youtube-login).
+# Without `account`, the first channel in [[youtube.accounts]]; with
+# several channels, name the one this source reads by its channel id:
 # [[sources]]
 # type = "youtube"
+# account = "UC…"
 
 # A specific YouTube video instead:
 # [[sources]]

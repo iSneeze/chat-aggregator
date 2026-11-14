@@ -18,7 +18,9 @@ use oauth2::{
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+use super::store::{self, Account};
 use super::{GoogleClient, OAuthApp, SCOPE, http_client, send};
+use crate::OwnChannel;
 
 /// How long to wait for the user to finish in the browser.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -64,9 +66,13 @@ pub async fn begin_login(app: &OAuthApp) -> anyhow::Result<PendingLogin> {
         .set_pkce_challenge(challenge)
         // We need a refresh token, to keep working after the first hour.
         .add_extra_param("access_type", "offline")
-        // Google only sends a refresh token when the consent screen is
-        // shown; force it, so logging in again also gets one.
-        .add_extra_param("prompt", "consent")
+        // `select_account`: always ask which Google account. Otherwise
+        // Google may quietly take the one signed in to the browser, and
+        // connecting a second channel would log in the first one again.
+        // (Which channel of that account comes next, on Google's page.)
+        // `consent`: Google only sends a refresh token when the consent
+        // screen is shown; force it, so logging in again also gets one.
+        .add_extra_param("prompt", "select_account consent")
         .url();
 
     let (result_tx, result_rx) = oneshot::channel();
@@ -110,8 +116,10 @@ impl PendingLogin {
     }
 
     /// Waits for the user to finish (up to 5 minutes), exchanges the code for
-    /// tokens and stores the refresh token.
-    pub async fn complete(self) -> anyhow::Result<()> {
+    /// tokens, asks YouTube which channel they're for (1 quota unit) and
+    /// stores the refresh token under it. Logging in the same channel again
+    /// replaces its login; another channel's stays.
+    pub async fn complete(self) -> anyhow::Result<OwnChannel> {
         // `self` is taken apart field by field below ("partial moves"); fine
         // because PendingLogin has no `Drop` impl of its own.
         let outcome = tokio::time::timeout(LOGIN_TIMEOUT, self.result).await;
@@ -135,10 +143,28 @@ impl PendingLogin {
         let refresh = tokens.refresh_token().context(
             "Google sent no refresh token; try logging in again (the consent screen must be shown)",
         )?;
+
+        // Which channel was picked on the consent page. Asked before
+        // storing anything: an account without a channel is no use, and
+        // the channel is the login's name in the store.
+        let header = (
+            "authorization",
+            format!("Bearer {}", tokens.access_token().secret()),
+        );
+        let channel = crate::resolver::own_channel_at(
+            &crate::rest_client(),
+            header,
+            &self.app.endpoints.channels,
+        )
+        .await?;
         self.app
             .store
-            .save(&super::store::account(&self.app), refresh.secret())
-            .await
+            .save(
+                &store::secret_name(&self.app, &Account::Channel(channel.id.clone())),
+                refresh.secret(),
+            )
+            .await?;
+        Ok(channel)
     }
 }
 
@@ -197,7 +223,7 @@ fn page(message: &str) -> Html<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oauth::fake_google::{self, GOOD_CODE};
+    use crate::oauth::fake_google::{self, GOOD_CODE, NO_CHANNEL_CODE};
     use oauth2::url::Url;
 
     fn query(url: &str) -> std::collections::HashMap<String, String> {
@@ -227,7 +253,7 @@ mod tests {
         assert_eq!(q["response_type"], "code");
         assert_eq!(q["scope"], SCOPE);
         assert_eq!(q["access_type"], "offline");
-        assert_eq!(q["prompt"], "consent");
+        assert_eq!(q["prompt"], "select_account consent");
         assert_eq!(q["code_challenge_method"], "S256");
         assert!(q["redirect_uri"].starts_with("http://127.0.0.1:"));
         assert!(!q["state"].is_empty());
@@ -248,17 +274,37 @@ mod tests {
             redirect_back(&login, &format!("code={GOOD_CODE}&state={state}")).await,
             reqwest::StatusCode::OK
         );
-        login.complete().await.unwrap();
+        let channel = login.complete().await.unwrap();
 
+        // Stored under the channel picked on Google's page, not in the
+        // place of older versions' single login.
+        assert_eq!(channel.id, fake_google::CHANNEL_ID);
+        assert_eq!(channel.title, fake_google::CHANNEL_TITLE);
+        let stored = |account: Account| {
+            let (app, name) = (app.clone(), store::secret_name(&app, &account));
+            async move { app.store.load(&name).await.unwrap() }
+        };
         assert_eq!(
-            app.store
-                .load(&crate::oauth::store::account(&app))
+            stored(Account::Channel(fake_google::CHANNEL_ID.into()))
                 .await
-                .unwrap()
                 .as_deref(),
             Some("refresh-1")
         );
+        assert_eq!(stored(Account::Legacy).await, None);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_account_without_a_channel_stores_nothing() {
+        let (app, _, dir) = fake_google::start(3600).await;
+        let login = begin_login(&app).await.unwrap();
+        let state = query(login.url())["state"].clone();
+        redirect_back(&login, &format!("code={NO_CHANNEL_CODE}&state={state}")).await;
+
+        let err = login.complete().await.unwrap_err();
+        assert!(err.to_string().contains("no YouTube channel"), "{err:#}");
+        // Nothing stored: the folder isn't even there.
+        assert!(!dir.exists());
     }
 
     #[tokio::test]

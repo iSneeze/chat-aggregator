@@ -19,7 +19,8 @@
 //!   --demo                sample messages of every kind, including deletions
 //!   --twitch <channel>
 //!   --youtube-own         your own current/next broadcast (the streamer path);
-//!                         needs a login, see below
+//!                         needs a login, see below; the first channel in
+//!                         [[youtube.accounts]]
 //!   --youtube <video_id>  a specific public video (testing path); uses
 //!                         YOUTUBE_API_KEY if set, otherwise the login
 //!   --picarto <channel>   a Picarto channel (its name or a picarto.tv link)
@@ -38,9 +39,14 @@
 //!   --newest <bottom|top> where new messages appear in the overlay, default bottom
 //!                         (an overlay URL with ?newest=… overrides it)
 //!
-//! YouTube login (once; the token is kept in the system keyring):
+//! YouTube login (once per channel; the token is kept in the system keyring,
+//! and the channel goes into [[youtube.accounts]] in the config file, which
+//! you add yourself here: headless mode never writes the file, so the login
+//! prints what to add):
 //!   cargo run -p chat-engine --example run -- --youtube-login
-//!   cargo run -p chat-engine --example run -- --youtube-logout
+//!   cargo run -p chat-engine --example run -- --youtube-logout <channel id>
+//! (`--youtube-logout` without a channel id: the single login of versions
+//! before several channels could be connected.)
 //!
 //! OBS WebSocket password for chat reactions (once; kept in the system
 //! keyring, not the config file; an empty answer removes it):
@@ -71,10 +77,9 @@ use anyhow::{Context, bail};
 use chat_engine::widgets::{self, Widget};
 use chat_engine::{
     ConfigFile, Engine, EngineConfig, Health, Newest, OBS_PASSWORD, SecretStore, SourceConfig,
-    Status, YouTubeSettings,
+    Status, YouTubeChannel, YouTubeSettings,
 };
-use chat_youtube::Auth;
-use chat_youtube::oauth::{self, OAuthApp, TokenProvider};
+use chat_youtube::oauth::{self, Account, OAuthApp};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -137,8 +142,17 @@ async fn main() -> anyhow::Result<()> {
             return youtube_login(&config.settings.youtube.oauth_app()?).await;
         }
         Some("--youtube-logout") => {
-            oauth::logout(&config.settings.youtube.oauth_app()?).await?;
+            let account = match args.get(1) {
+                Some(id) if !id.starts_with("--") => Account::Channel(id.clone()),
+                _ => Account::Legacy,
+            };
+            oauth::logout(&config.settings.youtube.oauth_app()?, &account).await?;
             println!("logged out of YouTube");
+            if let Account::Channel(id) = account {
+                println!(
+                    "(remove channel_id = \"{id}\" from [[youtube.accounts]] in your config file too)"
+                );
+            }
             return Ok(());
         }
         _ => {}
@@ -226,7 +240,7 @@ async fn print_status_changes(mut status: tokio::sync::watch::Receiver<Status>) 
                 let key = format!("{:?}", source.state);
                 if shown.get(&source.id) != Some(&key) {
                     let light = light(source.health());
-                    println!("{light} {}: {}", source.label(), source.summary());
+                    println!("{light} {}: {}", source.label, source.summary());
                     shown.insert(source.id, key);
                 }
             }
@@ -264,22 +278,30 @@ fn build_config(args: &[String]) -> anyhow::Result<EngineConfig> {
         .unwrap_or_default();
 
     let mut flag_sources = Vec::new();
-    let mut args = args.iter().cloned();
+    let mut args = args.iter().cloned().peekable();
     while let Some(flag) = args.next() {
         let server = &mut file.server;
         match flag.as_str() {
             "--config" => {
                 next_value(&mut args, "--config")?; // already loaded above
             }
-            "--youtube-login" | "--youtube-logout" => {}
+            "--youtube-login" => {}
+            // Its channel id, if any, was read above.
+            "--youtube-logout" => {
+                args.next_if(|arg| !arg.starts_with("--"));
+            }
             "--demo" => flag_sources.push(SourceConfig::Demo),
             "--twitch" => flag_sources.push(SourceConfig::Twitch {
                 channel: next_value(&mut args, "--twitch")?,
             }),
             "--youtube" => flag_sources.push(SourceConfig::YouTube {
                 video_id: Some(next_value(&mut args, "--youtube")?),
+                account: None,
             }),
-            "--youtube-own" => flag_sources.push(SourceConfig::YouTube { video_id: None }),
+            "--youtube-own" => flag_sources.push(SourceConfig::YouTube {
+                video_id: None,
+                account: None,
+            }),
             "--picarto" => flag_sources.push(SourceConfig::Picarto {
                 channel: next_value(&mut args, "--picarto")?,
             }),
@@ -366,8 +388,10 @@ where
         .with_context(|| format!("invalid value for {flag}"))
 }
 
-/// Logs in once: the browser shows Google's consent page, the refresh token
-/// ends up in the system keyring.
+/// Logs in once per channel: the browser shows Google's consent page, the
+/// refresh token ends up in the system keyring under the channel picked
+/// there. Prints the channel's entry for the config file, which headless
+/// mode never writes itself.
 async fn youtube_login(app: &OAuthApp) -> anyhow::Result<()> {
     let pending = oauth::begin_login(app).await?;
     println!(
@@ -375,11 +399,34 @@ async fn youtube_login(app: &OAuthApp) -> anyhow::Result<()> {
         pending.url()
     );
     let _ = webbrowser::open(pending.url());
-    pending.complete().await?;
+    let channel = pending.complete().await?;
 
-    let auth = Auth::OAuth(TokenProvider::from_store(app.clone()).await?);
-    let channel = chat_youtube::channel_title(&reqwest::Client::new(), &auth).await?;
-    println!("logged in to YouTube as \"{channel}\"; start with --youtube-own");
+    // Through `toml`, so a name with quotes in it is written correctly.
+    #[derive(serde::Serialize)]
+    struct Entry {
+        youtube: Accounts,
+    }
+    #[derive(serde::Serialize)]
+    struct Accounts {
+        accounts: Vec<YouTubeChannel>,
+    }
+    let id = channel.id.clone();
+    let entry = toml::to_string(&Entry {
+        youtube: Accounts {
+            accounts: vec![YouTubeChannel {
+                channel_id: channel.id,
+                name: channel.title.clone(),
+            }],
+        },
+    })?;
+    println!(
+        "Logged in to YouTube as \"{}\". Add the channel to your config file \
+         (the app does that by itself):\n\n{entry}\n\
+         A YouTube source without `account` uses the first channel listed; for another \
+         one, add account = \"{id}\" to its [[sources]] block. Then start with \
+         --youtube-own, or your config file's sources.",
+        channel.title
+    );
     Ok(())
 }
 

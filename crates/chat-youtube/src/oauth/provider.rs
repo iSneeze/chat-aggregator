@@ -9,7 +9,8 @@ use anyhow::Context;
 use oauth2::basic::BasicErrorResponseType;
 use oauth2::{RefreshToken, RequestTokenError, TokenResponse};
 
-use super::{GoogleClient, OAuthApp, http_client, send, store};
+use super::store::{self, Account};
+use super::{GoogleClient, OAuthApp, http_client, send};
 
 /// Refresh this long before the token expires, so a token handed out is
 /// never about to die during a request or a reconnect.
@@ -48,6 +49,8 @@ pub struct TokenProvider {
 
 struct Inner {
     app: OAuthApp,
+    /// Whose login: where a replacement refresh token is stored.
+    account: Account,
     client: GoogleClient,
     http: reqwest::Client,
     // A tokio Mutex, not std: it's held *across* the `.await` of a refresh
@@ -64,28 +67,47 @@ struct State {
 }
 
 impl TokenProvider {
-    /// Uses the login stored by a previous [`super::begin_login`].
-    pub async fn from_store(app: OAuthApp) -> anyhow::Result<Self> {
+    /// Uses `account`'s login, stored by a previous [`super::begin_login`].
+    pub async fn from_store(app: OAuthApp, account: Account) -> anyhow::Result<Self> {
         let refresh_token = app
             .store
-            .load(&store::account(&app))
+            .load(&store::secret_name(&app, &account))
             .await?
-            .ok_or_else(|| LoginRequired("not logged in yet".into()))?;
-        Self::new(app, refresh_token)
+            .ok_or_else(|| {
+                LoginRequired(match account {
+                    Account::Legacy => "no channel is connected yet".into(),
+                    Account::Channel(_) => "this channel isn't connected (anymore)".into(),
+                })
+            })?;
+        Self::new(app, account, refresh_token, None)
     }
 
-    fn new(app: OAuthApp, refresh_token: String) -> anyhow::Result<Self> {
+    /// `access`: an access token that came with the refresh token (a fresh
+    /// login), with when it expires, so the first call needs no refresh.
+    pub(super) fn new(
+        app: OAuthApp,
+        account: Account,
+        refresh_token: String,
+        access: Option<(String, Instant)>,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(Inner {
                 client: app.client()?,
                 app,
+                account,
                 http: http_client(),
                 state: tokio::sync::Mutex::new(State {
                     refresh_token,
-                    access: None,
+                    access,
                 }),
             }),
         })
+    }
+
+    /// The refresh token as it is now (Google may have replaced it since
+    /// this provider was made).
+    pub(super) async fn refresh_token(&self) -> String {
+        self.inner.state.lock().await.refresh_token.clone()
     }
 
     /// A currently valid access token, refreshed if necessary.
@@ -120,9 +142,9 @@ impl TokenProvider {
             && *new.secret() != state.refresh_token
         {
             state.refresh_token = new.secret().clone();
-            let app = &self.inner.app;
+            let (app, account) = (&self.inner.app, &self.inner.account);
             app.store
-                .save(&store::account(app), &state.refresh_token)
+                .save(&store::secret_name(app, account), &state.refresh_token)
                 .await?;
         }
 
@@ -142,14 +164,38 @@ mod tests {
     #[tokio::test]
     async fn not_logged_in_is_login_required() {
         let (app, _, _) = fake_google::start(3600).await;
-        let err = TokenProvider::from_store(app).await.err().unwrap();
+        for account in [Account::Legacy, Account::Channel("UC_main".into())] {
+            let err = TokenProvider::from_store(app.clone(), account)
+                .await
+                .err()
+                .unwrap();
+            assert!(err.downcast_ref::<LoginRequired>().is_some(), "{err:#}");
+        }
+    }
+
+    #[tokio::test]
+    async fn each_account_uses_its_own_login() {
+        let (app, _, _) = fake_google::start(3600).await;
+        let main = Account::Channel("UC_main".into());
+        app.store
+            .save(&store::secret_name(&app, &main), "refresh-main")
+            .await
+            .unwrap();
+        let provider = TokenProvider::from_store(app.clone(), main).await.unwrap();
+        assert_eq!(provider.access_token().await.unwrap(), "access-1");
+        // The second channel isn't connected: the first one's login
+        // doesn't stand in for it.
+        let err = TokenProvider::from_store(app.clone(), Account::Channel("UC_second".into()))
+            .await
+            .err()
+            .unwrap();
         assert!(err.downcast_ref::<LoginRequired>().is_some(), "{err:#}");
     }
 
     #[tokio::test]
     async fn token_is_cached_until_close_to_expiry() {
         let (app, fake, _) = fake_google::start(3600).await;
-        let provider = TokenProvider::new(app, "refresh-1".into()).unwrap();
+        let provider = TokenProvider::new(app, Account::Legacy, "refresh-1".into(), None).unwrap();
 
         assert_eq!(provider.access_token().await.unwrap(), "access-1");
         assert_eq!(provider.access_token().await.unwrap(), "access-1");
@@ -160,7 +206,7 @@ mod tests {
     async fn token_within_the_margin_is_refreshed() {
         // Lives shorter than the refresh margin: stale as soon as it arrives.
         let (app, fake, _) = fake_google::start(60).await;
-        let provider = TokenProvider::new(app, "refresh-1".into()).unwrap();
+        let provider = TokenProvider::new(app, Account::Legacy, "refresh-1".into(), None).unwrap();
 
         assert_eq!(provider.access_token().await.unwrap(), "access-1");
         assert_eq!(provider.access_token().await.unwrap(), "access-2");
@@ -170,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_callers_share_one_refresh() {
         let (app, fake, _) = fake_google::start(3600).await;
-        let provider = TokenProvider::new(app, "refresh-1".into()).unwrap();
+        let provider = TokenProvider::new(app, Account::Legacy, "refresh-1".into(), None).unwrap();
 
         // A second handle, like a second source sharing the login. It needs
         // a name: the future returned by `access_token()` borrows it until
@@ -185,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn revoked_login_is_login_required() {
         let (app, _, _) = fake_google::start(3600).await;
-        let provider = TokenProvider::new(app, REVOKED.into()).unwrap();
+        let provider = TokenProvider::new(app, Account::Legacy, REVOKED.into(), None).unwrap();
         let err = provider.access_token().await.unwrap_err();
         assert!(err.downcast_ref::<LoginRequired>().is_some(), "{err:#}");
     }

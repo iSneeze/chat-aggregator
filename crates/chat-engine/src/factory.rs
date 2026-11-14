@@ -5,6 +5,7 @@
 //! real Twitch/YouTube/Picarto/StreamElements/Streamlabs/demo sources. This is static dispatch
 //! (generics), not a trait object: the compiler generates one actor per factory type.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 
@@ -17,7 +18,7 @@ use chat_picarto::PicartoSource;
 use chat_streamelements::StreamElementsSource;
 use chat_streamlabs::StreamlabsSource;
 use chat_twitch::TwitchSource;
-use chat_youtube::oauth::{LoginRequired, TokenProvider};
+use chat_youtube::oauth::{Account, LoginRequired, TokenProvider};
 use chat_youtube::{Auth, EmojiMap, YouTubeSource, YouTubeTarget};
 use tokio::sync::{mpsc, watch};
 
@@ -33,8 +34,8 @@ pub(crate) trait SourceFactory: Send + Sync + 'static {
         config: &SourceConfig,
     ) -> impl Future<Output = anyhow::Result<Self::Source>> + Send;
 
-    /// A source needed a login that isn't valid (anymore). Forget any cached
-    /// one, so the next build picks up a fresh login.
+    /// A source needed a login that isn't valid (anymore). Forget the cached
+    /// ones, so the next build picks up a fresh login.
     fn forget_login(&self) {}
 
     /// New YouTube settings (client, API key, emojis) for future builds.
@@ -86,12 +87,13 @@ pub(crate) struct Production {
     // Changed at runtime by `set_youtube`, read by every build. A std Mutex:
     // only ever held for a quick clone, never across an `.await`.
     youtube: std::sync::Mutex<YouTubeSettings>,
-    /// One login shared by all YouTube sources: one cached access token,
-    /// refreshed once, instead of one per source.
-    login: tokio::sync::Mutex<Option<TokenProvider>>,
+    /// One login per account, shared by all YouTube sources that use it:
+    /// one cached access token, refreshed once, instead of one per source.
+    logins: tokio::sync::Mutex<HashMap<Account, TokenProvider>>,
     /// See `EngineConfig::emoji_cache_dir`.
     emoji_cache: Option<PathBuf>,
-    /// See `EngineConfig::secrets`: the tip services' tokens.
+    /// See `EngineConfig::secrets`: the YouTube logins, the tip services'
+    /// tokens.
     secrets: Option<SecretStore>,
     /// The tip settings, watched: every tip source gets a copy of this
     /// receiver, so a change reaches the running ones without a reconnect.
@@ -108,7 +110,7 @@ impl Production {
     ) -> Self {
         Self {
             youtube: std::sync::Mutex::new(youtube),
-            login: tokio::sync::Mutex::new(None),
+            logins: tokio::sync::Mutex::new(HashMap::new()),
             emoji_cache,
             secrets,
             tips,
@@ -148,13 +150,32 @@ impl Production {
         })
     }
 
-    async fn login(&self) -> anyhow::Result<TokenProvider> {
-        let mut cached = self.login.lock().await;
-        if let Some(provider) = &*cached {
+    /// The login of a YouTube source with `account`: that channel's, or
+    /// without one, the first connected. Before any is listed, the single
+    /// login of older versions (until the app has moved it, see
+    /// `chat_engine::youtube`; headless mode never does).
+    async fn login(&self, account: Option<&str>) -> anyhow::Result<TokenProvider> {
+        let settings = self.youtube();
+        let account = match settings.account_for(account) {
+            Some(listed) => Account::Channel(listed.channel_id.clone()),
+            // Not listed: its login may still be stored (a list edited by
+            // hand); if not, that's what the error says.
+            None => account.map_or(Account::Legacy, |id| Account::Channel(id.into())),
+        };
+        let mut cached = self.logins.lock().await;
+        if let Some(provider) = cached.get(&account) {
             return Ok(provider.clone());
         }
-        let provider = TokenProvider::from_store(self.youtube().oauth_app()?).await?;
-        *cached = Some(provider.clone());
+        // The missing client first: that's what the streamer can fix.
+        let app = settings.oauth_app()?;
+        let Some(secrets) = &self.secrets else {
+            return Err(
+                SetupError("this engine keeps no secrets, so no YouTube login".into()).into(),
+            );
+        };
+        let app = app.with_store(secrets.clone());
+        let provider = TokenProvider::from_store(app, account.clone()).await?;
+        cached.insert(account, provider.clone());
         Ok(provider)
     }
 }
@@ -183,7 +204,7 @@ impl SourceFactory for Production {
                 tips: self.tips.clone(),
             }),
             SourceConfig::Demo => SourceSpec::Demo(DemoSource::default()),
-            SourceConfig::YouTube { video_id } => {
+            SourceConfig::YouTube { video_id, account } => {
                 let settings = self.youtube();
                 let emojis = match &settings.emojis {
                     Some(path) => EmojiMap::load(path)
@@ -192,14 +213,14 @@ impl SourceFactory for Production {
                 };
                 let target = match video_id {
                     None => YouTubeTarget::OwnBroadcast {
-                        login: self.login().await?,
+                        login: self.login(account.as_deref()).await?,
                     },
                     Some(id) => {
                         // A public video works with just an API key; without
                         // one, the login works too.
                         let auth = match &settings.api_key {
                             Some(key) => Auth::ApiKey(key.clone()),
-                            None => Auth::OAuth(self.login().await?),
+                            None => Auth::OAuth(self.login(account.as_deref()).await?),
                         };
                         YouTubeTarget::Video {
                             id: id.clone(),
@@ -220,8 +241,8 @@ impl SourceFactory for Production {
     fn forget_login(&self) {
         // `try_lock`: this is sync; if a build holds the lock right now, it's
         // loading a fresh login anyway.
-        if let Ok(mut cached) = self.login.try_lock() {
-            *cached = None;
+        if let Ok(mut cached) = self.logins.try_lock() {
+            cached.clear();
         }
     }
 
@@ -246,6 +267,71 @@ mod tests {
         .context("Picarto chat");
         assert!(needs_attention(&missing));
         assert!(!needs_attention(&anyhow::anyhow!("connection reset")));
+    }
+
+    /// A YouTube source uses its channel's login from the engine's secret
+    /// store; without a channel, the first one listed, and before any is,
+    /// the single login of older versions. Loading one asks nothing of
+    /// Google.
+    #[tokio::test]
+    async fn a_youtube_source_uses_its_channels_login() {
+        let dir = std::env::temp_dir().join(format!(
+            "chat-engine-factory-youtube-{}",
+            std::process::id()
+        ));
+        let store = SecretStore::Dir(dir.clone());
+        let mut youtube = YouTubeSettings {
+            client_id: Some("test-client.apps.googleusercontent.com".into()),
+            client_secret: Some("test-secret".into()),
+            ..Default::default()
+        };
+        let factory = |youtube: &YouTubeSettings| {
+            Production::new(
+                youtube.clone(),
+                None,
+                Some(store.clone()),
+                watch::channel(TipSettings::default()).1,
+            )
+        };
+        let own = |account: Option<&str>| SourceConfig::YouTube {
+            video_id: None,
+            account: account.map(Into::into),
+        };
+        let builds =
+            async |factory: &Production, config: SourceConfig| match factory.build(&config).await {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    assert!(is_login_required(&e), "{e:#}");
+                    Err(())
+                }
+            };
+        let name = |id: &str| format!("youtube:test-client.apps.googleusercontent.com{id}");
+
+        // Before any channel is listed: the older single login.
+        let none_listed = factory(&youtube);
+        assert!(builds(&none_listed, own(None)).await.is_err());
+        store.save(&name(""), "refresh-old").await.unwrap();
+        assert!(builds(&none_listed, own(None)).await.is_ok());
+
+        for (id, channel) in [("UC_main", "your_channel"), ("UC_second", "your_second")] {
+            youtube.connect(crate::config::YouTubeChannel {
+                channel_id: id.into(),
+                name: channel.into(),
+            });
+        }
+        store.save(&name(":UC_second"), "refresh-2").await.unwrap();
+        let listed = factory(&youtube);
+        assert!(builds(&listed, own(Some("UC_second"))).await.is_ok());
+        assert!(
+            builds(&listed, own(Some("UC_main"))).await.is_err(),
+            "another channel's login doesn't stand in"
+        );
+        assert!(
+            builds(&listed, own(None)).await.is_err(),
+            "the first listed, not the older login"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

@@ -24,6 +24,12 @@ tracing.workspace = true
 axum.workspace = true
 oauth2.workspace = true
 
+[features]
+# The stand-in for Google's token and channel endpoints (`oauth::fake_google`),
+# for other crates' tests: chat-engine's YouTube login tests. Never in a real
+# build.
+test-support = []
+
 [dev-dependencies]
 tracing-subscriber.workspace = true
 # Tests stand in for YouTube's gRPC endpoint, which speaks HTTP/2.

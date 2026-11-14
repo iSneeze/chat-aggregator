@@ -221,11 +221,35 @@ the total isn't counted twice.
   an intercepted code is useless). The long-lived refresh token goes into
   the OS keyring (a file only the user can read if there's none);
   `TokenProvider` hands out access tokens and renews them before they
-  expire. The app asks the engine for all of it (`youtube_account`,
+  expire. The app asks the engine for all of it (`youtube_accounts`,
   `youtube_login`, `youtube_logout`): the engine has the client in its
-  settings, runs the login on its own tokio runtime and restarts the
-  YouTube sources afterwards. Cancelling a login is dropping it
-  (`YouTubeLogin`), which stops the local server.
+  settings and the secret store, runs the login on its own tokio runtime
+  and restarts the YouTube sources afterwards. Cancelling a login is
+  dropping it (`YouTubeLogin`), which stops the local server.
+- **Several channels**: a login belongs to one channel, the one picked on
+  Google's page (a Google account can own several, as brand accounts), so
+  a streamer with several channels logs in once per channel. The consent
+  URL says `prompt=select_account consent`: without `select_account`,
+  Google may quietly reuse the account signed in to the browser, and
+  "Add channel" would log in the first channel again. After the code
+  exchange, `channels.list` (1 unit) says which channel it was, and the
+  token is stored under it (`youtube:<client id>:<channel id>`, chat-youtube's
+  `Account`). The keyring can't list what it holds, so the settings list
+  the connected channels (`[[youtube.accounts]]`: channel id and name, no
+  secrets), and each YouTube source names its channel (`account`; without
+  one, the first listed). The factory keeps one `TokenProvider` per
+  account, shared by the sources using it. Checking the logins costs no
+  quota: a token refresh says whether Google still accepts each one.
+  All channels share the one Google project's quota.
+- **The login of older versions** (one per client, `youtube:<client id>`,
+  channel unknown) is moved by the app's first check
+  (`EngineHandle::youtube_accounts`): `adopt_legacy_login` asks whose it is
+  (1 unit) and stores a copy under the channel; the channel goes into the
+  settings, and only once they're saved is the old entry deleted. Every
+  step that fails leaves the old entry, which keeps working (sources
+  without an `account` use it while no channel is listed) and is moved at
+  the next check, so nobody logs in again. One Google rejects is removed.
+  Headless mode never saves, so it keeps using the old entry.
 - **Custom emoji**: the API only sends `:codes:`. While a broadcast's
   chat is read, a second task (`web_chat.rs`) follows the same chat on
   YouTube's web chat page, logged out, and picks the emoji (codes and
@@ -871,7 +895,7 @@ happened to another overlay: CVE-2024-7971).
    together; OBS only the names of the configured filters and sources).
    A test sends a message with JSON and markup after the command and
    checks Warudo gets exactly the configured action.
-7. **Secrets**: the YouTube refresh token and the OBS password in the OS
+7. **Secrets**: the YouTube refresh tokens (one per channel) and the OBS password in the OS
    keyring (`chat_core::secrets`), the config file 0600,
    written atomically (`chat_core::fs::write_private`: temp file, sync,
    rename, so a crash never leaves it half-written), redacted debug output,

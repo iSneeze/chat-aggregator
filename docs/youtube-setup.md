@@ -103,7 +103,9 @@ publicly either.
    **Save**. (They're saved in `config.toml` in chat-aggregator's settings
    folder, readable only by your user account.)
 2. Click **Connect YouTube**. Your browser opens Google's login page:
-   1. Pick the Google account that owns your **YouTube channel**.
+   1. Pick the Google account that owns your **YouTube channel**. If that
+      account has several channels (brand accounts), Google asks which
+      one next.
    2. Google warns **"Google hasn't verified this app"**. That's expected
       for your own app: **Advanced → Go to chat-aggregator (unsafe)**.
    3. Allow **"View your YouTube account"** (read-only access).
@@ -113,12 +115,23 @@ publicly either.
 The login is stored in your system's keyring (Keychain on macOS,
 Credential Manager on Windows, Secret Service such as gnome-keyring or
 KWallet on Linux; without one, a file only you can read in the settings
-folder). You only do this once. **Log out** in the YouTube section (e.g. to
-switch channels) removes it.
+folder). You only do this once per channel. **Log out** in the YouTube
+section removes it.
+
+### More than one channel
+
+Streaming on several channels? Connect each: **Add channel** in the
+YouTube section, and pick the other account or channel on Google's page.
+Each channel gets its own login and its own row with **Log out**. All of
+them use your one Google project, so they share its daily quota (a channel
+waiting for its next broadcast costs about 720 units a day, so leaving
+several switched on is fine).
 
 ## 6. Add your broadcasts as a source
 
 Under **Add a source**, choose **YouTube (your broadcasts)** → **Add**.
+With several channels connected, pick the channel first; add one source
+per channel you stream on, and switch each on or off in the list.
 
 chat-aggregator finds your current or next broadcast by itself (including
 unlisted and members-only streams), waits cheaply until it starts, and
@@ -164,13 +177,25 @@ type = "youtube"
 ```
 
 (The environment variables `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`
-override the file.) Then log in once, and start:
+override the file.) Then log in once per channel, and start:
 
 ```sh
 cargo run -p chat-engine --example run -- --youtube-login    # as in step 5
 cargo run -p chat-engine --example run                       # everything in config.toml
-cargo run -p chat-engine --example run -- --youtube-logout   # to log out
+cargo run -p chat-engine --example run -- --youtube-logout <channel id>   # to log out
 ```
+
+The command-line version never changes `config.toml` itself, so the login
+prints the channel's entry for you to add to it:
+
+```toml
+[[youtube.accounts]]
+channel_id = "UC…"
+name = "your channel"
+```
+
+A YouTube source reads the first channel listed there; for another one,
+add `account = "UC…"` (its channel id) to its `[[sources]]` block.
 
 The terminal shows the same status lights per source.
 
@@ -195,6 +220,7 @@ The terminal shows the same status lights per source.
 | `invalid_client` | client ID or secret mistyped, or from another project: **Change client** in the YouTube section |
 | `access_denied` / "app is being tested" | the app is still in *Testing* and your account isn't a test user (step 3) |
 | `YouTube login required: Google rejected the stored login` | the login expired or was revoked. If it happens weekly, the app is still in *Testing* (step 3). **Connect YouTube** again. |
-| `this Google account has no YouTube channel` | you logged in with a different Google account than the channel's: **Log out**, connect again with the right one |
+| `this Google account has no YouTube channel` | you picked a Google account without a channel on Google's page: connect again and pick the channel's account |
+| `YouTube login required: this channel isn't connected (anymore)` | the source's channel was logged out: **Add channel** and pick it again, or remove the source |
 | `YouTube quota used up for today; resuming at …` | the daily quota is used up; the source continues by itself after midnight Pacific time |
 | `YOUTUBE_CLIENT_ID must be set` (headless) | the `[youtube]` section of `config.toml` is missing |

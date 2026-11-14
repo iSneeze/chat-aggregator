@@ -44,7 +44,7 @@ source in the terminal:
 cargo run -p chat-engine --example run -- --demo            # every message kind, no account needed
 cargo run -p chat-engine --example run -- --init-config     # once: write a commented config.toml
 cargo run -p chat-engine --example run                      # start everything in the config file
-cargo run -p chat-engine --example run -- --youtube-login   # once; see youtube-setup.md
+cargo run -p chat-engine --example run -- --youtube-login   # once per channel; see youtube-setup.md
 cargo run -p chat-engine --example run -- --twitch <channel> --youtube-own   # sources as flags instead
 ```
 

@@ -46,10 +46,10 @@ pub use chat_reactions::{
     ReactionStatus, Role, Rule, RuleStatus, Target, Trigger, WarudoSettings,
 };
 pub use chat_server::{ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource, widgets};
-pub use config::{SourceConfig, SourceToken, YouTubeSettings};
+pub use config::{SourceConfig, SourceToken, YouTubeChannel, YouTubeSettings};
 pub use config_file::{AppSettings, Appearance, ConfigFile, ServerSettings, Settings, SourceEntry};
 pub use status::{Health, SourceId, SourceState, SourceStatus, Status};
-pub use youtube::{YouTubeAccount, YouTubeLogin};
+pub use youtube::{YouTubeAccount, YouTubeAccounts, YouTubeLogin};
 // For checking a custom emoji export before using it (the app's import).
 pub use chat_youtube::EmojiMap;
 
@@ -90,9 +90,9 @@ pub struct EngineConfig {
     /// (`config.toml`). `None`: never written (headless mode, which leaves
     /// your file and its comments alone, and tests).
     pub save_to: Option<PathBuf>,
-    /// Where secrets other than the YouTube login are read from (the OBS
-    /// password, `OBS_PASSWORD`; the tip services' tokens). `None`: nowhere
-    /// (tests).
+    /// Where secrets are kept: the YouTube logins (one per channel), the
+    /// OBS password (`OBS_PASSWORD`), the tip services' tokens. `None`:
+    /// nowhere (tests).
     pub secrets: Option<SecretStore>,
 }
 
@@ -113,8 +113,8 @@ pub struct EngineHandle {
     runtime: tokio::runtime::Handle,
     /// To the chat reactions: tests, nudges (`reactions.rs`).
     reactions: mpsc::Sender<ReactionRequest>,
-    /// Where the OBS password and the tip services' tokens go
-    /// (`EngineConfig::secrets`).
+    /// Where the YouTube logins, the OBS password and the tip services'
+    /// tokens go (`EngineConfig::secrets`).
     secrets: Option<SecretStore>,
 }
 
@@ -577,7 +577,13 @@ mod tests {
     #[tokio::test]
     async fn youtube_without_settings_needs_attention() {
         let engine = Engine::start(EngineConfig {
-            sources: vec![SourceConfig::YouTube { video_id: None }.into()],
+            sources: vec![
+                SourceConfig::YouTube {
+                    video_id: None,
+                    account: None,
+                }
+                .into(),
+            ],
             settings: local(),
             ..EngineConfig::default()
         })
@@ -1143,9 +1149,14 @@ mod tests {
         let engine = Engine::start_with(
             EngineConfig {
                 sources: vec![
-                    SourceConfig::YouTube { video_id: None }.into(),
+                    SourceConfig::YouTube {
+                        video_id: None,
+                        account: None,
+                    }
+                    .into(),
                     SourceConfig::YouTube {
                         video_id: Some("off".into()),
+                        account: None,
                     }
                     .into(),
                     script("emit:0").into(),
@@ -1179,9 +1190,24 @@ mod tests {
         );
         assert_eq!(factory.builds("emit:0"), 1, "other sources aren't touched");
 
-        // A login made (or removed) restarts them too.
-        handle.youtube_login_changed().await.unwrap();
+        // A login made (or removed) restarts them too...
+        let saved = handle.youtube_logins_changed(|_| {}).await.unwrap();
+        assert!(!saved, "this engine saves nothing");
         wait_for(&handle, |_| factory.builds("youtube") == 4).await;
+        // ...once, also when it changes the settings (a new channel).
+        handle
+            .youtube_logins_changed(|youtube| {
+                youtube.connect(YouTubeChannel {
+                    channel_id: "UC_second".into(),
+                    name: "your_second_channel".into(),
+                })
+            })
+            .await
+            .unwrap();
+        wait_for(&handle, |_| factory.builds("youtube") == 5).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(factory.builds("youtube"), 5, "one restart per login");
+        assert_eq!(handle.settings().borrow().youtube.accounts.len(), 1);
         engine.shutdown().await;
     }
 
@@ -1193,7 +1219,13 @@ mod tests {
         let factory = Arc::new(Scripted::default());
         let engine = Engine::start_with(
             EngineConfig {
-                sources: vec![SourceConfig::YouTube { video_id: None }.into()],
+                sources: vec![
+                    SourceConfig::YouTube {
+                        video_id: None,
+                        account: None,
+                    }
+                    .into(),
+                ],
                 settings: local(),
                 ..EngineConfig::default()
             },
@@ -1231,7 +1263,7 @@ mod tests {
             s.source(id).is_some_and(|s| s.health() == Health::Ok)
         })
         .await;
-        assert_eq!(s.source(id).unwrap().label(), "Test messages");
+        assert_eq!(s.source(id).unwrap().label, "Test messages");
         assert_eq!(s.source(id).unwrap().config, None, "it has no settings");
         assert!(
             handle.update_source(id, SourceConfig::Demo).await.is_err(),

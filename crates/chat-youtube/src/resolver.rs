@@ -170,9 +170,34 @@ pub(crate) async fn bearer(login: &TokenProvider) -> anyhow::Result<(&'static st
     Ok(("authorization", format!("Bearer {token}")))
 }
 
-/// The logged-in account's channel name, e.g. to confirm a login worked.
-/// Costs 1 quota unit.
-pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Result<String> {
+/// Where `channels.list` lives; the login's tests point it at a fake.
+pub(crate) const CHANNELS_URL: &str = "https://www.googleapis.com/youtube/v3/channels";
+
+/// The YouTube channel a login belongs to: Google's consent page asks which
+/// one (a Google account can own several, as brand accounts), and the login
+/// only ever sees that one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnChannel {
+    /// Stable, unlike the name: what the login is stored under.
+    pub id: String,
+    pub title: String,
+}
+
+/// The logged-in account's channel, e.g. to confirm a login worked. Costs 1
+/// quota unit.
+pub async fn own_channel(http: &reqwest::Client, auth: &Auth) -> anyhow::Result<OwnChannel> {
+    own_channel_at(http, auth.header().await?, CHANNELS_URL).await
+}
+
+/// [`own_channel`], authenticated with the header `auth` (name, value), at
+/// `channels_url` (a fake in tests). A header rather than an [`Auth`]: a
+/// fresh login has an access token before it knows whose it is, so before
+/// there's a [`TokenProvider`] for it.
+pub(crate) async fn own_channel_at(
+    http: &reqwest::Client,
+    auth: (&str, String),
+    channels_url: &str,
+) -> anyhow::Result<OwnChannel> {
     #[derive(serde::Deserialize)]
     struct ChannelsResponse {
         #[serde(default)]
@@ -180,6 +205,7 @@ pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Resul
     }
     #[derive(serde::Deserialize)]
     struct Channel {
+        id: String,
         snippet: ChannelSnippet,
     }
     #[derive(serde::Deserialize)]
@@ -187,11 +213,10 @@ pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Resul
         title: String,
     }
 
-    let url = "https://www.googleapis.com/youtube/v3/channels\
-               ?part=snippet&mine=true&fields=items/snippet/title";
-    let response = auth
-        .apply(http.get(url))
-        .await?
+    let url = format!("{channels_url}?part=id,snippet&mine=true&fields=items(id,snippet/title)");
+    let response = http
+        .get(url)
+        .header(auth.0, auth.1)
         .send()
         .await
         .context("channels.list request failed")?;
@@ -207,7 +232,10 @@ pub async fn channel_title(http: &reqwest::Client, auth: &Auth) -> anyhow::Resul
     resp.items
         .into_iter()
         .next()
-        .map(|c| c.snippet.title)
+        .map(|c| OwnChannel {
+            id: c.id,
+            title: c.snippet.title,
+        })
         .context("this Google account has no YouTube channel")
 }
 

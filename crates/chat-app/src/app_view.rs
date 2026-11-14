@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use chat_engine::{
     EngineHandle, Health, OutputStatus, SourceConfig, SourceId, SourceState, SourceStatus, Status,
+    YouTubeSettings,
 };
 use chat_render::{Builtin, themes};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -113,13 +114,18 @@ impl NewSource {
         }
     }
 
-    fn config(self, text: &str) -> SourceConfig {
+    /// `account`: the YouTube channel whose broadcasts to read (its id).
+    fn config(self, text: &str, account: Option<String>) -> SourceConfig {
         let text = text.trim().to_string();
         match self {
             NewSource::Twitch => SourceConfig::Twitch { channel: text },
-            NewSource::YouTubeOwn => SourceConfig::YouTube { video_id: None },
+            NewSource::YouTubeOwn => SourceConfig::YouTube {
+                video_id: None,
+                account,
+            },
             NewSource::YouTubeVideo => SourceConfig::YouTube {
                 video_id: Some(text),
+                account: None,
             },
             NewSource::Picarto => SourceConfig::Picarto { channel: text },
             NewSource::StreamElements => SourceConfig::StreamElements { account: text },
@@ -135,6 +141,9 @@ pub struct AppView {
     youtube: Entity<YouTubePanel>,
     status: Status,
     new_source: NewSource,
+    /// The YouTube channel picked for a new "your broadcasts" source (its
+    /// id), when several are connected; see `new_youtube_account`.
+    new_account: Option<String>,
     input: Entity<InputState>,
     /// The second field, for kinds that need a secret (`needs_token`).
     token: Entity<InputState>,
@@ -286,6 +295,7 @@ impl AppView {
             youtube,
             status,
             new_source: NewSource::Twitch,
+            new_account: None,
             input,
             token,
             form_error: None,
@@ -542,9 +552,23 @@ impl AppView {
         .detach();
     }
 
+    /// The channel a new "your broadcasts" source reads: the one picked,
+    /// or the first connected. Always named in the source, so it stays
+    /// with that channel even if the first one is logged out later. `None`
+    /// before any channel is connected.
+    fn new_youtube_account(&self, youtube: &YouTubeSettings) -> Option<String> {
+        youtube
+            .account_for(self.new_account.as_deref())
+            .or(youtube.accounts.first())
+            .map(|account| account.channel_id.clone())
+    }
+
     fn add_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value();
-        let config = self.new_source.config(&text);
+        let youtube = self.config.read(cx).settings().youtube;
+        let config = self
+            .new_source
+            .config(&text, self.new_youtube_account(&youtube));
         if let Err(problem) = config.validate() {
             self.form_error = Some(problem);
             cx.notify();
@@ -938,7 +962,7 @@ impl AppView {
                 v_flex()
                     .flex_1()
                     .overflow_hidden()
-                    .child(div().child(source.label()))
+                    .child(div().child(source.label.clone()))
                     .child(
                         div()
                             .text_sm()
@@ -1114,6 +1138,41 @@ impl AppView {
         );
 
         let mut row = h_flex().gap_2().items_center();
+        // Your broadcasts on which channel, if more than one is connected.
+        let youtube = self.config.read(cx).settings().youtube;
+        if self.new_source == NewSource::YouTubeOwn && youtube.accounts.len() >= 2 {
+            let chosen = self.new_youtube_account(&youtube);
+            let channels = segmented(
+                cx,
+                youtube.accounts.iter().enumerate().map(|(i, account)| {
+                    let selected = chosen.as_ref() == Some(&account.channel_id);
+                    let id = account.channel_id.clone();
+                    Button::new(("youtube-account", i))
+                        .label(account.name.clone())
+                        .small()
+                        .selected(selected)
+                        .map(|button| {
+                            if selected {
+                                button.primary()
+                            } else {
+                                button.ghost()
+                            }
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.new_account = Some(id.clone());
+                            cx.notify();
+                        }))
+                }),
+            );
+            row = row
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Channel"),
+                )
+                .child(channels);
+        }
         if self.new_source.needs_text().is_some() {
             row = row.child(
                 div()
@@ -1303,6 +1362,8 @@ mod tests {
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
+
+    use chat_engine::SourceConfig;
 
     use super::{AppView, NewSource};
     use crate::app_config::AppConfig;
@@ -1625,6 +1686,129 @@ mod tests {
         let path = ui.settings_dir.join("config.toml");
         run_until(cx, || {
             ConfigFile::load(&path).is_ok_and(|file| file.reactions.paused)
+        });
+    }
+
+    /// Engine settings with a YouTube client and these channels connected
+    /// (none of them with a stored login), its secrets in a folder of the
+    /// test's own: checking them asks nothing of Google.
+    fn with_youtube_channels(channels: &[(&str, &str)]) -> EngineConfig {
+        let mut config = EngineConfig::default();
+        let youtube = &mut config.settings.youtube;
+        youtube.client_id = Some("test-client.apps.googleusercontent.com".into());
+        youtube.client_secret = Some("test-secret".into());
+        for (id, name) in channels {
+            youtube.connect(chat_engine::YouTubeChannel {
+                channel_id: (*id).into(),
+                name: (*name).into(),
+            });
+        }
+        config.secrets = Some(chat_engine::SecretStore::Dir(
+            std::env::temp_dir().join(format!("chat-app-ui-test-secrets-{}", std::process::id())),
+        ));
+        config
+    }
+
+    /// With several YouTube channels connected, a new "your broadcasts"
+    /// source reads the one picked; with one, that one. Either way the
+    /// source names it.
+    #[gpui_kit::test]
+    fn a_new_youtube_source_reads_the_channel_picked(cx: &mut TestAppContext) {
+        let ui = open_with(
+            cx,
+            with_youtube_channels(&[
+                ("UC_main", "your_channel"),
+                ("UC_second", "your_second_channel"),
+            ]),
+        );
+        let path = ui.settings_dir.join("config.toml");
+        let saved_sources = || {
+            ConfigFile::load(&path)
+                .map(|file| file.sources)
+                .unwrap_or_default()
+        };
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            assert!(
+                window.try_find(("youtube-account", 0usize)).is_none(),
+                "Twitch"
+            );
+            pick(window, NewSource::YouTubeOwn, cx);
+            window.click(("youtube-account", 1usize), cx);
+            window.click("add", cx);
+        })
+        .unwrap();
+        run_until(cx, || saved_sources().len() == 1);
+        assert_eq!(
+            saved_sources()[0].config,
+            SourceConfig::YouTube {
+                video_id: None,
+                account: Some("UC_second".into()),
+            }
+        );
+        drop(ui);
+
+        let ui = open_with(cx, with_youtube_channels(&[("UC_main", "your_channel")]));
+        let path = ui.settings_dir.join("config.toml");
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            pick(window, NewSource::YouTubeOwn, cx);
+            assert!(
+                window.try_find(("youtube-account", 0usize)).is_none(),
+                "nothing to choose from"
+            );
+            window.click("add", cx);
+        })
+        .unwrap();
+        let saved_sources = || {
+            ConfigFile::load(&path)
+                .map(|file| file.sources)
+                .unwrap_or_default()
+        };
+        run_until(cx, || saved_sources().len() == 1);
+        assert_eq!(
+            saved_sources()[0].config,
+            SourceConfig::YouTube {
+                video_id: None,
+                account: Some("UC_main".into()),
+            }
+        );
+    }
+
+    /// Several channels get a row each in the YouTube section; "Log out"
+    /// takes one off the list.
+    #[gpui_kit::test]
+    fn youtube_channels_are_listed_and_logged_out_one_by_one(cx: &mut TestAppContext) {
+        let ui = open_with(
+            cx,
+            with_youtube_channels(&[
+                ("UC_main", "your_channel"),
+                ("UC_second", "your_second_channel"),
+            ]),
+        );
+        // No login stored for either: both say so, and offer a new one.
+        run_until_window(cx, &ui, |window| {
+            window.try_find(("youtube-relogin", 1usize)).is_some()
+        });
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            assert!(window.try_find(("youtube-relogin", 0usize)).is_some());
+            assert!(window.try_find("youtube-add").is_some());
+            window.click(("youtube-logout", 1usize), cx);
+        })
+        .unwrap();
+        let accounts = || {
+            ui.engine
+                .handle()
+                .settings()
+                .borrow()
+                .youtube
+                .accounts
+                .clone()
+        };
+        run_until(cx, || accounts().len() == 1);
+        assert_eq!(accounts()[0].channel_id, "UC_main");
+        // One channel left: back in the first row, no list.
+        run_until_window(cx, &ui, |window| {
+            window.try_find(("youtube-logout", 1usize)).is_none()
+                && window.try_find(("youtube-logout", 0usize)).is_some()
         });
     }
 
