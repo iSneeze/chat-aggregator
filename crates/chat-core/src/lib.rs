@@ -164,7 +164,8 @@ pub struct Author {
     pub color: Option<String>,
     /// Badge names, e.g. `moderator`, `subscriber`, `member`, `vip`.
     pub badges: Vec<String>,
-    /// Profile picture URL (YouTube and Picarto).
+    /// Profile picture URL (YouTube, Picarto, and RPlay for chatters who
+    /// have one).
     pub avatar_url: Option<String>,
 }
 

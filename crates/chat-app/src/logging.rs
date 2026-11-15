@@ -11,7 +11,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use tracing::Subscriber;
+use tracing_subscriber::field::RecordFields;
+use tracing_subscriber::fmt::format::{DefaultFields, Writer};
+use tracing_subscriber::fmt::{FormatFields, MakeWriter};
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{EnvFilter, Layer, fmt, prelude::*};
 
 /// The current run's log, next to `config.toml`.
 pub const FILE_NAME: &str = "chat-aggregator.log";
@@ -30,7 +35,7 @@ pub fn init(settings_dir: Option<&Path>) {
     // `Arc<File>` is a writer the layer can share between threads: `&File`
     // implements `Write`, so no lock is needed around it. An `Option` of a
     // layer is a layer too; `None` does nothing.
-    let file_layer = file.map(|file| fmt::layer().with_ansi(false).with_writer(Arc::new(file)));
+    let file_layer = file.map(|file| file_layer(Arc::new(file)));
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with(fmt::layer())
@@ -41,6 +46,38 @@ pub fn init(settings_dir: Option<&Path>) {
         tracing::warn!("no log file: {e:#}");
     }
     log_panics();
+}
+
+/// The log file's layer: like the console's, but without colours, and with
+/// its own [`FileFields`] so span fields come out without colours too.
+fn file_layer<S, W>(writer: W) -> impl Layer<S>
+where
+    S: Subscriber + for<'span> LookupSpan<'span>,
+    W: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
+{
+    fmt::layer()
+        .with_ansi(false)
+        .fmt_fields(FileFields::default())
+        .with_writer(writer)
+}
+
+/// How the log file writes a span's fields (the `label=…` in
+/// `rplay{label=…}`): exactly as the console does, but as a type of its
+/// own. tracing-subscriber writes a span's fields out once per formatter
+/// *type* and keeps that text with the span for every layer of the same
+/// type. With one type for both, the file reused the console's text,
+/// colour codes and all.
+#[derive(Default)]
+struct FileFields(DefaultFields);
+
+impl<'writer> FormatFields<'writer> for FileFields {
+    fn format_fields<R: RecordFields>(
+        &self,
+        writer: Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        self.0.format_fields(writer, fields)
+    }
 }
 
 /// Creates a fresh log file in `dir`, keeping the previous one as
@@ -97,6 +134,57 @@ mod tests {
             "run 1"
         );
         assert!(!dir.join(OLD_FILE_NAME).exists());
+    }
+
+    /// Something to log into, for tests: a shared buffer.
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+
+        fn make_writer(&'a self) -> Buffer {
+            self.clone()
+        }
+    }
+
+    impl Buffer {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    #[test]
+    fn the_file_gets_no_colour_codes_from_the_console() {
+        let console = Buffer::default();
+        let file = Buffer::default();
+        // Stacked as in `init`: the console's layer sees each span first.
+        let subscriber = tracing_subscriber::registry()
+            .with(fmt::layer().with_ansi(true).with_writer(console.clone()))
+            .with(file_layer(file.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            let _span = tracing::info_span!("rplay", label = %"Main").entered();
+            tracing::info!(live = true, "connected");
+        });
+        // The console has colours, so the test would catch the file copying
+        // them...
+        assert!(console.text().contains('\x1b'));
+        // ...and the file has none, in the event's fields or the span's.
+        let file = file.text();
+        assert!(!file.contains('\x1b'), "{file:?}");
+        assert!(file.contains("rplay{label=Main}"), "{file:?}");
+        assert!(file.contains("connected live=true"), "{file:?}");
     }
 
     #[test]

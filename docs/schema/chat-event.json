@@ -4,7 +4,7 @@
     "Author": {
       "properties": {
         "avatar_url": {
-          "description": "Profile picture URL (YouTube and Picarto).",
+          "description": "Profile picture URL (YouTube, Picarto, and RPlay for chatters who\nhave one).",
           "type": [
             "string",
             "null"

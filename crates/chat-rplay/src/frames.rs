@@ -15,6 +15,7 @@ use chat_core::{Author, ChatEvent, ChatMessage, ChatPlatform, MessageKind};
 use serde_json::{Map, Value};
 use tracing::{info, warn};
 
+use crate::avatars::photo_url;
 use crate::display::{anonymous_name, censor, name_color};
 use crate::emotes::Emotes;
 
@@ -43,6 +44,9 @@ pub(crate) enum Frame {
     Live(bool),
     /// The channel's emotes changed: fetch them again.
     ReloadEmotes,
+    /// A user changed something (`updatedUserData`), maybe their profile
+    /// photo: check it again (see `avatars`).
+    UserChanged(String),
     /// An error frame from the chat server: worth a line in the log.
     Error(String),
     /// Everything else: settings that only changed the room's state (banned
@@ -154,8 +158,10 @@ impl Room {
         };
         let sender_attributes = attributes(sender);
         // What a message carries, for learning RPlay's chat from a log (the
-        // names only: the values are chat). The sender's attributes are
-        // where a subscriber tier would be, if RPlay sends one.
+        // names only: the values are chat). In the first live test
+        // (2026-11-15) the sender had only `isBan` and `nickname`, no
+        // subscriber tier; RPlay's API isn't stable, so this stays to show
+        // when that changes.
         if self.first_time("message") {
             info!(
                 fields = ?names(frame.as_object()),
@@ -183,7 +189,7 @@ impl Room {
         Frame::Event(ChatEvent::Message(ChatMessage {
             id: id.to_owned(),
             platform: PLATFORM,
-            author: self.author(user_id, self.shown_name(nickname, hidden)),
+            author: self.author(user_id, self.shown_name(nickname, hidden), hidden),
             text,
             emotes: body.emotes,
             timestamp: send_time(frame),
@@ -230,8 +236,11 @@ impl Room {
                 Some("created" | "appended") => self.donation(frame, &attrs),
                 _ => Frame::Ignored,
             },
+            // How RPlay deletes (seen 2026-11-15: `messageId`, `deletedBy`,
+            // `chatCacheVersion`).
             "messageDeleted" => delete(get("messageId")),
-            // IVS's own deletion, in case RPlay uses it too.
+            // IVS's own deletion: RPlay didn't use it in the first live test,
+            // kept in case its moderation ever goes through IVS directly.
             "aws:DELETE_MESSAGE" => delete(get("MessageID")),
             "aws:DISCONNECT_USER" => {
                 // RPlay's server sets the reason (a word like `chatBan`, no
@@ -278,6 +287,10 @@ impl Room {
                 Frame::Ignored
             }
             "updatedEmoticonData" => Frame::ReloadEmotes,
+            "updatedUserData" => match get("userOid").filter(|id| !id.is_empty()) {
+                Some(user_id) => Frame::UserChanged(user_id.to_owned()),
+                None => Frame::Ignored,
+            },
             _ => Frame::Ignored,
         }
     }
@@ -302,7 +315,7 @@ impl Room {
         let message = ChatMessage {
             id: id.to_owned(),
             platform: PLATFORM,
-            author: self.author(user_id, String::new()),
+            author: self.author(user_id, String::new(), hidden),
             // No emotes: RPlay shows them in chat messages only.
             text: censor(get("content").unwrap_or_default(), &self.banned_words),
             emotes: Vec::new(),
@@ -338,7 +351,7 @@ impl Room {
         Frame::Event(ChatEvent::Message(ChatMessage {
             id: str_field(frame, "Id").unwrap_or_default().to_owned(),
             platform: PLATFORM,
-            author: self.author(from, nickname.to_owned()),
+            author: self.author(from, nickname.to_owned(), false),
             text: String::new(),
             emotes: Vec::new(),
             timestamp: send_time(frame),
@@ -348,7 +361,9 @@ impl Room {
         }))
     }
 
-    fn author(&self, user_id: &str, name: String) -> Author {
+    /// The sender as chat-core's author. `hidden`: they hid their profile
+    /// (`isHiddenName`), which on RPlay hides their photo, so they get none.
+    fn author(&self, user_id: &str, name: String, hidden: bool) -> Author {
         let mut badges = Vec::new();
         if user_id == self.channel {
             badges.push("broadcaster".to_owned());
@@ -361,9 +376,10 @@ impl Room {
             name,
             color: Some(name_color(user_id)),
             badges,
-            // RPlay's profile pictures exist only for some users, and the
-            // page checks first; not shown until that's worked out.
-            avatar_url: None,
+            // Where their photo would be: most users have none, so the
+            // source checks before the message goes out
+            // (`Avatars::verify`).
+            avatar_url: if hidden { None } else { photo_url(user_id) },
         }
     }
 
@@ -498,9 +514,9 @@ fn short(text: &str) -> &str {
         .map_or(text, |(end, _)| &text[..end])
 }
 
-/// The message text: `Content` holds JSON `{"m": "<text>"}`; if it isn't
-/// JSON, it's the text itself (both as on RPlay's page). `None` for no
-/// text at all.
+/// The message text: `Content` holds JSON `{"m": "<text>"}` (every message
+/// of the first live test did); if it isn't a JSON object, it's the text
+/// itself (both as on RPlay's page). `None` for no text at all.
 fn content(frame: &Value) -> Option<String> {
     let raw = str_field(frame, "Content").unwrap_or_default();
     let text = match serde_json::from_str::<Value>(raw) {
@@ -594,7 +610,11 @@ mod tests {
         assert_eq!(m.author.name, "Viewer42");
         assert_eq!(m.author.color.as_deref(), Some("#ffffff"));
         assert!(m.author.badges.is_empty());
-        assert_eq!(m.author.avatar_url, None);
+        // Where the photo would be; the source checks it before sending.
+        assert_eq!(
+            m.author.avatar_url.as_deref(),
+            Some("https://pb3.rplay.live/profilePhoto/aaaaaaaaaaaaaaaaaaaaaaaa-small")
+        );
         assert_eq!(m.text, "hello everyone");
         assert!(m.emotes.is_empty());
         assert_eq!(m.timestamp.to_string(), "2026-10-12T10:00:00.123456789Z");
@@ -671,14 +691,18 @@ mod tests {
             message_frame("hi").replace(r#""isHiddenName":"false""#, r#""isHiddenName":"true""#);
         // Without anonymous chat, hiding only hides the avatar.
         let mut room = room();
-        assert_eq!(message(room.decode(&hidden)).author.name, "Viewer42");
+        let m = message(room.decode(&hidden));
+        assert_eq!(m.author.name, "Viewer42");
+        assert_eq!(m.author.avatar_url, None);
         // With it, the real name never shows.
         room.decode(&event_frame(
             "studioSetting",
             json!({ "useAnonymousChat": "true" }),
         ));
         let again = hidden.replace("ExampleId001", "ExampleId002");
-        assert_eq!(message(room.decode(&again)).author.name, "AnonAru-02800");
+        let m = message(room.decode(&again));
+        assert_eq!(m.author.name, "AnonAru-02800");
+        assert_eq!(m.author.avatar_url, None);
     }
 
     #[test]
@@ -748,7 +772,10 @@ mod tests {
         let Frame::Donation(pending) = room.decode(&frame) else {
             panic!("expected a donation to finish");
         };
-        assert_eq!(room.finish(pending, None).author.name, "");
+        let m = room.finish(pending, None);
+        assert_eq!(m.author.name, "");
+        // A donor who hid their profile shows no photo either.
+        assert_eq!(m.author.avatar_url, None);
     }
 
     #[test]
@@ -872,8 +899,15 @@ mod tests {
             Frame::Error(text) => assert_eq!(text, "429 slow down"),
             other => panic!("expected an error, got {other:?}"),
         }
+        match room().decode(&event_frame(
+            "updatedUserData",
+            json!({ "userOid": VIEWER }),
+        )) {
+            Frame::UserChanged(user_id) => assert_eq!(user_id, VIEWER),
+            other => panic!("expected a changed user, got {other:?}"),
+        }
         for frame in [
-            event_frame("updatedUserData", json!({ "userOid": VIEWER })),
+            event_frame("updatedUserData", json!({})),
             event_frame("subscriberOnlyChanged", json!({ "enabled": "true" })),
             event_frame(
                 "MODERATION_ACTION",

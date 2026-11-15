@@ -241,6 +241,7 @@ static BUILTIN: LazyLock<Vec<Widget>> = LazyLock::new(|| {
             include_str!("../../../examples/live-emoji.html"),
         ),
         ("danmaku", include_str!("../../../examples/danmaku.html")),
+        ("timer", include_str!("../../../examples/timer.html")),
     ]
     .into_iter()
     .map(|(name, page)| Widget::from_page(name, page).expect("built-in widgets are valid"))

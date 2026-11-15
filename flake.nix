@@ -51,6 +51,7 @@
               # The built-in widgets (chat-server includes them).
               ./examples/live-emoji.html
               ./examples/danmaku.html
+              ./examples/timer.html
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;

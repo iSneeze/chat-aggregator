@@ -61,10 +61,13 @@ channel's state (whether it's live, its chat server, its banned words, its
 access settings and the ids of its managers), a chat token, and your
 channel's chat, with each message's author name and user id, plus
 donations and missions. Donations don't carry the sender's name, so it's
-looked up on RPlay (a public lookup, without the key). RPlay's answer about
-your channel also contains your stream key; chat-aggregator doesn't keep
-it. The emote lists (RPlay's free set and your channel's own) are
-downloaded too.
+looked up on RPlay (a public lookup, without the key). Most chatters have
+no profile picture, so chat-aggregator asks RPlay's image server once per
+chatter (and again every hour) whether theirs exists, without downloading
+it; not for chatters who hid their profile. RPlay's answer about your
+channel also contains your stream key; chat-aggregator doesn't keep it.
+The emote lists (RPlay's free set and your channel's own) are downloaded
+too.
 
 From StreamElements, only if you add it as a source, with the Overlay Token
 you enter: your channel's activity feed. That feed also carries your
@@ -124,6 +127,13 @@ keeps only the tips: each tipper's name, amount, currency and message.
   [Widgets](widgets.md)) are copied into the `widgets` folder in the
   settings folder, and the settings you pick for widgets are stored in the
   profile's file, until you remove the widget in the app.
+- **The Timer widget** remembers where it is (when it started, its
+  pauses, the time added, the ids of the chat messages that added it, and
+  a label set with `!timer desc`)
+  in your streaming software's browser storage on your computer, so it
+  carries on after a reload. It stays in your streaming software's
+  browser data until that's deleted. Switch off "Keep running through
+  reloads" and it stores nothing.
 - **Learned emoji** (codes like `:_hypeWave:` and their picture links) are
   stored per channel in the `youtube-emojis` folder in the settings folder,
   so they work right away next time. They stay until you delete that
@@ -170,21 +180,22 @@ keeps only the tips: each tipper's name, amount, currency and message.
   login, chat, chatters' profile pictures and, through YouTube's chat page,
   channel emoji), Twitch (for chat), Picarto (for chat, channel info and
   the emote lists in its website's script), RPlay (for chat, your
-  channel's state, the emote lists and donors' names, with your widget
-  key; the chat itself runs on Amazon's IVS chat service, at the address
-  RPlay names), StreamElements (for tips, with your Overlay Token) and
+  channel's state, the emote lists, donors' names and whether a chatter has
+  a profile picture, with your widget key; the chat itself runs on Amazon's
+  IVS chat service, at the address RPlay names), StreamElements (for tips, with your Overlay Token) and
   Streamlabs (for tips, with your Socket API Token). It
   downloads each YouTube profile picture shown in the overlay once from
   YouTube's image server and hands it to your streaming software itself.
   Emote and gift images in the overlay are loaded from Twitch's,
-  YouTube's, Picarto's and RPlay's image servers by your streaming software, and so
-  are Picarto chatters' and StreamElements tippers' profile pictures (from
-  StreamElements' image server).
+  YouTube's, Picarto's and RPlay's image servers by your streaming
+  software, and so are Picarto's and RPlay's chatters' and StreamElements
+  tippers' profile pictures (from StreamElements' image server).
 - **Widgets** get the chat through the same local API (switched on for
   them), like any page served from your own computer. Your streaming
   software loads the pictures and fonts a widget asks for from the web: the
-  built-in Live Emoji only loads emote pictures, from the platforms' image
-  servers. A widget you import comes from someone else, and could pass on
+  built-in Live Emoji and Danmaku only load emote pictures, from the
+  platforms' image servers, and the Timer nothing at all. A widget you
+  import comes from someone else, and could pass on
   what it shows to the servers it loads things from: import widgets only
   from people you trust.
 - **Chat reactions** (only if you set up rules for them): chat-aggregator

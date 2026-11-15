@@ -15,11 +15,13 @@
 //!
 //! Shows chat messages with their emotes, donations and missions (in
 //! coins), deletions, bans and incoming raids, with RPlay's name colours,
-//! anonymous names and the streamer's banned words. Not yet: subscriber
-//! badges and which emotes a sender's tier allows (both need a lookup per
-//! chatter), profile pictures.
+//! anonymous names, profile pictures (for chatters who have one) and the
+//! streamer's banned words. Not yet: subscriber badges and which emotes a
+//! sender's tier allows (messages carry no tier, seen 2026-11-15: both need
+//! a lookup per chatter).
 
 mod api;
+mod avatars;
 #[cfg(feature = "capture")]
 mod capture;
 mod display;
@@ -41,6 +43,7 @@ use tokio::time::Instant;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use api::{ChatToken, HttpError, Play, Session};
+use avatars::Avatars;
 use frames::{Frame, Room};
 
 /// How often to ping the chat server. IVS answers every ping, so anything
@@ -220,6 +223,7 @@ impl RplaySource {
             play.use_anonymous_chat.unwrap_or(false),
             emotes,
         );
+        let mut avatars = Avatars::default();
         let renew_at = renewal_time(&token);
         let mut pings = tokio::time::interval(PING_EVERY);
         // An interval's first tick is immediate; the first ping is due later.
@@ -263,7 +267,7 @@ impl RplaySource {
                         // tungstenite answers by itself.
                         _ => continue,
                     };
-                    let event = match room.decode(&text) {
+                    let mut event = match room.decode(&text) {
                         Frame::Event(event) => event,
                         Frame::Donation(pending) => {
                             let name = api::nickname(http, &pending.user_id).await;
@@ -278,12 +282,21 @@ impl RplaySource {
                             room.emotes = api::emotes(http, &session.channel).await;
                             continue;
                         }
+                        Frame::UserChanged(user_id) => {
+                            avatars.forget(&user_id);
+                            continue;
+                        }
                         Frame::Error(error) => {
                             warn!("RPlay's chat server reported an error: {error}");
                             continue;
                         }
                         Frame::Ignored => continue,
                     };
+                    // Only photos that exist: a new sender's message waits
+                    // for the check, so chat stays in order.
+                    if let ChatEvent::Message(message) = &mut event {
+                        avatars.verify(http, message).await;
+                    }
                     if tx.send(event).await.is_err() {
                         return Ok(Ended::ReceiverGone);
                     }
@@ -315,10 +328,11 @@ impl RplaySource {
 /// again every minute; the status says so. `None` when the live-tool
 /// session runs out while waiting: then a new one is needed.
 ///
-/// That RPlay refuses tokens while offline is a guess: anonymously, an
-/// offline channel's token was refused (403), but that channel also
-/// required a login. If the streamer's own token works offline, this just
-/// never waits.
+/// A fallback: the streamer's own token worked while offline in the first
+/// live test (2026-11-15), so this didn't wait. An anonymous token for an
+/// offline channel was refused (403) once, on a channel that also required
+/// a login; should RPlay ever refuse the streamer the same way, the source
+/// waits instead of failing.
 async fn wait_for_chat(
     http: &reqwest::Client,
     session: &Session,

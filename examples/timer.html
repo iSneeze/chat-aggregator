@@ -1,0 +1,819 @@
+<!doctype html>
+<!--
+  Timer: a widget for chat-aggregator.
+
+  A countdown or a count-up timer that keeps exact time. It never drifts:
+  it remembers *moments* (when it started, how long it stood paused), not
+  how many ticks went by, and works the time shown out afresh from the
+  clock on every redraw. A timer that counts ticks (`setInterval`, one
+  second off each time) falls behind: every tick comes a few milliseconds
+  late, the browser delays timers further when it's busy, and none of that
+  is ever made up. Here a late redraw is only late, never wrong.
+
+  With "Keep running through reloads" (on by default) it saves those
+  moments in the page's storage, which OBS keeps on this computer, so it
+  picks up where it was when OBS reloads the page or restarts. Changing the
+  time, the direction or the command word starts a new timer; the look and
+  the donation settings can change while it runs. Two browser sources with
+  the same URL show the same timer.
+
+  Chat commands, from the broadcaster (or their moderators too, as set):
+
+    !timer pause        stops it
+    !timer start        runs it again (or: !timer resume)
+    !timer reset        back to the time it was set to; a paused timer
+                        stays paused, so pause, reset, then start when
+                        the stream begins
+    !timer add 5m       more time: 1h, 90s, 1h30m, "1h 30m"; a plain number
+                        is minutes ("!timer add 5")
+    !timer remove 5m    less time
+    !timer desc Day 2!  a new label above the time, as typed (at most 60
+                        characters); `!timer desc` alone: back to the
+                        label from the settings
+
+  The command word is a setting ("!subathon", "!break"), so several timers
+  can be told apart.
+
+  Donations (off by default, countdown only) add time for every 1.00
+  donated: 100 bits and 20 RPlay coins count as 1.00 (a dollar, about),
+  tips and Super Chats in the streamer's currency at their amount, those
+  in other currencies by their tier ($1, 2, 5, 10, 20, 50, 100: nothing
+  is converted, see the API docs). Subs, memberships and gifted subs add
+  their own time, if set. A countdown that has ended stays ended:
+  donations don't bring it back, `!timer add` does. Donations sent while
+  the page isn't loaded (OBS closed) aren't counted.
+
+  Commands and donations need the JSON API switched on (app: ⚙ Settings →
+  Connection → JSON API; headless: `--api`); without it, it's a plain
+  timer. Use it as an OBS browser source (the page background is
+  transparent; the timer sits in the middle), in one of two ways:
+
+    from the app   its Widgets window: pick the settings, Copy URL, and
+                   paste it into a browser source's URL field. The
+                   settings travel in the URL query:
+                   http://127.0.0.1:7878/widgets/timer?minutes=5&label=Starting%20soon
+    as a file      "Local file", this file picked. OBS takes no URL query
+                   there, so change the defaults in the settings block
+                   below instead.
+
+  The settings are described in the JSON block below (`<script
+  type="application/json" id="widget">`): chat-aggregator reads it to learn
+  which settings this widget has, and the page takes its defaults from it.
+  A value in the URL query wins over the default.
+
+  For testing, also in the URL query:
+
+    ?demo=1        the keys below work, and nothing is saved or read back,
+                   so a real timer is never touched
+    ?bg=%23202030  page background
+    ?ws=ws://127.0.0.1:7878/api/v1/ws   API address (default: the app the
+                   page came from, else port 7878)
+
+  Keys with ?demo=1: D a $5 Super Chat, B 500 bits, Y a ¥2,000 Super Chat
+  (counted by its tier), S a sub, G 5 gifted subs, and as the broadcaster:
+  P pause or start, R reset, + add a minute, - remove a minute, L a new
+  label (or back).
+
+  Chat is untrusted: nothing from chat reaches the page as HTML. Only
+  commands are read from its text, and the one piece of chat shown is a
+  label set with `!timer desc` (by whoever may use commands): as text
+  (`textContent`), like the label and end text from the settings. The
+  colour goes in only as a checked hex code, the font name as a CSS
+  property value.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Timer</title>
+<script type="application/json" id="widget">
+{
+  "title": "Timer",
+  "description": "A countdown or count-up timer that keeps exact time, also through reloads. You (or your moderators) control it from chat: !timer pause, start, reset, add 5m, remove 5m, desc (a new label). Donations and subs can make a countdown longer, as for a subathon.",
+  "settings": [
+    {
+      "name": "mode", "label": "Direction", "type": "choice", "default": "down",
+      "options": ["down", "up"],
+      "help": "down: counts down from the time below to 0. up: counts up from it (usually 0:00:00), without end."
+    },
+    {
+      "name": "hours", "label": "Hours", "type": "number", "default": 0,
+      "min": 0, "max": 999, "step": 1, "unit": "h"
+    },
+    {
+      "name": "minutes", "label": "Minutes", "type": "number", "default": 10,
+      "min": 0, "max": 59, "step": 1, "unit": "min"
+    },
+    {
+      "name": "seconds", "label": "Seconds", "type": "number", "default": 0,
+      "min": 0, "max": 59, "step": 1, "unit": "s"
+    },
+    {
+      "name": "keep", "label": "Keep running through reloads", "type": "bool", "default": true,
+      "help": "On: picks up where it was when OBS reloads the page or restarts. Off: starts over whenever the page loads (with OBS's \"Refresh browser when scene becomes active\": a Starting Soon countdown that starts when the scene is shown). A new time, direction or command word starts it over either way."
+    },
+    {
+      "name": "label", "label": "Label", "type": "text", "default": "",
+      "help": "A small line above the time, like \"Subathon\" or \"Starting soon\". Empty: none. Chat commands can change it (!timer desc …); a new label here wins over that."
+    },
+    {
+      "name": "end_text", "label": "When it ends", "type": "text", "default": "",
+      "help": "Shown instead of 00:00 when a countdown ends, like \"Starting now!\". Empty: it stays at 00:00."
+    },
+    {
+      "name": "size", "label": "Size", "type": "number", "default": 96,
+      "min": 16, "max": 400, "step": 4, "unit": "px"
+    },
+    {
+      "name": "color", "label": "Colour", "type": "text", "default": "#ffffff",
+      "help": "A hex code: #ffffff (white), #ffca28 (gold), #9147ff … The # may be left out."
+    },
+    {
+      "name": "font", "label": "Font", "type": "text", "default": "",
+      "help": "The name of a font installed on this computer. Empty: a bold sans-serif."
+    },
+    {
+      "name": "commands", "label": "Chat commands", "type": "choice", "default": "broadcaster",
+      "options": ["broadcaster", "mods", "off"],
+      "help": "Who can control the timer from chat: !timer pause, !timer start, !timer reset (back to the time above), !timer add 5m, !timer remove 1h30m (a plain number is minutes), !timer desc Day 2! (a new label; alone: back to the one below). broadcaster: only you. mods: you and your moderators. Commands show in the chat overlay like any message."
+    },
+    {
+      "name": "command", "label": "Command word", "type": "text", "default": "!timer",
+      "help": "What the commands start with. Give each timer its own (!subathon, !break) to control them apart."
+    },
+    {
+      "name": "donations", "label": "Donations add time", "type": "bool", "default": false,
+      "help": "Countdown only: bits, Super Chats, stickers and tips (and subs, with a time per sub below) make it longer, as for a subathon. An ended countdown stays ended."
+    },
+    {
+      "name": "per_unit", "label": "Time per 1.00 donated", "type": "number", "default": 60,
+      "min": 0, "max": 3600, "step": 5, "unit": "s",
+      "help": "60: a minute per dollar. 100 bits and 20 RPlay coins count as 1.00. Tips and Super Chats in another currency than yours count by their tier: $1, 2, 5, 10, 20, 50 or 100."
+    },
+    {
+      "name": "currency", "label": "Your currency", "type": "text", "default": "USD",
+      "help": "Its three-letter code: USD, EUR, GBP … Meant for currencies about a dollar's size; with yen, say, bits and other currencies would count far too little."
+    },
+    {
+      "name": "per_sub", "label": "Time per sub", "type": "number", "default": 0,
+      "min": 0, "max": 3600, "step": 30, "unit": "s",
+      "help": "Added for every new sub, resub or membership, and for each gifted one, when donations add time. 0: subs add nothing."
+    }
+  ]
+}
+</script>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+  }
+  #timer {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    /* --font is the "Font" setting, when there is one */
+    font-family: var(--font, "Inter"), "Segoe UI", system-ui, sans-serif,
+      "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+    font-size: var(--size);
+    line-height: 1;
+    color: var(--color);
+    /* A dark halo, tight then soft: reads over bright and busy scenes
+       without the heavy look of a hard outline at this size. */
+    text-shadow:
+      0 0 0.035em rgba(0, 0, 0, 0.85),
+      0 0.03em 0.07em rgba(0, 0, 0, 0.6),
+      0 0.06em 0.3em rgba(0, 0, 0, 0.45);
+  }
+
+  #label {
+    margin-bottom: 0.3em;
+    font-size: 0.28em;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    opacity: 0.9;
+  }
+  #label:empty {
+    display: none;
+  }
+
+  /* The time, the end text and the "+5:00" that floats up into it. */
+  #face {
+    position: relative;
+  }
+  #time {
+    font-weight: 700;
+    /* Every digit as wide as the others: the time doesn't shift sideways
+       as it ticks (a proportional 1 is narrower than an 8). */
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    transition: opacity 0.4s;
+  }
+  /* The colons a little lighter, and raised to the digits' middle (most
+     fonts set them lower, for text). */
+  .sep {
+    position: relative;
+    top: -0.06em;
+    margin: 0 0.03em;
+    opacity: 0.7;
+  }
+  .paused #time {
+    opacity: 0.55;
+  }
+  #end {
+    display: none;
+    font-size: 0.6em;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .over.has-end #time {
+    display: none;
+  }
+  .over.has-end #end {
+    display: block;
+  }
+  #pop {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    font-size: 0.32em;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    opacity: 0;
+  }
+
+  #status {
+    position: fixed;
+    left: 1.2vmin;
+    bottom: 1.2vmin;
+    font: 600 clamp(12px, 1.6vmin, 20px) system-ui, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.6s;
+  }
+</style>
+</head>
+<body>
+<div id="timer">
+  <div id="label"></div>
+  <div id="face">
+    <div id="time"></div>
+    <div id="end"></div>
+    <div id="pop"></div>
+  </div>
+</div>
+<div id="status"></div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- settings
+
+const params = new URLSearchParams(location.search);
+const WIDGET = JSON.parse(document.getElementById("widget").textContent);
+
+/** Each setting of the widget block: the URL's value if it's a valid one,
+ *  else the block's default. */
+function settingsFrom(widget, query) {
+  const values = {};
+  for (const s of widget.settings) {
+    const raw = query.get(s.name);
+    let value = s.default;
+    if (raw !== null) {
+      if (s.type === "number") {
+        const v = parseFloat(raw);
+        if (Number.isFinite(v)) value = Math.min(s.max, Math.max(s.min, v));
+      } else if (s.type === "bool") {
+        if (raw === "1" || raw === "true") value = true;
+        else if (raw === "0" || raw === "false") value = false;
+      } else if (s.type === "choice") {
+        if (s.options.includes(raw)) value = raw;
+      } else {
+        value = raw;
+      }
+    }
+    values[s.name] = value;
+  }
+  return values;
+}
+const SETTINGS = settingsFrom(WIDGET, params);
+const defaultOf = (name) => WIDGET.settings.find((s) => s.name === name).default;
+
+// Served by chat-aggregator (`/widgets/…`), the API is at the same address,
+// whatever the port. Anywhere else (OBS "Local file" pages come from a
+// made-up `http://absolute`) it's at the default one.
+function defaultWsUrl() {
+  const served = location.protocol === "http:" && location.pathname.startsWith("/widgets/");
+  return served ? `ws://${location.host}/api/v1/ws` : "ws://127.0.0.1:7878/api/v1/ws";
+}
+
+/** `#rgb` or `#rrggbb`, else null. The `#` may be left out: in a URL it has
+ *  to be written `%23`, which is easy to get wrong by hand. */
+function hexColor(text) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(text.trim());
+  return m ? `#${m[1]}` : null;
+}
+
+const DEMO = params.get("demo") === "1";
+const CONFIG = {
+  wsUrl: params.get("ws") || defaultWsUrl(),
+  demo: DEMO,
+  down: SETTINGS.mode === "down",
+  // Whole seconds; typed values may be fractions (1.5 hours).
+  duration: Math.round(SETTINGS.hours * 3600 + SETTINGS.minutes * 60 + SETTINGS.seconds),
+  keep: SETTINGS.keep && !DEMO,
+  label: SETTINGS.label.trim(),
+  endText: SETTINGS.end_text.trim(),
+  size: SETTINGS.size,
+  color: hexColor(SETTINGS.color) ?? defaultOf("color"),
+  font: SETTINGS.font.trim(),
+  commands: SETTINGS.commands, // broadcaster, mods or off
+  command: SETTINGS.command.trim().toLowerCase(),
+  donations: SETTINGS.donations,
+  perUnit: SETTINGS.per_unit, // s per 1.00 donated
+  currency: SETTINGS.currency.trim().toUpperCase(),
+  perSub: SETTINGS.per_sub, // s per sub
+};
+const bg = params.get("bg");
+if (bg && CSS.supports("color", bg)) document.body.style.background = bg;
+
+const root = document.documentElement;
+root.style.setProperty("--size", `${CONFIG.size}px`);
+root.style.setProperty("--color", CONFIG.color);
+// One quoted name: whatever was typed stays a font name (a CSS value set
+// through the style object can't become anything else).
+if (CONFIG.font) root.style.setProperty("--font", `"${CONFIG.font.replace(/["\\]/g, "\\$&")}"`);
+
+// --------------------------------------------------------------- the timer
+
+// What makes this timer this one: a new time, direction or command word
+// starts a new timer, the rest can change while it runs. Widgets share the
+// app's address, so the storage too: hence the prefix.
+const KEY = `timer:${SETTINGS.mode}:${CONFIG.duration}:${CONFIG.command}`;
+// Entries of `added` kept one by one (the rest folded into `extra`): enough
+// to tell any message apart that two copies of the widget get at once,
+// while the storage stays small through a subathon of thousands.
+const MAX_ADDED = 500;
+
+// The timer's state. Moments are `Date.now()` milliseconds: the computer's
+// clock, which means the same after a reload (`performance.now()` starts
+// at 0 with every page). If the clock is set right while it runs, the
+// timer follows: it stays right compared with the real time. Every amount
+// is in whole milliseconds too: integers add up exactly, fractions don't
+// (0.1 + 0.2 isn't quite 0.3 in floating point), and a timer that should
+// be at 0 could be a hair above it.
+//   start     when it was started, or reset
+//   paused    ms it stood paused since, not counting a pause going on now
+//   pausedAt  when the pause going on now began; null while it runs
+//   added     ms added (negative: removed) since, by the key of the chat
+//             message that did it ("twitch:abc123"): two copies of the
+//             widget (two browser sources with one URL) share the saved
+//             timer and both get every message, and the second finds it
+//             counted already. Storage reaches the other page a moment
+//             late, so one may write over the other's newest entry with
+//             a view a moment old; but it gets that message itself next
+//             (both get every message, in the server's order) and puts
+//             the entry back (tested with hundreds at once).
+//   extra     the ms of entries folded out of `added`
+//   desc      a label set from chat (`!timer desc …`), or null:
+//             { text, over }, `over` being the settings' label it took
+//             the place of. If that one has changed since (in the app),
+//             the app's new label wins, so a change there never seems
+//             ignored.
+function fresh(now, paused, desc = null) {
+  return { v: 1, start: now, paused: 0, pausedAt: paused ? now : null, added: {}, extra: 0, desc };
+}
+
+function addedMs(s) {
+  let sum = s.extra;
+  for (const ms of Object.values(s.added)) sum += ms;
+  return sum;
+}
+
+/** ms the timer has run: from its start to now (or to the pause going on),
+ *  less the pauses. */
+function ranMs(s, now) {
+  return (s.pausedAt ?? now) - s.start - s.paused;
+}
+
+/** What it shows, in ms: counting down the time left (0 or less: ended),
+ *  counting up the time so far. */
+function valueMs(s, now) {
+  const set = CONFIG.duration * 1000 + addedMs(s);
+  return CONFIG.down ? set - ranMs(s, now) : set + ranMs(s, now);
+}
+
+function isOver(s, now) {
+  return CONFIG.down && valueMs(s, now) <= 0;
+}
+
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    const valid = s !== null && typeof s === "object" && s.v === 1
+      && [s.start, s.paused, s.extra].every(Number.isSafeInteger)
+      && (s.pausedAt === null || Number.isSafeInteger(s.pausedAt))
+      && s.added !== null && typeof s.added === "object"
+      && Object.values(s.added).every(Number.isSafeInteger);
+    if (!valid) return null;
+    // A broken label costs the label, not the timer.
+    const d = s.desc;
+    if (!(d && typeof d.text === "string" && typeof d.over === "string")) s.desc = null;
+    return s;
+  } catch {
+    return null; // no storage (blocked), or not JSON
+  }
+}
+
+function save(s) {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(s));
+  } catch (err) {
+    console.warn("couldn't save the timer:", err);
+  }
+}
+
+let state = (CONFIG.keep && load()) || fresh(Date.now(), false);
+if (CONFIG.keep) save(state); // a new one: its start is kept from now on
+
+/** Changes the timer: `update` gets the newest saved state (another copy
+ *  of the widget may have changed it a moment ago) and returns the new
+ *  one. Then it's saved and shown. */
+function change(update) {
+  const base = (CONFIG.keep && load()) || state;
+  state = update(base, Date.now());
+  if (CONFIG.keep) save(state);
+  draw();
+}
+
+function pause() {
+  change((s, now) => {
+    if (s.pausedAt === null && !isOver(s, now)) s.pausedAt = now;
+    return s;
+  });
+}
+
+function resume() {
+  change((s, now) => {
+    if (s.pausedAt !== null) {
+      s.paused += now - s.pausedAt;
+      s.pausedAt = null;
+    }
+    return s;
+  });
+}
+
+/** Back to the time it was set to, running or paused as it was. The label
+ *  stays: reset is about the time. */
+function reset() {
+  change((s, now) => fresh(now, s.pausedAt !== null, s.desc));
+}
+
+const MAX_DESC = 60; // characters: the label stays on one line
+
+// Grapheme clusters keep 👍🏽 and 🇩🇪 in one piece when a long label is cut
+// (older browsers: code points).
+const graphemes = "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/** A new label from chat; empty: back to the settings' label. */
+function setDesc(text) {
+  const chars = graphemes ? Array.from(graphemes.segment(text), (g) => g.segment) : Array.from(text);
+  const cut = chars.length > MAX_DESC ? `${chars.slice(0, MAX_DESC - 1).join("")}…` : text;
+  change((s) => {
+    s.desc = cut ? { text: cut, over: CONFIG.label } : null;
+    return s;
+  });
+}
+
+/** Adds `ms` (negative: removes them) for the chat message `key`, once.
+ *  `revive`: an ended countdown runs again (commands; donations don't). */
+function addTime(key, ms, revive) {
+  ms = Math.round(ms); // a typed 0.3 s is 300.00000000000006 ms
+  let applied = 0;
+  change((s, now) => {
+    if (Object.prototype.hasOwnProperty.call(s.added, key)) return s;
+    if (isOver(s, now)) {
+      if (!revive || ms <= 0) return s;
+      // It has stood at 0 since it ended: count that as a pause, so what's
+      // added counts from now. (valueMs is how long ago it ended, as a
+      // negative number; after this it's exactly 0.)
+      s.paused -= valueMs(s, now);
+    }
+    // Never below 0: what's removed is at most what's there.
+    applied = Math.max(ms, -Math.max(0, valueMs(s, now)));
+    if (applied === 0) return s;
+    s.added[key] = applied;
+    const keys = Object.keys(s.added); // in the order they were added
+    for (const old of keys.slice(0, Math.max(0, keys.length - MAX_ADDED))) {
+      s.extra += s.added[old];
+      delete s.added[old];
+    }
+    return s;
+  });
+  if (applied !== 0) showAdded(applied);
+}
+
+// ------------------------------------------------------------------- draw
+
+const timerEl = document.getElementById("timer");
+const labelEl = document.getElementById("label");
+const timeEl = document.getElementById("time");
+const endEl = document.getElementById("end");
+const popEl = document.getElementById("pop");
+
+endEl.textContent = CONFIG.endText;
+timerEl.classList.toggle("has-end", CONFIG.endText !== "");
+
+const two = (n) => String(n).padStart(2, "0");
+
+/** "1:05:09" or "05:09": hours only when there are some. */
+function clock(totalSeconds) {
+  const t = Math.max(0, totalSeconds);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor(t / 60) % 60;
+  const s = t % 60;
+  return h > 0 ? `${h}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+}
+
+let shown = "";
+let wasOver = null; // null: nothing drawn yet
+let tick = 0;
+
+function draw() {
+  clearTimeout(tick);
+  const now = Date.now();
+  const value = valueMs(state, now);
+  const over = isOver(state, now);
+  // Counting down rounds up, so 00:00 shows exactly when it ends, not a
+  // second early; counting up rounds down, like a clock.
+  const text = clock(CONFIG.down ? Math.ceil(value / 1000) : Math.floor(value / 1000));
+  if (text !== shown) {
+    shown = text;
+    const parts = [];
+    text.split(":").forEach((digits, i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.className = "sep";
+        sep.textContent = ":";
+        parts.push(sep);
+      }
+      parts.push(digits);
+    });
+    timeEl.textContent = "";
+    timeEl.append(...parts);
+  }
+  // The label from chat, unless the app's label has changed since.
+  const label = state.desc && state.desc.over === CONFIG.label ? state.desc.text : CONFIG.label;
+  if (labelEl.textContent !== label) labelEl.textContent = label;
+  timerEl.classList.toggle("paused", state.pausedAt !== null && !over);
+  timerEl.classList.toggle("over", over);
+  // Ending while on screen (not already ended when the page loaded).
+  if (over && wasOver === false) {
+    document.getElementById("face").animate(
+      [{ transform: "scale(1)" }, { transform: "scale(1.08)" }, { transform: "scale(1)" }],
+      { duration: 500, easing: "ease-out", iterations: 2 },
+    );
+  }
+  wasOver = over;
+
+  // The next redraw: just after what's shown changes, at most a second
+  // away (a clock that's set right gets followed soon). A late one is
+  // still right, since it works the value out afresh; the 5 ms make sure
+  // it lands after the change, not just before it.
+  let wait = 1000;
+  if (state.pausedAt === null && !over) {
+    const into = ((value % 1000) + 1000) % 1000; // ms into this second
+    wait = CONFIG.down ? into || 1000 : 1000 - into;
+  }
+  tick = setTimeout(draw, wait + 5);
+}
+
+// The "+5:00" under the time: floats up into it and fades. More while it
+// shows add up (a gift bomb is one "+25:00", not a pile).
+const POP_LIFE = 2500;
+let popTotal = 0;
+let popUntil = 0;
+let popAnimation = null;
+
+function showAdded(ms) {
+  const now = performance.now();
+  popTotal = now < popUntil ? popTotal + ms : ms;
+  popUntil = now + POP_LIFE;
+  const t = Math.round(Math.abs(popTotal) / 1000);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor(t / 60) % 60;
+  const text = h > 0 ? `${h}:${two(m)}:${two(t % 60)}` : `${m}:${two(t % 60)}`;
+  popEl.textContent = `${popTotal < 0 ? "−" : "+"}${text}`;
+  popAnimation?.cancel();
+  popAnimation = popEl.animate(
+    [
+      { opacity: 0, transform: "translate(-50%, 0.9em)" },
+      { opacity: 1, transform: "translate(-50%, 0.35em)", offset: 0.15 },
+      { opacity: 1, transform: "translate(-50%, 0.2em)", offset: 0.75 },
+      { opacity: 0, transform: "translate(-50%, -0.2em)" },
+    ],
+    { duration: POP_LIFE, easing: "ease-out" },
+  );
+}
+
+// ------------------------------------------------------------------- chat
+
+// A tier's lower bound in dollars: YouTube's Super Chat steps, the one
+// scale every platform's `tier` uses (see the API docs).
+const TIER_DOLLARS = [0, 1, 2, 5, 10, 20, 50, 100];
+
+/** About what a donation is worth in the streamer's currency (1.00 being
+ *  about a dollar). chat-aggregator converts nothing, so: bits and coins by
+ *  their price, the streamer's currency at its amount, the rest by tier. */
+function worth(event) {
+  const { value, currency, tier } = event.kind;
+  if (Number.isFinite(value) && value > 0) {
+    if (event.platform === "twitch") return value / 100; // bits: 100 ≈ a dollar
+    if (event.platform === "rplay") return value / 20; // coins: one ≈ 5 bits
+    const code = typeof currency === "string" ? currency.toUpperCase() : null;
+    if (code === CONFIG.currency) return value;
+    // No currency on a tip: StreamElements sends none, and its tips are in
+    // the streamer's own (as set in the app, or not at all).
+    const tips = event.platform === "streamelements" || event.platform === "streamlabs";
+    if (code === null && tips) return value;
+  }
+  // YouTube's top band may report more than 7; jewel gifts have none.
+  if (Number.isInteger(tier) && tier > 0) return TIER_DOLLARS[Math.min(tier, 7)];
+  return 0;
+}
+
+/** The seconds a donation, sub or gift adds; 0 for anything else. */
+function supportSeconds(event) {
+  const kind = event.kind;
+  switch (kind.type) {
+    case "donation":
+    case "special": // Super Stickers (and jewel gifts, which count nothing)
+      return Math.round(worth(event) * CONFIG.perUnit);
+    case "membership": // new, resub, milestone
+      return CONFIG.perSub;
+    case "gift": // the platforms send one per gift, with the count
+      return Number.isInteger(kind.count) && kind.count > 0 ? kind.count * CONFIG.perSub : 0;
+    default:
+      return 0;
+  }
+}
+
+/** Badges are the platform's, not anything a chatter types: Twitch, Picarto
+ *  and RPlay call the channel's owner `broadcaster`, YouTube `owner`. */
+function mayCommand(author) {
+  const badges = Array.isArray(author?.badges) ? author.badges : [];
+  if (badges.includes("broadcaster") || badges.includes("owner")) return true;
+  return CONFIG.commands === "mods" && badges.includes("moderator");
+}
+
+/** "1h30m", "90s", "2h" (spaces already taken out), or a plain number as
+ *  minutes ("5", "2.5"); 0 if it's none of those. At most 999 hours. */
+function durationOf(text) {
+  const t = text.toLowerCase();
+  let seconds = 0;
+  if (/^\d+(\.\d+)?$/.test(t)) {
+    seconds = parseFloat(t) * 60;
+  } else {
+    const m = /^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(t);
+    if (m && (m[1] || m[2] || m[3])) {
+      seconds = parseFloat(m[1] ?? 0) * 3600 + parseFloat(m[2] ?? 0) * 60 + parseFloat(m[3] ?? 0);
+    }
+  }
+  return Math.round(Math.min(seconds, 999 * 3600));
+}
+
+function onCommand(event, key) {
+  if (CONFIG.commands === "off" || !CONFIG.command || typeof event.text !== "string") return;
+  const words = event.text.trim().split(/\s+/);
+  if (words[0].toLowerCase() !== CONFIG.command || !mayCommand(event.author)) return;
+  const verb = (words[1] ?? "").toLowerCase();
+  if (verb === "pause") return pause();
+  if (verb === "start" || verb === "resume") return resume();
+  if (verb === "reset") return reset();
+  // As typed (only the spaces between words made one each).
+  if (verb === "desc") return setDesc(words.slice(2).join(" "));
+  if (verb === "add" || verb === "remove") {
+    const seconds = durationOf(words.slice(2).join(""));
+    if (seconds > 0) addTime(key, (verb === "add" ? seconds : -seconds) * 1000, true);
+  }
+}
+
+function onChatEvent(event) {
+  if (event?.type !== "message" || typeof event.id !== "string" || !event.kind) return;
+  const key = `${event.platform}:${event.id}`;
+  if (event.kind.type === "text") return onCommand(event, key);
+  if (!CONFIG.donations || !CONFIG.down) return;
+  const seconds = supportSeconds(event);
+  if (seconds > 0) addTime(key, seconds * 1000, false);
+}
+
+// -------------------------------------------------------------- websocket
+
+const statusEl = document.getElementById("status");
+let statusTimer = 0;
+function setStatus(text) {
+  statusEl.textContent = text;
+  statusEl.style.opacity = "0.85";
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => (statusEl.style.opacity = "0"), 4000);
+}
+
+// Shown once when it changes, then gone: the timer runs without chat too,
+// and a note mustn't sit on stream while the page retries.
+let connected = null;
+let retryMs = 1000;
+function connect() {
+  let ws;
+  try {
+    ws = new WebSocket(CONFIG.wsUrl);
+  } catch {
+    return setStatus(`💬 not a WebSocket address: ${CONFIG.wsUrl}`);
+  }
+  ws.onopen = () => {
+    retryMs = 1000;
+    connected = true;
+    setStatus("💬 connected to chat");
+  };
+  ws.onmessage = (frame) => {
+    try {
+      onChatEvent(JSON.parse(frame.data));
+    } catch (err) {
+      console.warn("ignored an event:", err);
+    }
+  };
+  // Also fires after a failed connect (server not running, API switched
+  // off → HTTP 403), so this is the one place that retries.
+  ws.onclose = () => {
+    if (connected !== false) setStatus("💬 waiting for chat… (is the JSON API switched on?)");
+    connected = false;
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 1.5, 10000);
+  };
+}
+
+// --------------------------------------------------------------- testing
+
+let demoId = 0;
+function demoEvent(platform, kind, text = "", badges = []) {
+  onChatEvent({
+    type: "message",
+    id: `demo-${demoId++}`,
+    platform,
+    author: { id: "demo-viewer", name: "Viewer42", badges },
+    text,
+    emotes: [],
+    kind,
+  });
+}
+const asBroadcaster = (what) => demoEvent("twitch", { type: "text" }, `${CONFIG.command} ${what}`, ["broadcaster"]);
+
+const KEYS = {
+  d: () => demoEvent("youtube", { type: "donation", amount: "$5.00", tier: 3, value: 5, currency: "USD" }),
+  b: () => demoEvent("twitch", { type: "donation", amount: "500 bits", tier: 3, value: 500, currency: null }),
+  y: () => demoEvent("youtube", { type: "donation", amount: "¥2,000", tier: 4, value: 2000, currency: "JPY" }),
+  s: () => demoEvent("twitch", { type: "membership", info: null, months: null }),
+  g: () => demoEvent("twitch", { type: "gift", count: 5 }),
+  p: () => asBroadcaster(state.pausedAt === null ? "pause" : "start"),
+  r: () => asBroadcaster("reset"),
+  "+": () => asBroadcaster("add 1m"),
+  "=": () => asBroadcaster("add 1m"),
+  "-": () => asBroadcaster("remove 1m"),
+  l: () => asBroadcaster(state.desc ? "desc" : "desc Subathon: day 2 💜"),
+};
+// Only with ?demo=1: in OBS's Interact window a key press mustn't add
+// made-up donations to a real timer.
+if (CONFIG.demo) {
+  window.addEventListener("keydown", (e) => {
+    if (!e.repeat) KEYS[e.key.toLowerCase()]?.();
+  });
+}
+
+// ------------------------------------------------------------------- start
+
+// Another copy of the widget (or the same page in another tab) changed the
+// saved timer: show its change. (Never fired for the page's own changes.)
+window.addEventListener("storage", (e) => {
+  if (!CONFIG.keep || e.key !== KEY) return;
+  state = load() ?? state;
+  draw();
+});
+// Timers in a hidden page may be put off for long: redraw at once when it
+// shows again.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) draw();
+});
+
+draw();
+if ((CONFIG.commands !== "off" && CONFIG.command) || CONFIG.donations) connect();
+</script>
+</body>
+</html>

@@ -382,7 +382,12 @@ so leaving it out is on us), the streamer's banned words starred out.
 Frames are read loosely like Picarto's (`frames.rs`, with a `Room` that
 follows the channel's managers, banned words and anonymous-chat setting as
 RPlay announces changes); donations carry no sender name, so it's looked
-up (or taken from the sender's earlier chat). The first event and the first
+up (or taken from the sender's earlier chat). Profile pictures have a fixed
+address, but most chatters have none (S3 answers 403), so `avatars.rs`
+checks each sender's once per connection with a `HEAD` request before
+their message goes out; it waits, so chat stays in order, but at most a
+second, and pauses after repeated failures. A sender who hid their profile
+gets none, as on RPlay. The first event and the first
 message of each kind, frames of unknown types and messages the source
 can't read go into the log with their field names only, so a tester's log
 teaches us RPlay's chat without containing it. For a first test there are
@@ -390,7 +395,9 @@ test builds (the `rplay-capture` feature, a box on the hand-started release
 workflow) that also save every chat frame as it came to
 `rplay-capture.jsonl` (`capture.rs`: chat included, values under secret
 sounding names starred out, never the HTTP answers, which carry the stream
-key); release builds don't have that code.
+key); release builds don't have that code. It stays for debugging: RPlay
+has no stable API, so when its chat changes, a capture build for an
+affected streamer shows how.
 
 **Demo** sends sample messages of every kind, for styling themes without a
 live chat. **Manual** is fed by the app's test window; it exists exactly as
@@ -461,7 +468,7 @@ every field is an `Arc` or a small handle around one).
 | `/events` | Server-Sent Events: history, then live chat as rendered HTML |
 | `/avatar/<key>` | a chatter's profile picture, downloaded once for all overlays |
 | `/api/v1/ws` | WebSocket: live events as JSON (off by default) |
-| `/widgets/<name>` | a widget: a page that reads the JSON API (built in: `live-emoji`, `danmaku`) |
+| `/widgets/<name>` | a widget: a page that reads the JSON API (built in: `live-emoji`, `danmaku`, `timer`) |
 
 - **SSE for the overlay, WebSocket for the API.** SSE is one-way, built into
   every browser and reconnects by itself: ideal for a page that only
@@ -517,9 +524,11 @@ every field is an `Arc` or a small handle around one).
   registered, so the route can't be used to make the server fetch other
   addresses. The JSON API keeps the platform's own URL.
 - **Widgets** (`widgets.rs`) are single HTML files that read the JSON API
-  and show chat their own way (`examples/live-emoji.html` and
-  `examples/danmaku.html` are built in, compiled into the binary with
-  `include_str!`).
+  and show chat their own way (`examples/live-emoji.html`,
+  `examples/danmaku.html` and `examples/timer.html` are built in,
+  compiled into the binary with `include_str!`). A widget keeps its own
+  state, if any, in the page's `localStorage` (the Timer: where it is,
+  so it survives OBS reloading it); the server knows nothing of it.
   The server serves them, rather than OBS opening them as files, so their
   settings can go into the URL: OBS's "Local file" field takes no query,
   and a page from a `file://` URL can't use the API (its origin is

@@ -5,7 +5,7 @@ source: emotes rising up the screen, a counter, a mini game. It gets the
 chat from chat-aggregator's [JSON API](api.md), and chat-aggregator serves
 it, so its settings can be picked in the app and travel in its URL.
 
-Two widgets come with the app:
+Three widgets come with the app:
 
 - **Live Emoji**: every emote and emoji sent in chat floats up from the
   bottom of the screen and fades away, in a lively "party" mood or a calm
@@ -20,6 +20,10 @@ Two widgets come with the app:
   disappears from the screen at once. When chat is faster than the lanes
   can carry, comments wait a few seconds for a free lane and are dropped
   after that; paid messages always get their turn.
+- **Timer**: a countdown or a count-up timer that keeps exact time, also
+  when OBS reloads it. You control it from chat (`!timer pause`), and
+  donations and subs can make a countdown longer, as for a subathon. See
+  [The Timer](#the-timer) below.
 
 ## Using a widget
 
@@ -63,6 +67,70 @@ setting that makes no sense, a script loaded from elsewhere).
 in OBS. chat-aggregator lets it read chat and nothing else on your
 computer, but like any web page it can load pictures and fonts from the
 web, and so could pass on what it shows to whoever runs those servers.
+
+## The Timer
+
+A clean, big countdown (or count-up) for Starting Soon screens, breaks or
+a subathon. Pick the time in its **Hours**, **Minutes** and **Seconds**,
+and if you like a **Label** above it ("Subathon"), a **Colour** as a hex
+code (`#ffca28`), a **Font**, and a text to show **When it ends**
+("Starting now!").
+
+**It doesn't drift.** It remembers when it started, not how many seconds
+it has counted, and works out the time from your computer's clock every
+time it updates. Timers that count seconds one by one fall behind a
+little with every tick; this one shows the right time after hours too.
+
+**It keeps running through reloads.** OBS reloads browser sources now and
+then (when you change one, or restart OBS). The timer remembers where it
+was and carries on. A new time, direction or command word starts a new
+timer; a new size, colour or label doesn't. Two browser sources with the
+same URL show the same timer. With **Keep running through reloads**
+switched off, it starts over every time the page loads: together with
+OBS's "Refresh browser when scene becomes active" (in the browser
+source's properties), that's a Starting Soon countdown that starts the
+moment you show the scene.
+
+**Chat commands.** Only you (as the channel's owner) can use them, unless
+you set **Chat commands** to `mods` (you and your moderators) or `off`:
+
+| command | does |
+|---------|------|
+| `!timer pause` | stops it |
+| `!timer start` | runs it again (`!timer resume` works too) |
+| `!timer reset` | back to the time you set; a paused timer stays paused |
+| `!timer add 5m` | adds time: `90s`, `1h`, `1h30m`; a plain number is minutes (`!timer add 5`) |
+| `!timer remove 5m` | takes time away |
+| `!timer desc Day 2!` | a new label above the time, as typed (up to 60 characters) |
+| `!timer desc` | back to the label from the settings |
+
+So for a subathon: `!timer pause` and `!timer reset` while you get ready,
+`!timer start` when it begins. A label set from chat stays through
+reloads and `!timer reset`, until a new label in the app takes its place.
+The **Command word** can be changed
+(`!subathon`), to control two timers apart. Commands show up in the chat
+overlay like any other message.
+
+**Donations and subs** (only for a countdown, off until you switch on
+**Donations add time**): every 1.00 donated adds **Time per 1.00
+donated** (60 seconds: a minute per dollar).
+
+- 100 bits and 20 RPlay coins count as 1.00.
+- Super Chats, stickers and tips in **Your currency** (USD unless you set
+  another) count at their amount. In another currency they count by their
+  size on YouTube's Super Chat scale: $1, 2, 5, 10, 20, 50 or 100
+  (chat-aggregator doesn't convert currencies). This works best with a
+  currency about a dollar's size (USD, EUR, GBP …).
+- **Time per sub** (0 unless you set it) is added for every new sub, resub
+  or membership, and for each gifted one.
+
+A "+5:00" floats up into the timer when time is added. Once a countdown
+has ended, donations don't bring it back (`!timer add` does). Donations
+made while the browser source isn't loaded (OBS closed, or the source
+set to shut down when hidden) aren't counted.
+
+Commands and donations need the JSON API switched on; without it, it's a
+plain timer.
 
 ## Writing a widget
 
