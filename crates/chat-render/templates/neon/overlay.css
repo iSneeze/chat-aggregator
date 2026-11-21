@@ -1,0 +1,505 @@
+/*
+ * "Neon" built-in theme: cybernetic HUD chat cards with chamfered 45-degree
+ * corners, dual-color neon accents, configurable glow intensity, and
+ * Brackets / Neon Tube / Cyber Slash frame variations.
+ *
+ * Most restyling only needs the variables below (or the options in theme.toml).
+ * Every message is an <article class="msg"> with modifier classes:
+ *   .msg--twitch / .msg--youtube / .msg--picarto    platform
+ *   / .msg--rplay / .msg--streamelements / .msg--streamlabs
+ *   .msg--role-viewer / -member / -moderator / -owner
+ *   .msg--text / --emote-only / --donation / --special
+ *   .msg--membership / --gift / --notice            kind
+ *   .msg--paid, .msg--tier-1 … -7                   donations and their tier
+ *   .msg--deleted                                   removed by a moderator
+ */
+
+:root {
+  /* text */
+  --chat-font: "Inter", "Segoe UI", system-ui, sans-serif;
+  --chat-mono: "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+  --chat-font-size: 19px;
+  --chat-text: #eef6ff;
+  --chat-muted: color-mix(in srgb, var(--chat-text) 58%, transparent);
+
+  /* neon palette & panel */
+  --chat-accent: #00f0ff;
+  --chat-secondary: #ff2a85;
+  --chat-bg-color: #0b0d17;
+  --chat-bg-opacity: 88%;
+  --chat-bg: color-mix(in srgb, var(--chat-bg-color) var(--chat-bg-opacity), transparent);
+  --chat-gap: 10px;
+  --chat-padding: 0.6em 0.92em;
+
+  /* glow intensity */
+  --glow-radius: 10px;
+  --glow-alpha: 42%;
+  --text-glow-alpha: 48%;
+
+  /* motion */
+  --msg-enter: msg-in-glitch 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  --msg-fade-delay: 0s;
+
+  /* platform & event colours */
+  --twitch: #b378ff;
+  --youtube: #ff3355;
+  --picarto: #38e89e;
+  --rplay: #29d4ff;
+  --streamelements: #6e92ff;
+  --streamlabs: #36f0c5;
+  --paid: #ffd43b;
+  --membership: #00f59b;
+  --notice: #38c9ff;
+
+  /* donation tier colours (neon-tuned) */
+  --paid-youtube-1: #3da8ff;
+  --paid-youtube-2: #00f0ff;
+  --paid-youtube-3: #00f5b4;
+  --paid-youtube-4: #ffd83b;
+  --paid-youtube-5: #ff9429;
+  --paid-youtube-6: #ff3385;
+  --paid-youtube-7: #ff3848;
+  --paid-twitch-1: #b0bccf;
+  --paid-twitch-2: #c266ff;
+  --paid-twitch-3: #00e8d6;
+  --paid-twitch-4: #2eb8ff;
+  --paid-twitch-5: #ff4438;
+
+  /* sizes */
+  --emote-size: 1.55em;
+  --emote-only-size: 2.8em;
+  --avatar-size: 1.5em;
+
+  /* overlay behavior (read by the overlay script) */
+  --max-messages: 20;  /* older messages are removed from the page */
+  --delete-delay: 0s;  /* time for a .msg--deleted transition before removal */
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent; /* OBS composites the page over the scene */
+}
+
+/* ---- message list ---- */
+
+.chat {
+  box-sizing: border-box;
+  height: 100vh;
+  /* Extra horizontal padding so outer neon glow never clips on the edge. */
+  padding: var(--chat-gap) 14px;
+  display: flex;
+  flex-direction: column;
+  /* Newest at the bottom, old ones leave at the top. With the newest at the
+     top, the overlay flips this to column-reverse. */
+  justify-content: flex-end;
+  gap: var(--chat-gap);
+  overflow: hidden;
+  font-family: var(--chat-font);
+  font-size: var(--chat-font-size);
+  line-height: 1.4;
+  color: var(--chat-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.chat--compact { --chat-padding: 0.42em 0.74em; }
+.chat--airy    { --chat-padding: 0.8em 1.12em; }
+
+/* ---- glow levels ---- */
+
+.chat--glow-off {
+  --glow-radius: 0px;
+  --glow-alpha: 0%;
+  --text-glow-alpha: 0%;
+}
+
+.chat--glow-overdrive {
+  --glow-radius: 16px;
+  --glow-alpha: 72%;
+  --text-glow-alpha: 80%;
+}
+
+/* ---- one HUD message ---- */
+
+.msg {
+  --platform-color: var(--chat-accent);
+  --accent: var(--chat-accent);
+  --secondary: var(--chat-secondary);
+  --paid-color: var(--paid);
+  --panel-surface: var(--chat-bg);
+  --edge-primary: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.92), transparent);
+  --edge-secondary: color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.72), transparent);
+  --glow-color: color-mix(in srgb, var(--accent) var(--glow-alpha), transparent);
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 var(--glow-radius) var(--glow-color));
+  animation: var(--msg-enter);
+}
+
+.chat--accent-platform .msg {
+  --accent: var(--platform-color);
+}
+
+.chat--accent-chatter .msg {
+  --accent: var(--author-color, hsl(var(--chatter-hue, 185) 95% 62%));
+}
+
+.msg--twitch         { --platform-color: var(--twitch); }
+.msg--youtube        { --platform-color: var(--youtube); }
+.msg--picarto        { --platform-color: var(--picarto); }
+.msg--rplay          { --platform-color: var(--rplay); }
+.msg--streamelements { --platform-color: var(--streamelements); }
+.msg--streamlabs     { --platform-color: var(--streamlabs); }
+
+/* ---- animations ---- */
+
+.chat--newest-top { --msg-enter-offset: -0.55em; }
+
+@keyframes msg-in-glitch {
+  0% {
+    opacity: 0;
+    transform: translateX(-14px) skewX(-6deg);
+  }
+  55% {
+    opacity: 1;
+    transform: translateX(3px) skewX(1.5deg);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes msg-in-slide {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.55em));
+  }
+}
+
+@keyframes msg-in-fade {
+  from { opacity: 0; }
+}
+
+.chat--fade-out .msg {
+  animation: var(--msg-enter), msg-out 0.55s ease-in var(--msg-fade-delay) forwards;
+}
+
+@keyframes msg-out {
+  to { opacity: 0; }
+}
+
+/* ---- chamfered cyber panel (default "Chamfered" style) ---- */
+
+.msg__panel {
+  position: relative;
+  padding: var(--chat-padding);
+  border-left: 3px solid var(--accent);
+  /* 45-degree diagonal cuts on top-right and bottom-left; the two corner
+     gradients draw crisp 1.5px neon lines along both cut edges at any opacity. */
+  clip-path: polygon(
+    0 0,
+    calc(100% - 14px) 0,
+    100% 14px,
+    100% 100%,
+    14px 100%,
+    0 calc(100% - 14px)
+  );
+  background:
+    linear-gradient(225deg, var(--edge-primary) 0 11.4px, transparent 12px),
+    linear-gradient(45deg, var(--edge-secondary) 0 11.4px, transparent 12px),
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent) 13%, transparent) 0%,
+      transparent 44%,
+      color-mix(in srgb, var(--secondary) 9%, transparent) 100%
+    ),
+    var(--panel-surface);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 55%, transparent),
+    inset -1px 0 0 color-mix(in srgb, var(--secondary) 42%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--secondary) 48%, transparent);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
+}
+
+/* ---- HUD frame style variations ---- */
+
+/* Brackets: dark tactical panel with four glowing L-shaped corner brackets. */
+.chat--frame-brackets .msg__panel {
+  clip-path: none;
+  border-left: none;
+  padding-left: calc(0.92em + 2px);
+  background:
+    /* top-left corner */
+    linear-gradient(var(--accent), var(--accent)) top left / 14px 2px no-repeat,
+    linear-gradient(var(--accent), var(--accent)) top left / 2px 14px no-repeat,
+    /* top-right corner */
+    linear-gradient(var(--secondary), var(--secondary)) top right / 14px 2px no-repeat,
+    linear-gradient(var(--secondary), var(--secondary)) top right / 2px 14px no-repeat,
+    /* bottom-left corner */
+    linear-gradient(var(--secondary), var(--secondary)) bottom left / 14px 2px no-repeat,
+    linear-gradient(var(--secondary), var(--secondary)) bottom left / 2px 14px no-repeat,
+    /* bottom-right corner */
+    linear-gradient(var(--accent), var(--accent)) bottom right / 14px 2px no-repeat,
+    linear-gradient(var(--accent), var(--accent)) bottom right / 2px 14px no-repeat,
+    /* subtle HUD grid sheen */
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 11%, transparent) 0%,
+      transparent 42%
+    ),
+    var(--panel-surface);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Neon Tube: rounded luminous neon sign border with inner & outer glow. */
+.chat--frame-tube .msg__panel {
+  clip-path: none;
+  border: 1.5px solid var(--accent);
+  border-radius: 10px;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent) 14%, transparent) 0%,
+      transparent 50%,
+      color-mix(in srgb, var(--secondary) 12%, transparent) 100%
+    ),
+    var(--panel-surface);
+  box-shadow:
+    inset 0 0 var(--glow-radius) color-mix(in srgb, var(--accent) calc(var(--glow-alpha) * 0.65), transparent),
+    inset 0 0 0 1px color-mix(in srgb, #ffffff 22%, transparent);
+}
+
+/* Cyber Slash: forward-angled parallelogram with a high-velocity neon stripe. */
+.chat--frame-slash .msg__panel {
+  border-left: none;
+  padding-left: 1.25em;
+  padding-right: 1.15em;
+  clip-path: polygon(
+    10px 0,
+    100% 0,
+    calc(100% - 10px) 100%,
+    0 100%
+  );
+  background:
+    linear-gradient(
+      104deg,
+      var(--accent) 0 10px,
+      color-mix(in srgb, var(--accent) 20%, transparent) 10.5px 28%,
+      transparent 55%,
+      color-mix(in srgb, var(--secondary) 14%, transparent) 100%
+    ),
+    var(--panel-surface);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 55%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--secondary) 55%, transparent);
+}
+
+/* ---- HUD telemetry header ---- */
+
+.msg__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.42em;
+}
+
+.msg__meta:not(:last-child) {
+  padding-bottom: 0.34em;
+  margin-bottom: 0.36em;
+  border-bottom: 1px solid transparent;
+  border-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 65%, transparent),
+    color-mix(in srgb, var(--secondary) 35%, transparent) 55%,
+    transparent
+  ) 1;
+}
+
+.msg__platform {
+  flex-shrink: 0;
+  padding: 0.08em 0.42em;
+  border: 1px solid color-mix(in srgb, var(--platform-color) 72%, transparent);
+  background: color-mix(in srgb, var(--platform-color) 18%, transparent);
+  color: var(--platform-color);
+  font-family: var(--chat-mono);
+  font-size: 0.54em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+
+.chat--hide-platform .msg__platform {
+  display: none;
+}
+
+.msg__avatar {
+  flex-shrink: 0;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  clip-path: polygon(22% 0, 100% 0, 100% 78%, 78% 100%, 0 100%, 0 22%);
+  object-fit: cover;
+}
+
+.chat--hide-avatars .msg__avatar {
+  display: none;
+}
+
+.msg__author {
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--accent) var(--text-glow-alpha), transparent);
+}
+
+.badge {
+  --badge-color: var(--secondary);
+  padding: 0.08em 0.42em;
+  border: 1px solid color-mix(in srgb, var(--badge-color) 65%, transparent);
+  background: color-mix(in srgb, var(--badge-color) 16%, transparent);
+  color: var(--badge-color);
+  font-family: var(--chat-mono);
+  font-size: 0.54em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+
+.chat--hide-badges .badge {
+  display: none;
+}
+
+.badge--broadcaster,
+.badge--owner     { --badge-color: #ff4785; }
+.badge--moderator { --badge-color: #00f59b; }
+.badge--vip       { --badge-color: #e666ff; }
+.badge--verified  { --badge-color: #94a3b8; }
+.badge--subscriber,
+.badge--member    { --badge-color: var(--membership); }
+
+.msg__time {
+  display: none;
+  margin-left: auto;
+  color: var(--chat-muted);
+  font-family: var(--chat-mono);
+  font-size: 0.64em;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg__time::before {
+  content: "// ";
+  color: var(--secondary);
+  opacity: 0.8;
+}
+
+.chat--show-time .msg__time {
+  display: inline;
+}
+
+/* ---- event banner & body ---- */
+
+.msg__event {
+  margin: 0;
+  padding: 0.16em 0.54em;
+  display: inline-block;
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  font-family: var(--chat-mono);
+  font-size: 0.86em;
+  font-weight: 700;
+  color: var(--accent);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--accent) var(--text-glow-alpha), transparent);
+}
+
+.msg__event + .msg__body {
+  margin-top: 0.34em;
+}
+
+.msg__body {
+  margin: 0;
+  overflow-wrap: anywhere; /* long spam without spaces must not overflow */
+}
+
+.emote {
+  height: var(--emote-size);
+  vertical-align: middle;
+  margin: -0.2em 0.05em;
+}
+
+.msg__info {
+  font-family: var(--chat-font);
+  font-weight: 500;
+  color: var(--chat-text);
+  text-shadow: none;
+}
+
+.msg__sticker {
+  display: block;
+  height: 4em;
+  margin-top: 0.35em;
+}
+
+/* ---- message kinds & paid tiers ---- */
+
+.msg--emote-only .emote {
+  height: var(--emote-only-size);
+  margin: 0.08em 0.05em;
+}
+
+/* Special events switch the neon rail & glow cleanly in every accent mode. */
+.chat .msg--paid {
+  --accent: var(--paid-color);
+  --secondary: var(--paid-color);
+  --panel-surface: color-mix(in srgb, var(--paid-color) 14%, var(--chat-bg));
+}
+
+.chat .msg--membership,
+.chat .msg--gift {
+  --accent: var(--membership);
+  --secondary: var(--membership);
+  --panel-surface: color-mix(in srgb, var(--membership) 12%, var(--chat-bg));
+}
+
+.chat .msg--notice {
+  --accent: var(--notice);
+  --secondary: var(--notice);
+  --panel-surface: color-mix(in srgb, var(--notice) 14%, var(--chat-bg));
+  text-align: center;
+}
+
+.msg--notice .msg__event {
+  border-left: none;
+  background: transparent;
+  padding: 0;
+  font-style: italic;
+}
+
+/* Donation tier colours. */
+.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
+.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
+.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
+.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
+.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
+.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
+.msg--tier-7 { --paid-color: var(--paid-youtube-7); }
+.msg--youtube[class*="msg--tier-"]:not(.msg--tier-1, .msg--tier-2, .msg--tier-3,
+  .msg--tier-4, .msg--tier-5, .msg--tier-6) { --paid-color: var(--paid-youtube-7); }
+
+.msg--twitch.msg--tier-1 { --paid-color: var(--paid-twitch-1); }
+.msg--twitch.msg--tier-2,
+.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-2); }
+.msg--twitch.msg--tier-4,
+.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-3); }
+.msg--twitch.msg--tier-6 { --paid-color: var(--paid-twitch-4); }
+.msg--twitch.msg--tier-7 { --paid-color: var(--paid-twitch-5); }
+
+/* ---- moderation ---- */
+
+/* Deleted messages vanish at once by default. For a fade instead:
+   .msg--deleted { opacity: 0; transition: opacity 0.3s; }
+   and set --delete-delay: 0.3s above. */
+.msg--deleted {
+  display: none;
+}

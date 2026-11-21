@@ -1,0 +1,293 @@
+# Customizable options for the Bubbles built-in overlay theme.
+
+[[options]]
+name = "accent_mode"
+label = "Accent style"
+group = "Colors"
+help = "Chatter mode gives every chatter their own color."
+type = "choice"
+default = "Custom"
+options = ["Custom", "Chatter", "Platform"]
+[options.class_values]
+Custom = ""
+Chatter = "chat--accent-chatter"
+Platform = "chat--accent-platform"
+
+[[options]]
+name = "accent_color"
+label = "Accent color"
+group = "Colors"
+help = "Name pill and highlight color when Accent style is Custom."
+type = "color"
+default = "#e86ca0"
+css_var = "--chat-accent"
+
+[[options]]
+name = "bg_color"
+label = "Bubble color"
+group = "Colors"
+type = "color"
+default = "#fff6fa"
+css_var = "--chat-bg-color"
+
+[[options]]
+name = "text_color"
+label = "Text color"
+group = "Colors"
+type = "color"
+default = "#3e2436"
+css_var = "--chat-text"
+
+[[options]]
+name = "pill_text_color"
+label = "Name pill text"
+group = "Colors"
+help = "Text color inside the floating nameplate pill."
+type = "color"
+default = "#ffffff"
+css_var = "--pill-text"
+
+[[options]]
+name = "bg_opacity"
+label = "Bubble opacity"
+group = "Colors"
+type = "number"
+default = 94
+min = 0
+max = 100
+step = 5
+unit = "%"
+css_var = "--chat-bg-opacity"
+
+[[options]]
+name = "alignment"
+label = "Alignment"
+group = "Bubble style"
+help = "Alternating places each chatter on a consistent side."
+type = "choice"
+default = "Left"
+options = ["Left", "Alternating", "Right", "Full width"]
+[options.class_values]
+Left = ""
+Alternating = "chat--align-alt"
+Right = "chat--align-right"
+"Full width" = "chat--full-width"
+
+[[options]]
+name = "name_style"
+label = "Name tag"
+group = "Bubble style"
+type = "choice"
+default = "Floating pill"
+options = ["Floating pill", "Inside"]
+[options.class_values]
+"Floating pill" = ""
+Inside = "chat--name-inside"
+
+[[options]]
+name = "tail"
+label = "Speech tail"
+group = "Bubble style"
+type = "choice"
+default = "Pointed"
+options = ["Pointed", "Pinched", "None"]
+[options.class_values]
+Pointed = ""
+Pinched = "chat--tail-pinched"
+None = "chat--tail-none"
+
+[[options]]
+name = "corners"
+label = "Roundness"
+group = "Bubble style"
+type = "choice"
+default = "Round"
+options = ["Soft", "Round", "Extra round"]
+css_var = "--chat-radius"
+[options.css_values]
+Soft = "12px"
+Round = "20px"
+"Extra round" = "26px"
+
+[[options]]
+name = "font"
+label = "Font"
+group = "Typography & layout"
+type = "choice"
+default = "Rounded"
+options = ["Rounded", "Sans", "Serif", "Monospace"]
+css_var = "--chat-font"
+[options.css_values]
+Rounded = '"Nunito", "Quicksand", "Varela Round", ui-rounded, "Segoe UI", system-ui, sans-serif'
+Sans = '"Inter", "Segoe UI", system-ui, sans-serif'
+Serif = '"Georgia", "Cambria", ui-serif, serif'
+Monospace = '"JetBrains Mono", "Cascadia Code", ui-monospace, monospace'
+
+[[options]]
+name = "font_size"
+label = "Text size"
+group = "Typography & layout"
+type = "number"
+default = 19
+min = 12
+max = 42
+step = 1
+unit = "px"
+css_var = "--chat-font-size"
+
+[[options]]
+name = "spacing"
+label = "Spacing"
+group = "Typography & layout"
+type = "choice"
+default = "Cozy"
+options = ["Compact", "Cozy", "Airy"]
+css_var = "--chat-gap"
+[options.css_values]
+Compact = "6px"
+Cozy = "10px"
+Airy = "15px"
+[options.class_values]
+Compact = "chat--compact"
+Cozy = ""
+Airy = "chat--airy"
+
+[[options]]
+name = "animation"
+label = "Entrance"
+group = "Motion"
+type = "choice"
+default = "Pop"
+options = ["Pop", "Slide", "Fade", "None"]
+css_var = "--msg-enter"
+[options.css_values]
+Pop = "msg-in-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)"
+Slide = "msg-in-slide 0.26s cubic-bezier(0.22, 1, 0.36, 1)"
+Fade = "msg-in-fade 0.22s ease-out"
+None = "none"
+
+[[options]]
+name = "fade_after"
+label = "Fade out after"
+group = "Motion"
+help = "Hide older messages automatically after a while."
+type = "choice"
+default = "Never"
+options = ["Never", "15s", "30s", "60s"]
+css_var = "--msg-fade-delay"
+[options.css_values]
+Never = "0s"
+15s = "15s"
+30s = "30s"
+60s = "60s"
+[options.class_values]
+Never = ""
+15s = "chat--fade-out"
+30s = "chat--fade-out"
+60s = "chat--fade-out"
+
+[[options]]
+name = "show_timestamps"
+label = "Timestamps"
+group = "Elements"
+type = "bool"
+default = false
+class = "chat--show-time"
+
+[[options]]
+name = "show_avatars"
+label = "Avatars"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-avatars"
+
+[[options]]
+name = "show_badges"
+label = "Badges"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-badges"
+
+[[options]]
+name = "show_platform"
+label = "Platform dot"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-platform"
+
+[[options]]
+name = "max_messages"
+label = "Max messages"
+group = "Elements"
+help = "Older messages above this limit are removed."
+type = "number"
+default = 20
+min = 5
+max = 100
+step = 5
+css_var = "--max-messages"
+
+# 1-click curated palettes shown at the top of the Themes window.
+
+[[presets]]
+name = "Cotton Candy"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#e86ca0"
+bg_color = "#fff6fa"
+text_color = "#3e2436"
+pill_text_color = "#ffffff"
+bg_opacity = 94
+
+[[presets]]
+name = "Lavender Milk"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#846ee6"
+bg_color = "#f7f4ff"
+text_color = "#2f2745"
+pill_text_color = "#ffffff"
+bg_opacity = 94
+
+[[presets]]
+name = "Sky Cloud"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#3c95e8"
+bg_color = "#f2f9ff"
+text_color = "#1f3347"
+pill_text_color = "#ffffff"
+bg_opacity = 94
+
+[[presets]]
+name = "Mint Cream"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#34a881"
+bg_color = "#f2fbf7"
+text_color = "#1e3b30"
+pill_text_color = "#ffffff"
+bg_opacity = 94
+
+[[presets]]
+name = "Midnight Pop"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#9146ff"
+bg_color = "#191826"
+text_color = "#f4f3ff"
+pill_text_color = "#ffffff"
+bg_opacity = 88
+
+[[presets]]
+name = "Rainbow Chat"
+[presets.values]
+accent_mode = "Chatter"
+accent_color = "#5ec4ff"
+bg_color = "#1b1d28"
+text_color = "#f5f6fa"
+pill_text_color = "#ffffff"
+bg_opacity = 88

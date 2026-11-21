@@ -405,7 +405,7 @@ impl AppView {
         SideWindow::open_or_focus(
             &mut self.themes_window,
             "Themes",
-            size(px(900.), px(660.)),
+            size(px(926.), px(660.)),
             move |window, cx| ThemesWindow::new(engine, config, active_key, window, cx),
             window,
             cx,

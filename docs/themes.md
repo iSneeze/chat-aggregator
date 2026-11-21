@@ -1,8 +1,8 @@
 # Overlay themes
 
 A theme decides how the chat looks on stream. chat-aggregator comes with
-two built-in themes; your own themes are folders you can edit with any text
-editor, share, and switch between in the app.
+built-in themes you can customize right in the app; your own themes are folders
+you can edit with any text editor, share, and switch between in the app.
 
 ## Built-in themes
 
@@ -14,9 +14,21 @@ editor, share, and switch between in the app.
   subscribers, blue with a wrench for moderators, yellow for the channel
   owner. Donations show their amount in the platform's tier colour, subs
   and gifts in green, all in the same line.
+- **Bubbles**: rounded speech bubbles with a floating nameplate pill perched
+  on the top edge, an optional curved speech tail, avatars beside the bubble,
+  and per-chatter colors or alternating conversation alignment.
+- **Cozy**: warm pastel stationery cards with a stitched inner border, hard
+  offset shadow, subtle scrapbook tilt, and a persistent decorative charm
+  (sparkle, heart, star, blossom, leaf, or moon) per chatter.
+- **Retro**: classic 16-bit JRPG dialogue boxes with a speaker nameplate tab,
+  framed portraits, pixel/handheld/CRT/Win95 frame styles, optional scanlines,
+  and a blinking advance cursor on the newest message.
+- **Neon**: cybernetic HUD cards with 45° chamfered corners, dual-color neon
+  accents, configurable glow intensity, and *Chamfered*, *Brackets*, *Neon
+  Tube*, and *Cyber Slash* frame styles.
 
-Pick them in the app's theme list, or `theme = "minimal"` under
-`[overlay]` in a profile's file (`profiles/<name>.toml`). Each profile has
+Pick them in the app's theme list, or `theme = "minimal"` / `theme = "bubbles"`
+/ `theme = "cozy"` / `theme = "retro"` / `theme = "neon"` under `[overlay]` in a profile's file (`profiles/<name>.toml`). Each profile has
 its own theme. They're built into the app and improve with its updates,
 so they can't be edited in place; open **Customize…** and use **New theme…**
 (or **Copy as custom…** on any built-in theme) to create an editable folder
@@ -27,8 +39,14 @@ starting from any built-in theme's files.
 Click **Customize…** next to the theme picker to open the **Themes** window:
 
 - **1-click presets** let you switch palettes right away (e.g. *Midnight*,
-  *Twitch Neon*, *Sakura*, *Matcha*, *Warm Latte*, *Floating* on Default, or
-  *Classic*, *High Contrast*, *Soft Ivory*, *Terminal* on Minimal).
+  *Twitch Neon*, *Sakura*, *Matcha*, *Warm Latte*, *Floating* on Default;
+  *Classic*, *High Contrast*, *Soft Ivory*, *Terminal* on Minimal; *Cotton
+  Candy*, *Lavender Milk*, *Sky Cloud*, *Mint Cream*, *Midnight Pop*, *Rainbow
+  Chat* on Bubbles; *Strawberry Milk*, *Matcha Cream*, *Peach Tea*,
+  *Blueberry Milk*, *Honey Journal*, *Evening Cocoa* on Cozy; *Classic JRPG*,
+  *Win95*, *Handheld*, *Parchment*, *Arcade Dark*, *Amber CRT*, *8-Bit Crimson*
+  on Retro; or *Cyberpunk*, *Synthwave*, *Matrix*, *Tactical*, *Vaporwave*,
+  *Hyper Crimson* on Neon).
 - **Match image…** reads a screenshot of your OBS scene or character artwork
   and suggests three contrast-checked color palettes you can apply in one click.
 - **Colors, typography, motion, and elements** update connected OBS overlays
@@ -45,12 +63,12 @@ In the **themes** folder next to chat-aggregator's settings (the app's
 
 ```text
 themes/
-├── cozy/
+├── my-theme/
 │   ├── overlay.css     the look: colours, fonts, sizes, animations
 │   ├── theme.toml      optional: customizable options and presets in the app
 │   ├── message.html    optional: the structure of one message
 │   └── bg.png, …       optional: images and fonts the CSS uses
-└── minimal/
+└── dark-card/
     └── overlay.css
 ```
 
@@ -193,9 +211,9 @@ Normally every overlay shows the theme picked in the app. To give one OBS
 scene its own theme, add `?theme=` and the theme's name to its overlay URL:
 
 ```text
-http://127.0.0.1:7878/?theme=cozy
-http://127.0.0.1:7878/?theme=cozy&newest=top
-http://127.0.0.1:7878/?theme=minimal     a built-in theme (or default)
+http://127.0.0.1:7878/?theme=my-theme
+http://127.0.0.1:7878/?theme=my-theme&newest=top
+http://127.0.0.1:7878/?theme=cozy        a built-in theme (default, minimal, bubbles, cozy, retro, neon)
 ```
 
 That overlay keeps its theme whatever the app is set to. **Reload

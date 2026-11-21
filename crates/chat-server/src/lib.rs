@@ -1136,11 +1136,11 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// A themes folder with two themes, "cozy" and "my theme" (a space, as
+    /// A themes folder with two themes, "studio" and "my theme" (a space, as
     /// theme names may have), each with its own template and CSS.
     fn themes_folder(test: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("chat-server-{test}-{}", std::process::id()));
-        for name in ["cozy", "my theme"] {
+        for name in ["studio", "my theme"] {
             let dir = root.join("themes").join(name);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
@@ -1163,27 +1163,27 @@ mod tests {
     #[tokio::test]
     async fn overlay_url_pins_a_theme() {
         let root = themes_folder("pinned");
-        // The app's theme is the built-in one; the URL picks "cozy".
+        // The app's theme is the built-in one; the URL picks "studio".
         let server = start_with_themes(None, Some(root.join("themes"))).await;
         let base = format!("http://{}", server.addr);
 
-        let (_, page) = get_text(format!("{base}/?theme=cozy&newest=top")).await;
-        assert!(page.contains(r#"href="themes/cozy/overlay.css""#), "{page}");
+        let (_, page) = get_text(format!("{base}/?theme=studio&newest=top")).await;
+        assert!(page.contains(r#"href="themes/studio/overlay.css""#), "{page}");
         assert!(!page.contains(r#"href="theme/overlay.css""#), "{page}");
-        let (_, css) = get_text(format!("{base}/themes/cozy/overlay.css")).await;
-        assert_eq!(css, "/* cozy */");
+        let (_, css) = get_text(format!("{base}/themes/studio/overlay.css")).await;
+        assert_eq!(css, "/* studio */");
         // Relative URLs in its CSS resolve to its own folder.
-        let (_, png) = get_text(format!("{base}/themes/cozy/bg.png")).await;
-        assert_eq!(png, "cozy");
+        let (_, png) = get_text(format!("{base}/themes/studio/bg.png")).await;
+        assert_eq!(png, "studio");
 
         // The event stream gets the page's query and renders with the
         // pinned template.
         server.hub.publish(message("m1"));
-        let mut resp = reqwest::get(format!("{base}/events?theme=cozy&newest=top"))
+        let mut resp = reqwest::get(format!("{base}/events?theme=studio&newest=top"))
             .await
             .unwrap();
         let mut seen = String::new();
-        read_until(&mut resp, &mut seen, r#"data-id="m1">cozy</article>"#).await;
+        read_until(&mut resp, &mut seen, r#"data-id="m1">studio</article>"#).await;
 
         // A name that needs encoding in a URL.
         let (_, page) = get_text(format!("{base}/?theme=my%20theme")).await;
@@ -1204,7 +1204,7 @@ mod tests {
         let base = format!("http://{}", server.addr);
 
         // `%2E%2E` is "..", `%2F` a "/": decoded before the name is checked.
-        for name in ["nope", "%2E%2E", "cozy%2F..%2F..", "%22%3E%3Cscript%3E"] {
+        for name in ["nope", "%2E%2E", "studio%2F..%2F..", "%22%3E%3Cscript%3E"] {
             let (_, page) = get_text(format!("{base}/?theme={name}")).await;
             assert!(
                 page.contains(r#"href="theme/overlay.css""#),
@@ -1215,7 +1215,7 @@ mod tests {
             assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "{name}");
         }
         // Nothing outside a pinned theme's folder either.
-        let (status, _) = get_text(format!("{base}/themes/cozy/..%2F..%2Fconfig.toml")).await;
+        let (status, _) = get_text(format!("{base}/themes/studio/..%2F..%2Fconfig.toml")).await;
         assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
 
         // The stream falls back to the app's (here: built-in) template.
@@ -1233,8 +1233,8 @@ mod tests {
     async fn builtin_theme_names_pin_the_builtin_themes() {
         let root = themes_folder("default");
         let themes = root.join("themes");
-        // The app uses "cozy"; `?theme=default` still gets the built-in one.
-        let server = start_with_themes(Some(themes.join("cozy")), Some(themes)).await;
+        // The app uses "studio"; `?theme=default` still gets the built-in one.
+        let server = start_with_themes(Some(themes.join("studio")), Some(themes)).await;
         let base = format!("http://{}", server.addr);
 
         let (_, page) = get_text(format!("{base}/?theme=default")).await;
@@ -1251,9 +1251,9 @@ mod tests {
             .unwrap();
         let mut seen = String::new();
         read_until(&mut resp, &mut seen, r#"<article class="msg msg--text"#).await;
-        assert!(!seen.contains("cozy</article>"), "{seen}");
+        assert!(!seen.contains("studio</article>"), "{seen}");
 
-        // The other built-in theme works the same way, in any capitalisation.
+        // The other built-in themes work the same way, in any capitalisation.
         let (_, page) = get_text(format!("{base}/?theme=Minimal")).await;
         assert!(
             page.contains(r#"href="themes/minimal/overlay.css""#),
@@ -1266,6 +1266,9 @@ mod tests {
             .unwrap();
         let mut seen = String::new();
         read_until(&mut resp, &mut seen, r#"<div class="msg msg--text"#).await;
+
+        let (_, css) = get_text(format!("{base}/themes/Cozy/overlay.css")).await;
+        assert_eq!(css, Builtin::Cozy.css());
 
         std::fs::remove_dir_all(root).unwrap();
     }

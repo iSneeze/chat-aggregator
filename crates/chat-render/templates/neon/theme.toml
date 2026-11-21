@@ -1,0 +1,286 @@
+# Customizable options for the Neon built-in overlay theme.
+
+[[options]]
+name = "accent_mode"
+label = "Accent style"
+group = "Colors"
+help = "Chatter mode gives every chatter their own neon accent."
+type = "choice"
+default = "Custom"
+options = ["Custom", "Chatter", "Platform"]
+[options.class_values]
+Custom = ""
+Chatter = "chat--accent-chatter"
+Platform = "chat--accent-platform"
+
+[[options]]
+name = "accent_color"
+label = "Primary neon"
+group = "Colors"
+help = "Main rail, glow, and author color when Accent style is Custom."
+type = "color"
+default = "#00f0ff"
+css_var = "--chat-accent"
+
+[[options]]
+name = "secondary_color"
+label = "Secondary neon"
+group = "Colors"
+help = "Corner highlights, badges, and dual-tone accents."
+type = "color"
+default = "#ff2a85"
+css_var = "--chat-secondary"
+
+[[options]]
+name = "bg_color"
+label = "Panel color"
+group = "Colors"
+type = "color"
+default = "#0b0d17"
+css_var = "--chat-bg-color"
+
+[[options]]
+name = "text_color"
+label = "Text color"
+group = "Colors"
+type = "color"
+default = "#eef6ff"
+css_var = "--chat-text"
+
+[[options]]
+name = "bg_opacity"
+label = "Panel opacity"
+group = "Colors"
+type = "number"
+default = 88
+min = 0
+max = 100
+step = 5
+unit = "%"
+css_var = "--chat-bg-opacity"
+
+[[options]]
+name = "frame"
+label = "HUD style"
+group = "Neon style"
+type = "choice"
+default = "Chamfered"
+options = ["Chamfered", "Brackets", "Neon Tube", "Cyber Slash"]
+[options.class_values]
+Chamfered = ""
+Brackets = "chat--frame-brackets"
+"Neon Tube" = "chat--frame-tube"
+"Cyber Slash" = "chat--frame-slash"
+
+[[options]]
+name = "glow"
+label = "Glow intensity"
+group = "Neon style"
+type = "choice"
+default = "Subtle"
+options = ["Off", "Subtle", "Overdrive"]
+[options.class_values]
+Off = "chat--glow-off"
+Subtle = ""
+Overdrive = "chat--glow-overdrive"
+
+[[options]]
+name = "font"
+label = "Font"
+group = "Typography & layout"
+type = "choice"
+default = "Sans"
+options = ["Sans", "Monospace", "Rounded", "Serif"]
+css_var = "--chat-font"
+[options.css_values]
+Sans = '"Inter", "Segoe UI", system-ui, sans-serif'
+Monospace = '"JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, monospace'
+Rounded = '"Nunito", "Quicksand", "Varela Round", ui-rounded, system-ui, sans-serif'
+Serif = '"Georgia", "Cambria", ui-serif, serif'
+
+[[options]]
+name = "font_size"
+label = "Text size"
+group = "Typography & layout"
+type = "number"
+default = 19
+min = 12
+max = 42
+step = 1
+unit = "px"
+css_var = "--chat-font-size"
+
+[[options]]
+name = "spacing"
+label = "Spacing"
+group = "Typography & layout"
+type = "choice"
+default = "Cozy"
+options = ["Compact", "Cozy", "Airy"]
+css_var = "--chat-gap"
+[options.css_values]
+Compact = "6px"
+Cozy = "10px"
+Airy = "15px"
+[options.class_values]
+Compact = "chat--compact"
+Cozy = ""
+Airy = "chat--airy"
+
+[[options]]
+name = "animation"
+label = "Entrance"
+group = "Motion"
+type = "choice"
+default = "Glitch"
+options = ["Glitch", "Slide", "Fade", "None"]
+css_var = "--msg-enter"
+[options.css_values]
+Glitch = "msg-in-glitch 0.28s cubic-bezier(0.22, 1, 0.36, 1)"
+Slide = "msg-in-slide 0.24s cubic-bezier(0.22, 1, 0.36, 1)"
+Fade = "msg-in-fade 0.22s ease-out"
+None = "none"
+
+[[options]]
+name = "fade_after"
+label = "Fade out after"
+group = "Motion"
+help = "Hide older messages automatically after a while."
+type = "choice"
+default = "Never"
+options = ["Never", "15s", "30s", "60s"]
+css_var = "--msg-fade-delay"
+[options.css_values]
+Never = "0s"
+15s = "15s"
+30s = "30s"
+60s = "60s"
+[options.class_values]
+Never = ""
+15s = "chat--fade-out"
+30s = "chat--fade-out"
+60s = "chat--fade-out"
+
+[[options]]
+name = "show_timestamps"
+label = "Timestamps"
+group = "Elements"
+type = "bool"
+default = false
+class = "chat--show-time"
+
+[[options]]
+name = "show_avatars"
+label = "Avatars"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-avatars"
+
+[[options]]
+name = "show_badges"
+label = "Badges"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-badges"
+
+[[options]]
+name = "show_platform"
+label = "Platform tag"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-platform"
+
+[[options]]
+name = "max_messages"
+label = "Max messages"
+group = "Elements"
+help = "Older messages above this limit are removed."
+type = "number"
+default = 20
+min = 5
+max = 100
+step = 5
+css_var = "--max-messages"
+
+# 1-click curated palettes shown at the top of the Themes window.
+
+[[presets]]
+name = "Cyberpunk"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#00f0ff"
+secondary_color = "#ff2a85"
+bg_color = "#0b0d17"
+text_color = "#eef6ff"
+bg_opacity = 88
+frame = "Chamfered"
+glow = "Subtle"
+font = "Sans"
+
+[[presets]]
+name = "Synthwave"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#ff4fd8"
+secondary_color = "#7b61ff"
+bg_color = "#140b24"
+text_color = "#f8f0ff"
+bg_opacity = 88
+frame = "Neon Tube"
+glow = "Overdrive"
+font = "Sans"
+
+[[presets]]
+name = "Matrix"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#00ff88"
+secondary_color = "#00d4aa"
+bg_color = "#07120c"
+text_color = "#e0ffed"
+bg_opacity = 90
+frame = "Brackets"
+glow = "Subtle"
+font = "Monospace"
+
+[[presets]]
+name = "Tactical"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#ffae2b"
+secondary_color = "#ff4b4b"
+bg_color = "#11151c"
+text_color = "#edf2f7"
+bg_opacity = 90
+frame = "Brackets"
+glow = "Off"
+font = "Monospace"
+
+[[presets]]
+name = "Vaporwave"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#5ef2e6"
+secondary_color = "#ff7ac6"
+bg_color = "#18122b"
+text_color = "#f7f2ff"
+bg_opacity = 88
+frame = "Neon Tube"
+glow = "Subtle"
+font = "Rounded"
+
+[[presets]]
+name = "Hyper Crimson"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#ff2e54"
+secondary_color = "#ff8a00"
+bg_color = "#13090d"
+text_color = "#fff0f3"
+bg_opacity = 88
+frame = "Cyber Slash"
+glow = "Overdrive"
+font = "Sans"

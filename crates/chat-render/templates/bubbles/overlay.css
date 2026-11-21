@@ -1,0 +1,547 @@
+/*
+ * "Bubbles" built-in theme: rounded speech bubbles with a floating nameplate
+ * pill perched on the top edge and an optional curved speech tail.
+ *
+ * Most restyling only needs the variables below (or the options in theme.toml).
+ * Every message is an <article class="msg"> with modifier classes:
+ *   .msg--twitch / .msg--youtube / .msg--picarto    platform
+ *   / .msg--rplay / .msg--streamelements / .msg--streamlabs
+ *   .msg--role-viewer / -member / -moderator / -owner
+ *   .msg--side-0 / .msg--side-1                     stable side per chatter
+ *   .msg--text / --emote-only / --donation / --special
+ *   .msg--membership / --gift / --notice            kind
+ *   .msg--paid, .msg--tier-1 … -7                   donations and their tier
+ *   .msg--deleted                                   removed by a moderator
+ */
+
+:root {
+  /* text */
+  --chat-font: "Nunito", "Quicksand", "Varela Round", ui-rounded, "Segoe UI", system-ui, sans-serif;
+  --chat-font-size: 19px;
+  --chat-text: #3e2436;
+  --chat-muted: color-mix(in srgb, var(--chat-text) 62%, transparent);
+
+  /* bubble surface & pill */
+  --chat-accent: #e86ca0;
+  --pill-text: #ffffff;
+  --chat-bg-color: #fff6fa;
+  --chat-bg-opacity: 94%;
+  --chat-bg: color-mix(in srgb, var(--chat-bg-color) var(--chat-bg-opacity), transparent);
+  --bubble-border: color-mix(in srgb, var(--chat-accent) calc(var(--chat-bg-opacity) * 0.24), transparent);
+  --bubble-shadow: color-mix(in srgb, #140814 calc(var(--chat-bg-opacity) * 0.20), transparent);
+  --chat-radius: 20px;
+  --chat-gap: 10px;
+  --bubble-pad-top: 0.88em;
+  --bubble-pad-x: 0.92em;
+  --bubble-pad-bottom: 0.58em;
+  --bubble-pill-gap: 0.28em;
+
+  /* motion */
+  --msg-enter: msg-in-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  --msg-fade-delay: 0s;
+
+  /* platform & event colours */
+  --twitch: #9146ff;
+  --youtube: #ff0033;
+  --picarto: #35a775;
+  --rplay: #00b2ff;
+  --streamelements: #5c7cfa;
+  --streamlabs: #31c3a2;
+  --paid: #e89b00;
+  --membership: #2ea875;
+  --notice: #3b9ae8;
+
+  /* donation tier colours (YouTube scale for all platforms; Twitch cheer below) */
+  --paid-youtube-1: #1e88e5;
+  --paid-youtube-2: #00acc1;
+  --paid-youtube-3: #00bfa5;
+  --paid-youtube-4: #e6a800;
+  --paid-youtube-5: #f57c00;
+  --paid-youtube-6: #e91e63;
+  --paid-youtube-7: #e53935;
+  --paid-twitch-1: #7b8494;
+  --paid-twitch-2: #9c3ee8;
+  --paid-twitch-3: #14a89c;
+  --paid-twitch-4: #008ae6;
+  --paid-twitch-5: #e83426;
+
+  /* sizes */
+  --emote-size: 1.55em;
+  --emote-only-size: 2.8em;
+  --avatar-size: 2.15em;
+
+  /* overlay behavior (read by the overlay script) */
+  --max-messages: 20;  /* older messages are removed from the page */
+  --delete-delay: 0s;  /* time for a .msg--deleted transition before removal */
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent; /* OBS composites the page over the scene */
+}
+
+/* ---- message list ---- */
+
+.chat {
+  box-sizing: border-box;
+  height: 100vh;
+  padding: var(--chat-gap);
+  display: flex;
+  flex-direction: column;
+  /* Newest at the bottom, old ones leave at the top. With the newest at the
+     top, the overlay flips this to column-reverse. */
+  justify-content: flex-end;
+  gap: var(--chat-gap);
+  overflow: hidden;
+  font-family: var(--chat-font);
+  font-size: var(--chat-font-size);
+  line-height: 1.4;
+  color: var(--chat-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.chat--compact {
+  --bubble-pad-top: 0.74em;
+  --bubble-pad-x: 0.74em;
+  --bubble-pad-bottom: 0.44em;
+  --bubble-pill-gap: 0.2em;
+}
+
+.chat--airy {
+  --bubble-pad-top: 1.02em;
+  --bubble-pad-x: 1.12em;
+  --bubble-pad-bottom: 0.72em;
+  --bubble-pill-gap: 0.36em;
+}
+
+/* ---- one message ---- */
+
+.msg {
+  --platform-color: var(--chat-accent);
+  --accent: var(--chat-accent);
+  --paid-color: var(--paid);
+  --bubble-surface: var(--chat-bg);
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 0.9em; /* leaves clean breathing room between avatar and pointed tail */
+  animation: var(--msg-enter);
+}
+
+.chat--hide-avatars .msg {
+  padding-left: 10px; /* space for the pointed speech tail when avatars are hidden */
+}
+
+.chat--accent-platform .msg {
+  --accent: var(--platform-color);
+}
+
+.chat--accent-chatter .msg {
+  --accent: var(--author-color, hsl(var(--chatter-hue, 260) 68% 54%));
+}
+
+.msg--twitch         { --platform-color: var(--twitch); }
+.msg--youtube        { --platform-color: var(--youtube); }
+.msg--picarto        { --platform-color: var(--picarto); }
+.msg--rplay          { --platform-color: var(--rplay); }
+.msg--streamelements { --platform-color: var(--streamelements); }
+.msg--streamlabs     { --platform-color: var(--streamlabs); }
+
+/* New messages enter from below; with the newest at the top (?newest=top), from above. */
+.chat--newest-top { --msg-enter-offset: -0.55em; }
+
+@keyframes msg-in-pop {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.35em)) scale(0.88);
+  }
+}
+
+@keyframes msg-in-slide {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.55em));
+  }
+}
+
+@keyframes msg-in-fade {
+  from { opacity: 0; }
+}
+
+.chat--fade-out .msg {
+  animation: var(--msg-enter), msg-out 0.6s ease-in var(--msg-fade-delay) forwards;
+}
+
+@keyframes msg-out {
+  to { opacity: 0; }
+}
+
+/* ---- avatar beside the bubble ---- */
+
+.msg__avatar {
+  flex-shrink: 0;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 2px 6px var(--bubble-shadow);
+}
+
+.msg__avatar--fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--accent) 76%, #ffffff),
+    var(--accent)
+  );
+  color: var(--pill-text);
+  font-weight: 800;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.22);
+  user-select: none;
+}
+
+.chat--hide-avatars .msg__avatar {
+  display: none;
+}
+
+/* ---- speech bubble ---- */
+
+.msg__bubble {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: fit-content;
+  max-width: 96%;
+  min-width: 0;
+  margin-top: 0.72em; /* reserves room for the floating nameplate pill */
+  padding: var(--bubble-pad-top) var(--bubble-pad-x) var(--bubble-pad-bottom);
+  border-radius: var(--chat-radius);
+  border-bottom-left-radius: 0;
+  background: var(--bubble-surface);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.34);
+  filter: drop-shadow(0 3px 8px var(--bubble-shadow));
+}
+
+/* Curved speech-bubble tail flush against the left edge (zero alpha overlap). */
+.msg__bubble::after {
+  content: "";
+  position: absolute;
+  right: 100%;
+  bottom: 0;
+  width: 10px;
+  height: 13px;
+  background: var(--bubble-surface);
+  -webkit-mask: var(--tail-shape) center / 100% 100% no-repeat;
+  mask: var(--tail-shape) center / 100% 100% no-repeat;
+  --tail-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 16'%3E%3Cpath d='M12 0L12 16L0 16C6 15 10 10 12 0Z'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+
+/* ---- tail styles ---- */
+
+.chat--tail-pinched .msg,
+.chat--tail-none .msg {
+  gap: 0.55em;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.chat--tail-pinched .msg__bubble,
+.chat--tail-none .msg__bubble {
+  box-shadow:
+    inset 0 0 0 1.5px var(--bubble-border),
+    inset 0 1px 0 rgb(255 255 255 / 0.34);
+}
+
+.chat--tail-pinched .msg__bubble {
+  border-bottom-left-radius: 5px;
+}
+
+.chat--tail-none .msg__bubble {
+  border-radius: var(--chat-radius);
+}
+
+.chat--tail-pinched .msg__bubble::after,
+.chat--tail-none .msg__bubble::after {
+  display: none;
+}
+
+/* ---- alignment modes ---- */
+
+.chat--align-alt .msg:not(.msg--notice) .msg__bubble {
+  max-width: 86%;
+}
+
+.chat--align-right .msg:not(.msg--notice),
+.chat--align-alt .msg--side-1:not(.msg--notice) {
+  flex-direction: row-reverse;
+}
+
+.chat--hide-avatars.chat--align-right .msg:not(.msg--notice),
+.chat--hide-avatars.chat--align-alt .msg--side-1:not(.msg--notice) {
+  padding-left: 0;
+  padding-right: 10px;
+}
+
+.chat--tail-pinched.chat--hide-avatars.chat--align-right .msg:not(.msg--notice),
+.chat--tail-none.chat--hide-avatars.chat--align-right .msg:not(.msg--notice),
+.chat--tail-pinched.chat--hide-avatars.chat--align-alt .msg--side-1:not(.msg--notice),
+.chat--tail-none.chat--hide-avatars.chat--align-alt .msg--side-1:not(.msg--notice) {
+  padding-right: 0;
+}
+
+.chat--align-right .msg:not(.msg--notice) .msg__bubble,
+.chat--align-alt .msg--side-1:not(.msg--notice) .msg__bubble {
+  border-bottom-left-radius: var(--chat-radius);
+  border-bottom-right-radius: 0;
+}
+
+.chat--tail-pinched.chat--align-right .msg:not(.msg--notice) .msg__bubble,
+.chat--tail-pinched.chat--align-alt .msg--side-1:not(.msg--notice) .msg__bubble {
+  border-bottom-left-radius: var(--chat-radius);
+  border-bottom-right-radius: 5px;
+}
+
+.chat--tail-none.chat--align-right .msg:not(.msg--notice) .msg__bubble,
+.chat--tail-none.chat--align-alt .msg--side-1:not(.msg--notice) .msg__bubble {
+  border-radius: var(--chat-radius);
+}
+
+.chat--align-right .msg:not(.msg--notice) .msg__bubble::after,
+.chat--align-alt .msg--side-1:not(.msg--notice) .msg__bubble::after {
+  right: auto;
+  left: 100%;
+  transform: scaleX(-1);
+}
+
+.chat--align-right .msg:not(.msg--notice) .msg__meta,
+.chat--align-alt .msg--side-1:not(.msg--notice) .msg__meta {
+  align-self: flex-end;
+  margin-left: 0;
+  margin-right: -0.18em;
+}
+
+.chat--full-width .msg__bubble {
+  flex: 1;
+  width: auto;
+  max-width: none;
+}
+
+/* ---- floating nameplate pill ---- */
+
+.msg__meta {
+  align-self: flex-start;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.34em;
+  max-width: 100%;
+  margin: calc(-1 * var(--bubble-pad-top) - 0.65em) 0 var(--bubble-pill-gap) -0.18em;
+  padding: 0.14em 0.62em;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--pill-text);
+  line-height: 1.25;
+  box-shadow:
+    0 2px 6px color-mix(in srgb, var(--accent) 32%, rgb(0 0 0 / 0.18)),
+    inset 0 1px 0 rgb(255 255 255 / 0.28);
+  text-shadow: 0 1px 1px rgb(0 0 0 / 0.2);
+}
+
+.msg__platform {
+  flex-shrink: 0;
+  width: 0.44em;
+  height: 0.44em;
+  border-radius: 50%;
+  background: var(--platform-color);
+  box-shadow: 0 0 0 1.5px rgb(255 255 255 / 0.85);
+}
+
+.chat--hide-platform .msg__platform {
+  display: none;
+}
+
+.badge {
+  padding: 0.08em 0.46em;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.24);
+  color: var(--pill-text);
+  font-size: 0.56em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+
+.chat--hide-badges .badge {
+  display: none;
+}
+
+.msg__author {
+  font-size: 0.82em;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.msg__time {
+  display: none;
+  font-size: 0.66em;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat--show-time .msg__time {
+  display: inline;
+}
+
+/* ---- "Inside" name style (clean messenger layout) ---- */
+
+.chat--name-inside .msg__bubble {
+  margin-top: 0;
+  padding: var(--bubble-pad-bottom) var(--bubble-pad-x);
+}
+
+.chat--name-inside .msg__meta {
+  align-self: stretch;
+  margin: 0 0 0.24em 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.chat--name-inside .msg__platform {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--platform-color) 24%, transparent);
+}
+
+.chat--name-inside .badge {
+  --badge-color: var(--accent);
+  background: color-mix(in srgb, var(--badge-color) 16%, transparent);
+  color: var(--badge-color);
+}
+
+.chat--name-inside .badge--broadcaster,
+.chat--name-inside .badge--owner     { --badge-color: #e53170; }
+.chat--name-inside .badge--moderator { --badge-color: #1ea84c; }
+.chat--name-inside .badge--vip       { --badge-color: #c824ab; }
+.chat--name-inside .badge--verified  { --badge-color: #64748b; }
+.chat--name-inside .badge--subscriber,
+.chat--name-inside .badge--member    { --badge-color: var(--membership); }
+
+.chat--name-inside .msg__time {
+  margin-left: auto;
+  color: var(--chat-muted);
+  opacity: 1;
+}
+
+/* ---- event line and body ---- */
+
+.msg__event {
+  margin: 0;
+  font-size: 0.88em;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.msg__event + .msg__body {
+  margin-top: 0.24em;
+}
+
+.msg__body {
+  margin: 0;
+  overflow-wrap: anywhere; /* long spam without spaces must not overflow */
+}
+
+.emote {
+  height: var(--emote-size);
+  vertical-align: middle;
+  margin: -0.2em 0.05em;
+}
+
+.msg__info {
+  font-weight: 500;
+  color: var(--chat-text);
+}
+
+.msg__sticker {
+  display: block;
+  height: 4em;
+  margin-top: 0.3em;
+}
+
+/* ---- message kinds & paid tiers ---- */
+
+.msg--emote-only .emote {
+  height: var(--emote-only-size);
+  margin: 0.08em 0.05em;
+}
+
+/* Paid messages, memberships, gifts, and notices override the accent so they
+   stand out cleanly in every accent mode (including Custom and Chatter). */
+.chat .msg--paid {
+  --accent: var(--paid-color);
+  --bubble-surface: color-mix(in srgb, var(--paid-color) 14%, var(--chat-bg));
+}
+
+.chat .msg--membership,
+.chat .msg--gift {
+  --accent: var(--membership);
+  --bubble-surface: color-mix(in srgb, var(--membership) 12%, var(--chat-bg));
+}
+
+.chat .msg--notice {
+  --accent: var(--notice);
+  --bubble-surface: color-mix(in srgb, var(--notice) 16%, var(--chat-bg));
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.msg--notice .msg__bubble {
+  margin-top: 0;
+  padding: 0.36em 0.95em;
+  border-radius: 999px;
+  text-align: center;
+  font-style: italic;
+}
+
+.msg--notice .msg__bubble::after {
+  display: none;
+}
+
+/* Donation tier colours (same scale as Minimal). */
+.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
+.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
+.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
+.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
+.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
+.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
+.msg--tier-7 { --paid-color: var(--paid-youtube-7); }
+.msg--youtube[class*="msg--tier-"]:not(.msg--tier-1, .msg--tier-2, .msg--tier-3,
+  .msg--tier-4, .msg--tier-5, .msg--tier-6) { --paid-color: var(--paid-youtube-7); }
+
+.msg--twitch.msg--tier-1 { --paid-color: var(--paid-twitch-1); }
+.msg--twitch.msg--tier-2,
+.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-2); }
+.msg--twitch.msg--tier-4,
+.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-3); }
+.msg--twitch.msg--tier-6 { --paid-color: var(--paid-twitch-4); }
+.msg--twitch.msg--tier-7 { --paid-color: var(--paid-twitch-5); }
+
+/* ---- moderation ---- */
+
+/* Deleted messages vanish at once by default. For a fade instead:
+   .msg--deleted { opacity: 0; transition: opacity 0.3s; }
+   and set --delete-delay: 0.3s above. */
+.msg--deleted {
+  display: none;
+}

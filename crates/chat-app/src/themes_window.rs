@@ -676,7 +676,7 @@ impl ThemesWindow {
         let border = cx.theme().border;
 
         card(cx)
-            .w(px(260.))
+            .w(px(286.))
             .flex_none()
             .min_h_0()
             .child(

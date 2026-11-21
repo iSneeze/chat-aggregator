@@ -1,0 +1,589 @@
+/*
+ * "Retro" built-in theme: classic 16-bit JRPG dialogue boxes with a speaker
+ * nameplate tab, framed character portrait, optional CRT scanlines, and a
+ * blinking advance cursor on the newest message.
+ *
+ * Most restyling only needs the variables below (or the options in theme.toml).
+ * Every message is an <article class="msg"> with modifier classes:
+ *   .msg--twitch / .msg--youtube / .msg--picarto    platform
+ *   / .msg--rplay / .msg--streamelements / .msg--streamlabs
+ *   .msg--role-viewer / -member / -moderator / -owner
+ *   .msg--text / --emote-only / --donation / --special
+ *   .msg--membership / --gift / --notice            kind
+ *   .msg--paid, .msg--tier-1 … -7                   donations and their tier
+ *   .msg--deleted                                   removed by a moderator
+ */
+
+:root {
+  /* text */
+  --chat-font: "JetBrains Mono", "Cascadia Code", "Fira Code", "Consolas", ui-monospace, monospace;
+  --chat-font-size: 18px;
+  --chat-text: #f5f7ff;
+  --chat-muted: color-mix(in srgb, var(--chat-text) 64%, transparent);
+  --retro-text-shadow: 2px 2px 0 rgb(0 0 0 / 0.65);
+
+  /* dialogue window */
+  --chat-accent: #ffd859;
+  --chat-bg-color: #132a6e;
+  --chat-bg-opacity: 94%;
+  --chat-bg: color-mix(in srgb, var(--chat-bg-color) var(--chat-bg-opacity), transparent);
+  --chat-gap: 10px;
+  --box-pad-top: 0.92em;
+  --box-pad-x: 0.92em;
+  --box-pad-bottom: 0.66em;
+
+  /* motion */
+  --msg-enter: msg-in-snap 0.22s steps(4, end);
+  --msg-fade-delay: 0s;
+
+  /* platform & event colours */
+  --twitch: #a970ff;
+  --youtube: #ff455b;
+  --picarto: #45d18f;
+  --rplay: #38c4ff;
+  --streamelements: #7492ff;
+  --streamlabs: #42dbb7;
+  --paid: #ffd43b;
+  --membership: #4be096;
+  --notice: #66c2ff;
+
+  /* donation tier colours */
+  --paid-youtube-1: #4da3ff;
+  --paid-youtube-2: #33e6ff;
+  --paid-youtube-3: #3df2c2;
+  --paid-youtube-4: #ffd43b;
+  --paid-youtube-5: #ff922b;
+  --paid-youtube-6: #ff5c93;
+  --paid-youtube-7: #ff4d4d;
+  --paid-twitch-1: #b0b8c9;
+  --paid-twitch-2: #b975ff;
+  --paid-twitch-3: #3de0cf;
+  --paid-twitch-4: #4db8ff;
+  --paid-twitch-5: #ff5a4d;
+
+  /* sizes */
+  --emote-size: 1.5em;
+  --emote-only-size: 2.6em;
+  --avatar-size: 2.4em;
+
+  /* overlay behavior (read by the overlay script) */
+  --max-messages: 20;  /* older messages are removed from the page */
+  --delete-delay: 0s;  /* time for a .msg--deleted transition before removal */
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent; /* OBS composites the page over the scene */
+}
+
+/* ---- message list ---- */
+
+.chat {
+  box-sizing: border-box;
+  height: 100vh;
+  padding: var(--chat-gap) 12px;
+  display: flex;
+  flex-direction: column;
+  /* Newest at the bottom, old ones leave at the top. With the newest at the
+     top, the overlay flips this to column-reverse. */
+  justify-content: flex-end;
+  gap: var(--chat-gap);
+  overflow: hidden;
+  font-family: var(--chat-font);
+  font-size: var(--chat-font-size);
+  line-height: 1.42;
+  color: var(--chat-text);
+  text-shadow: var(--retro-text-shadow);
+  -webkit-font-smoothing: antialiased;
+}
+
+.chat--compact {
+  --box-pad-top: 0.76em;
+  --box-pad-x: 0.72em;
+  --box-pad-bottom: 0.48em;
+}
+
+.chat--airy {
+  --box-pad-top: 1.08em;
+  --box-pad-x: 1.12em;
+  --box-pad-bottom: 0.84em;
+}
+
+/* ---- one RPG dialogue window ---- */
+
+.msg {
+  --platform-color: var(--chat-accent);
+  --accent: var(--chat-accent);
+  --paid-color: var(--paid);
+  --panel-surface: var(--chat-bg);
+  --frame-color: color-mix(in srgb, var(--chat-text) 78%, var(--accent));
+  --outer-outline: color-mix(in srgb, #06080f calc(var(--chat-bg-opacity) * 0.92), transparent);
+  --window-shadow: color-mix(in srgb, #000000 calc(var(--chat-bg-opacity) * 0.52), transparent);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  animation: var(--msg-enter);
+}
+
+.chat--accent-platform .msg {
+  --accent: var(--platform-color);
+}
+
+.chat--accent-chatter .msg {
+  --accent: var(--author-color, hsl(var(--chatter-hue, 50) 82% 66%));
+}
+
+.msg--twitch         { --platform-color: var(--twitch); }
+.msg--youtube        { --platform-color: var(--youtube); }
+.msg--picarto        { --platform-color: var(--picarto); }
+.msg--rplay          { --platform-color: var(--rplay); }
+.msg--streamelements { --platform-color: var(--streamelements); }
+.msg--streamlabs     { --platform-color: var(--streamlabs); }
+
+/* ---- animations ---- */
+
+.chat--newest-top { --msg-enter-offset: -0.5em; }
+
+@keyframes msg-in-snap {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.45em)) scaleY(0.86);
+  }
+}
+
+@keyframes msg-in-slide {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.5em));
+  }
+}
+
+@keyframes msg-in-fade {
+  from { opacity: 0; }
+}
+
+.chat--fade-out .msg {
+  animation: var(--msg-enter), msg-out 0.5s steps(4, end) var(--msg-fade-delay) forwards;
+}
+
+@keyframes msg-out {
+  to { opacity: 0; }
+}
+
+/* ---- speaker nameplate tab ---- */
+
+.msg__meta {
+  position: relative;
+  z-index: 2;
+  align-self: flex-start;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.42em;
+  max-width: calc(100% - 1.2em);
+  margin: 0 0 -0.62em 0.65em;
+  padding: 0.14em 0.6em;
+  border: 2px solid var(--frame-color);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--panel-surface) 88%, #000000);
+  box-shadow:
+    0 0 0 2px var(--outer-outline),
+    2px 2px 0 var(--window-shadow);
+  line-height: 1.25;
+}
+
+.msg__platform {
+  flex-shrink: 0;
+  width: 0.46em;
+  height: 0.46em;
+  background: var(--platform-color);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.55);
+}
+
+.chat--hide-platform .msg__platform {
+  display: none;
+}
+
+.msg__author {
+  font-size: 0.84em;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.badge {
+  --badge-color: var(--accent);
+  padding: 0.04em 0.36em;
+  border: 1px solid color-mix(in srgb, var(--badge-color) 65%, transparent);
+  background: color-mix(in srgb, var(--badge-color) 18%, transparent);
+  color: var(--badge-color);
+  font-size: 0.55em;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+
+.chat--hide-badges .badge {
+  display: none;
+}
+
+.badge--broadcaster,
+.badge--owner     { --badge-color: #ff6b9d; }
+.badge--moderator { --badge-color: #4be096; }
+.badge--vip       { --badge-color: #e580ff; }
+.badge--verified  { --badge-color: #94a3b8; }
+.badge--subscriber,
+.badge--member    { --badge-color: var(--membership); }
+
+.msg__time {
+  display: none;
+  font-size: 0.66em;
+  color: var(--chat-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat--show-time .msg__time {
+  display: inline;
+}
+
+/* ---- dialogue box body ---- */
+
+.msg__box {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.72em;
+  padding: var(--box-pad-top) var(--box-pad-x) var(--box-pad-bottom);
+  border: 3px solid var(--frame-color);
+  border-radius: 3px;
+  /* Classic 16-bit vertical window sheen from top highlight to deep bottom. */
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, #ffffff 10%, transparent) 0%,
+      transparent 38%,
+      color-mix(in srgb, #000000 18%, transparent) 100%
+    ),
+    var(--panel-surface);
+  box-shadow:
+    0 0 0 2px var(--outer-outline),
+    inset 0 0 0 2px color-mix(in srgb, var(--frame-color) 28%, transparent),
+    4px 4px 0 var(--window-shadow);
+}
+
+/* Optional CRT scanlines overlay across the dialogue window. */
+.chat--scanlines .msg__box::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0 2px,
+    rgb(0 0 0 / 0.16) 2px 4px
+  );
+  pointer-events: none;
+}
+
+/* Blinking RPG advance triangle on the newest message (always :last-child). */
+.msg:last-child:not(.msg--notice) .msg__box::after {
+  content: "";
+  position: absolute;
+  right: 0.55em;
+  bottom: 0.42em;
+  width: 0;
+  height: 0;
+  border-left: 0.34em solid transparent;
+  border-right: 0.34em solid transparent;
+  border-top: 0.42em solid var(--accent);
+  animation: retro-blink 1s steps(2, start) infinite;
+  pointer-events: none;
+}
+
+.msg:last-child:not(.msg--notice) .msg__box {
+  padding-right: calc(var(--box-pad-x) + 0.9em);
+}
+
+.chat--hide-cursor .msg:last-child:not(.msg--notice) .msg__box::after {
+  display: none;
+}
+
+.chat--hide-cursor .msg:last-child:not(.msg--notice) .msg__box {
+  padding-right: var(--box-pad-x);
+}
+
+@keyframes retro-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+
+/* ---- frame styles ---- */
+
+/* Pixel Bezel: stepped 8-bit notched corners via clip-path + unified shadow. */
+.chat--frame-pixel .msg {
+  filter: drop-shadow(3px 3px 0 var(--window-shadow));
+}
+
+.chat--frame-pixel .msg__meta {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.chat--frame-pixel .msg__box {
+  border-radius: 0;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--frame-color) 32%, transparent);
+  clip-path: polygon(
+    0 4px, 4px 4px, 4px 0,
+    calc(100% - 4px) 0, calc(100% - 4px) 4px, 100% 4px,
+    100% calc(100% - 4px), calc(100% - 4px) calc(100% - 4px), calc(100% - 4px) 100%,
+    4px 100%, 4px calc(100% - 4px), 0 calc(100% - 4px)
+  );
+}
+
+/* Handheld: flat crisp Game Boy LCD bezel with zero gradient. */
+.chat--frame-handheld .msg__meta {
+  border-radius: 0;
+  background: var(--panel-surface);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--frame-color) 45%, transparent);
+}
+
+.chat--frame-handheld .msg__box {
+  border-radius: 0;
+  background: var(--panel-surface);
+  box-shadow:
+    inset 0 0 0 2px color-mix(in srgb, var(--frame-color) 35%, transparent),
+    3px 3px 0 color-mix(in srgb, var(--frame-color) 45%, transparent);
+}
+
+/* CRT: phosphor-rimmed retro arcade bezel. */
+.chat--frame-crt .msg__meta {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 8px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 0 0 2px var(--outer-outline);
+}
+
+.chat--frame-crt .msg__box {
+  border-color: var(--accent);
+  border-radius: 6px;
+  box-shadow:
+    0 0 12px color-mix(in srgb, var(--accent) 28%, transparent),
+    inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+    0 0 0 2px var(--outer-outline);
+}
+
+/* Win95/98: classic 3D raised desktop dialog window with gradient titlebar
+   and miniature _, square, and x control buttons. */
+.chat--frame-win95 .msg {
+  padding: 3px;
+  background: var(--panel-surface);
+  border-top: 2px solid color-mix(in srgb, var(--chat-bg-color) 18%, #ffffff);
+  border-left: 2px solid color-mix(in srgb, var(--chat-bg-color) 18%, #ffffff);
+  border-right: 2px solid #0a0a0a;
+  border-bottom: 2px solid #0a0a0a;
+  box-shadow:
+    inset 1px 1px 0 color-mix(in srgb, var(--chat-bg-color) 55%, #ffffff),
+    inset -1px -1px 0 color-mix(in srgb, var(--chat-bg-color) 50%, #000000),
+    3px 3px 0 rgb(0 0 0 / 0.35);
+}
+
+.chat--frame-win95 .msg__meta {
+  align-self: stretch;
+  max-width: none;
+  margin: 0 0 3px 0;
+  padding: 0.16em 0.24em 0.16em 0.42em;
+  border: none;
+  border-radius: 0;
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 44%, #1084d0) 100%
+  );
+  box-shadow: none;
+  color: #ffffff;
+}
+
+.chat--frame-win95 .msg__meta::after {
+  content: "";
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 2.95em;
+  height: 0.9em;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 46 14'%3E%3Crect x='0' y='0' width='14' height='14' fill='%23c0c0c0'/%3E%3Cpath d='M0 13V0h13v1H1v12z' fill='%23ffffff'/%3E%3Cpath d='M13 0h1v14H0v-1h13z' fill='%23000000'/%3E%3Cpath d='M12 1h1v12H1v-1h11z' fill='%23808080'/%3E%3Crect x='3' y='9' width='6' height='2' fill='%23000000'/%3E%3Crect x='15' y='0' width='14' height='14' fill='%23c0c0c0'/%3E%3Cpath d='M15 13V0h13v1H16v12z' fill='%23ffffff'/%3E%3Cpath d='M28 0h1v14H15v-1h13z' fill='%23000000'/%3E%3Cpath d='M27 1h1v12H16v-1h11z' fill='%23808080'/%3E%3Cpath d='M18 3h8v8h-8zm1 2v5h6V5z' fill='%23000000'/%3E%3Crect x='32' y='0' width='14' height='14' fill='%23c0c0c0'/%3E%3Cpath d='M32 13V0h13v1H33v12z' fill='%23ffffff'/%3E%3Cpath d='M45 0h1v14H32v-1h13z' fill='%23000000'/%3E%3Cpath d='M44 1h1v12H33v-1h11z' fill='%23808080'/%3E%3Cpath d='M35 3h2l2 2 2-2h2v1l-2.5 2.5L43 9v1h-2l-2-2-2 2h-2V9l2.5-2.5L35 4z' fill='%23000000'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+.chat--frame-win95 .msg__author {
+  color: #ffffff;
+  text-shadow: 1px 1px 0 rgb(0 0 0 / 0.35);
+}
+
+.chat--frame-win95 .msg__time {
+  color: rgb(255 255 255 / 0.86);
+  text-shadow: none;
+}
+
+.chat--frame-win95 .badge {
+  border-color: rgb(255 255 255 / 0.55);
+  background: rgb(255 255 255 / 0.18);
+  color: #ffffff;
+  text-shadow: none;
+}
+
+.chat--frame-win95 .msg__box {
+  padding: var(--box-pad-bottom) var(--box-pad-x);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat--frame-win95 .msg__avatar {
+  border-radius: 0;
+  border-top: 2px solid color-mix(in srgb, var(--chat-bg-color) 48%, #000000);
+  border-left: 2px solid color-mix(in srgb, var(--chat-bg-color) 48%, #000000);
+  border-right: 2px solid #ffffff;
+  border-bottom: 2px solid #ffffff;
+  box-shadow: none;
+}
+
+.chat--frame-win95 .msg__event {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 82%, #000000);
+  background: color-mix(in srgb, var(--accent) 16%, rgb(255 255 255 / 0.45));
+  color: color-mix(in srgb, var(--accent) 72%, #000000);
+}
+
+.chat--frame-win95 .msg--notice .msg__event {
+  border-left: none;
+  background: transparent;
+}
+
+/* ---- portrait avatar inside the RPG dialogue box ---- */
+
+.msg__avatar {
+  flex-shrink: 0;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  margin-top: 0.08em;
+  border: 2px solid var(--frame-color);
+  border-radius: 2px;
+  object-fit: cover;
+  box-shadow: 2px 2px 0 var(--window-shadow);
+}
+
+.chat--hide-avatars .msg__avatar {
+  display: none;
+}
+
+.msg__content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- event banner & body ---- */
+
+.msg__event {
+  margin: 0;
+  padding: 0.16em 0.5em;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  font-size: 0.9em;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.msg__event + .msg__body {
+  margin-top: 0.34em;
+}
+
+.msg__body {
+  margin: 0;
+  overflow-wrap: anywhere; /* long spam without spaces must not overflow */
+}
+
+.emote {
+  height: var(--emote-size);
+  vertical-align: middle;
+  margin: -0.2em 0.05em;
+}
+
+.msg__info {
+  font-weight: 500;
+  color: var(--chat-text);
+}
+
+.msg__sticker {
+  display: block;
+  height: 4em;
+  margin-top: 0.35em;
+}
+
+/* ---- message kinds & paid tiers ---- */
+
+.msg--emote-only .emote {
+  height: var(--emote-only-size);
+  margin: 0.08em 0.05em;
+}
+
+/* Special events highlight the frame & nameplate cleanly in every accent mode. */
+.chat .msg--paid {
+  --accent: var(--paid-color);
+  --frame-color: var(--paid-color);
+  --panel-surface: color-mix(in srgb, var(--paid-color) 14%, var(--chat-bg));
+}
+
+.chat .msg--membership,
+.chat .msg--gift {
+  --accent: var(--membership);
+  --frame-color: var(--membership);
+  --panel-surface: color-mix(in srgb, var(--membership) 12%, var(--chat-bg));
+}
+
+.chat .msg--notice {
+  --accent: var(--notice);
+  --frame-color: var(--notice);
+  --panel-surface: color-mix(in srgb, var(--notice) 14%, var(--chat-bg));
+}
+
+.msg--notice .msg__box {
+  padding: 0.52em var(--box-pad-x);
+  justify-content: center;
+  text-align: center;
+}
+
+.msg--notice .msg__event {
+  border-left: none;
+  background: transparent;
+  padding: 0;
+  font-style: italic;
+}
+
+/* Donation tier colours. */
+.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
+.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
+.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
+.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
+.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
+.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
+.msg--tier-7 { --paid-color: var(--paid-youtube-7); }
+.msg--youtube[class*="msg--tier-"]:not(.msg--tier-1, .msg--tier-2, .msg--tier-3,
+  .msg--tier-4, .msg--tier-5, .msg--tier-6) { --paid-color: var(--paid-youtube-7); }
+
+.msg--twitch.msg--tier-1 { --paid-color: var(--paid-twitch-1); }
+.msg--twitch.msg--tier-2,
+.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-2); }
+.msg--twitch.msg--tier-4,
+.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-3); }
+.msg--twitch.msg--tier-6 { --paid-color: var(--paid-twitch-4); }
+.msg--twitch.msg--tier-7 { --paid-color: var(--paid-twitch-5); }
+
+/* ---- moderation ---- */
+
+/* Deleted messages vanish at once by default. For a fade instead:
+   .msg--deleted { opacity: 0; transition: opacity 0.3s; }
+   and set --delete-delay: 0.3s above. */
+.msg--deleted {
+  display: none;
+}

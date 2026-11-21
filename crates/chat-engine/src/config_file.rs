@@ -1018,7 +1018,12 @@ mod tests {
         );
         assert_eq!(
             theme("cozy"),
-            ThemeSource::Folder(themes_dir.join("cozy")),
+            ThemeSource::Builtin(crate::Builtin::Cozy),
+            "built-in themes by name"
+        );
+        assert_eq!(
+            theme("studio"),
+            ThemeSource::Folder(themes_dir.join("studio")),
             "a theme name is a folder in themes/ next to the config file"
         );
         let anywhere = std::env::temp_dir().join("my-theme");

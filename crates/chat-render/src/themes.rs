@@ -115,19 +115,19 @@ mod tests {
     fn lists_theme_folders_sorted() {
         let dir = temp("list");
         assert!(list(&dir).is_empty(), "no folder yet is fine");
-        for name in ["dark", "Cozy", ".hidden"] {
+        for name in ["dark", "Studio", ".hidden"] {
             std::fs::create_dir_all(dir.join(name)).unwrap();
         }
         std::fs::write(dir.join("notes.txt"), "not a theme").unwrap();
-        assert_eq!(list(&dir), ["Cozy", "dark"]);
+        assert_eq!(list(&dir), ["dark", "Studio"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn new_theme_is_a_copy_of_the_defaults() {
         let dir = temp("create");
-        let theme = create_from_default(&dir, " cozy ").unwrap();
-        assert_eq!(theme, dir.join("cozy"));
+        let theme = create_from_default(&dir, " studio ").unwrap();
+        assert_eq!(theme, dir.join("studio"));
         assert_eq!(
             std::fs::read_to_string(theme.join(CSS_FILE)).unwrap(),
             Builtin::Default.css()
@@ -151,7 +151,7 @@ mod tests {
         );
 
         std::fs::write(theme.join(CSS_FILE), "/* edited */").unwrap();
-        assert!(create_from_default(&dir, "cozy").is_err());
+        assert!(create_from_default(&dir, "studio").is_err());
         assert_eq!(
             std::fs::read_to_string(theme.join(CSS_FILE)).unwrap(),
             "/* edited */",
@@ -185,6 +185,10 @@ mod tests {
             validate_name(" Minimal ").is_err(),
             "built-in names are taken"
         );
+        assert!(validate_name("Bubbles").is_err(), "built-in names are taken");
+        assert!(validate_name("Cozy").is_err(), "built-in names are taken");
+        assert!(validate_name("Retro").is_err(), "built-in names are taken");
+        assert!(validate_name("Neon").is_err(), "built-in names are taken");
         assert!(validate_name("../escape").is_err());
         assert!(validate_name("a/b").is_err());
         assert!(validate_name(&"x".repeat(41)).is_err());
@@ -201,10 +205,10 @@ mod tests {
     #[test]
     fn list_skips_folders_with_invalid_names() {
         let dir = temp("list-valid");
-        for name in ["Cozy", "my.theme", "default", "CON"] {
+        for name in ["Studio", "my.theme", "default", "cozy", "CON"] {
             std::fs::create_dir_all(dir.join(name)).unwrap();
         }
-        assert_eq!(list(&dir), ["Cozy"]);
+        assert_eq!(list(&dir), ["Studio"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

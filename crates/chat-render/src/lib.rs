@@ -26,11 +26,31 @@ static BUILTIN_DEFAULT: LazyLock<Arc<Theme>> =
     LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Default)));
 static BUILTIN_MINIMAL: LazyLock<Arc<Theme>> =
     LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Minimal)));
+static BUILTIN_BUBBLES: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Bubbles)));
+static BUILTIN_COZY: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Cozy)));
+static BUILTIN_RETRO: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Retro)));
+static BUILTIN_NEON: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Neon)));
 static BUILTIN_DEFAULT_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
     options::ThemeManifest::parse(DEFAULT_MANIFEST).expect("built-in Default theme.toml is valid")
 });
 static BUILTIN_MINIMAL_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
     options::ThemeManifest::parse(MINIMAL_MANIFEST).expect("built-in Minimal theme.toml is valid")
+});
+static BUILTIN_BUBBLES_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(BUBBLES_MANIFEST).expect("built-in Bubbles theme.toml is valid")
+});
+static BUILTIN_COZY_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(COZY_MANIFEST).expect("built-in Cozy theme.toml is valid")
+});
+static BUILTIN_RETRO_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(RETRO_MANIFEST).expect("built-in Retro theme.toml is valid")
+});
+static BUILTIN_NEON_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(NEON_MANIFEST).expect("built-in Neon theme.toml is valid")
 });
 
 pub mod options;
@@ -44,6 +64,18 @@ pub const DEFAULT_MANIFEST: &str = include_str!("../templates/theme.toml");
 const MINIMAL_MESSAGE_TEMPLATE: &str = include_str!("../templates/minimal/message.html");
 const MINIMAL_CSS: &str = include_str!("../templates/minimal/overlay.css");
 const MINIMAL_MANIFEST: &str = include_str!("../templates/minimal/theme.toml");
+const BUBBLES_MESSAGE_TEMPLATE: &str = include_str!("../templates/bubbles/message.html");
+const BUBBLES_CSS: &str = include_str!("../templates/bubbles/overlay.css");
+const BUBBLES_MANIFEST: &str = include_str!("../templates/bubbles/theme.toml");
+const COZY_MESSAGE_TEMPLATE: &str = include_str!("../templates/cozy/message.html");
+const COZY_CSS: &str = include_str!("../templates/cozy/overlay.css");
+const COZY_MANIFEST: &str = include_str!("../templates/cozy/theme.toml");
+const RETRO_MESSAGE_TEMPLATE: &str = include_str!("../templates/retro/message.html");
+const RETRO_CSS: &str = include_str!("../templates/retro/overlay.css");
+const RETRO_MANIFEST: &str = include_str!("../templates/retro/theme.toml");
+const NEON_MESSAGE_TEMPLATE: &str = include_str!("../templates/neon/message.html");
+const NEON_CSS: &str = include_str!("../templates/neon/overlay.css");
+const NEON_MANIFEST: &str = include_str!("../templates/neon/theme.toml");
 
 pub const MESSAGE_FILE: &str = "message.html";
 pub const CSS_FILE: &str = "overlay.css";
@@ -57,10 +89,25 @@ pub enum Builtin {
     Default,
     /// One line per message: name and text.
     Minimal,
+    /// Rounded speech bubbles with a floating nameplate pill.
+    Bubbles,
+    /// Warm pastel stationery cards with stitched borders and chatter charms.
+    Cozy,
+    /// Classic 16-bit JRPG dialogue boxes with nameplate tabs and pixel bezels.
+    Retro,
+    /// Cybernetic HUD cards with chamfered corners and dual-color neon accents.
+    Neon,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 2] = [Builtin::Default, Builtin::Minimal];
+    pub const ALL: [Builtin; 6] = [
+        Builtin::Default,
+        Builtin::Minimal,
+        Builtin::Bubbles,
+        Builtin::Cozy,
+        Builtin::Retro,
+        Builtin::Neon,
+    ];
 
     /// Its name in `config.toml` and in overlay URLs (`?theme=minimal`).
     /// No theme folder can have it (`themes::validate_name` refuses it).
@@ -68,6 +115,10 @@ impl Builtin {
         match self {
             Builtin::Default => "default",
             Builtin::Minimal => "minimal",
+            Builtin::Bubbles => "bubbles",
+            Builtin::Cozy => "cozy",
+            Builtin::Retro => "retro",
+            Builtin::Neon => "neon",
         }
     }
 
@@ -76,6 +127,10 @@ impl Builtin {
         match self {
             Builtin::Default => "Default",
             Builtin::Minimal => "Minimal",
+            Builtin::Bubbles => "Bubbles",
+            Builtin::Cozy => "Cozy",
+            Builtin::Retro => "Retro",
+            Builtin::Neon => "Neon",
         }
     }
 
@@ -90,6 +145,10 @@ impl Builtin {
         match self {
             Builtin::Default => DEFAULT_MESSAGE_TEMPLATE,
             Builtin::Minimal => MINIMAL_MESSAGE_TEMPLATE,
+            Builtin::Bubbles => BUBBLES_MESSAGE_TEMPLATE,
+            Builtin::Cozy => COZY_MESSAGE_TEMPLATE,
+            Builtin::Retro => RETRO_MESSAGE_TEMPLATE,
+            Builtin::Neon => NEON_MESSAGE_TEMPLATE,
         }
     }
 
@@ -97,6 +156,10 @@ impl Builtin {
         match self {
             Builtin::Default => DEFAULT_CSS,
             Builtin::Minimal => MINIMAL_CSS,
+            Builtin::Bubbles => BUBBLES_CSS,
+            Builtin::Cozy => COZY_CSS,
+            Builtin::Retro => RETRO_CSS,
+            Builtin::Neon => NEON_CSS,
         }
     }
 
@@ -105,6 +168,10 @@ impl Builtin {
         match self {
             Builtin::Default => DEFAULT_MANIFEST,
             Builtin::Minimal => MINIMAL_MANIFEST,
+            Builtin::Bubbles => BUBBLES_MANIFEST,
+            Builtin::Cozy => COZY_MANIFEST,
+            Builtin::Retro => RETRO_MANIFEST,
+            Builtin::Neon => NEON_MANIFEST,
         }
     }
 
@@ -113,6 +180,10 @@ impl Builtin {
         match self {
             Builtin::Default => &BUILTIN_DEFAULT_MANIFEST,
             Builtin::Minimal => &BUILTIN_MINIMAL_MANIFEST,
+            Builtin::Bubbles => &BUILTIN_BUBBLES_MANIFEST,
+            Builtin::Cozy => &BUILTIN_COZY_MANIFEST,
+            Builtin::Retro => &BUILTIN_RETRO_MANIFEST,
+            Builtin::Neon => &BUILTIN_NEON_MANIFEST,
         }
     }
 }
@@ -241,6 +312,10 @@ impl Theme {
         match builtin {
             Builtin::Default => Arc::clone(&BUILTIN_DEFAULT),
             Builtin::Minimal => Arc::clone(&BUILTIN_MINIMAL),
+            Builtin::Bubbles => Arc::clone(&BUILTIN_BUBBLES),
+            Builtin::Cozy => Arc::clone(&BUILTIN_COZY),
+            Builtin::Retro => Arc::clone(&BUILTIN_RETRO),
+            Builtin::Neon => Arc::clone(&BUILTIN_NEON),
         }
     }
 
@@ -508,19 +583,154 @@ mod tests {
     }
 
     #[test]
+    fn bubbles_theme_renders_bubbles_and_chatter_seeds() {
+        let theme = Theme::from_builtin(Builtin::Bubbles);
+        let msg = message(ChatPlatform::Twitch, "hello chat", MessageKind::Text);
+        let html = theme.render(&msg).unwrap();
+        assert!(html.contains(r#"class="msg msg--text msg--twitch msg--role-moderator msg--side-"#), "{html}");
+        assert!(html.contains("--chatter-hue:"), "{html}");
+        assert!(html.contains("--author-color: #7f5af0"), "{html}");
+        assert!(
+            html.contains(r#"<span class="msg__avatar msg__avatar--fallback" aria-hidden="true">A</span>"#),
+            "chatter without avatar_url gets an initial-letter fallback: {html}"
+        );
+        assert!(html.contains(r#"<div class="msg__bubble">"#), "{html}");
+        assert!(html.contains(r#"<header class="msg__meta">"#), "{html}");
+
+        // Chatters with an avatar_url render the photo instead of the fallback.
+        let mut with_avatar = message(ChatPlatform::YouTube, "hi", MessageKind::Text);
+        with_avatar.author.avatar_url = Some("avatar.png".into());
+        let with_avatar_html = theme.render(&with_avatar).unwrap();
+        assert!(with_avatar_html.contains(r#"<img class="msg__avatar" src="avatar.png" alt="">"#), "{with_avatar_html}");
+        assert!(!with_avatar_html.contains("msg__avatar--fallback"), "{with_avatar_html}");
+
+        // System notices omit the nameplate pill and avatar, keeping a clean announcement bubble.
+        let mut notice = message(
+            ChatPlatform::Twitch,
+            "",
+            MessageKind::SystemNotice {
+                info: "Kim is raiding".into(),
+            },
+        );
+        notice.author.avatar_url = Some("avatar.png".into());
+        let notice_html = theme.render(&notice).unwrap();
+        assert!(!notice_html.contains("msg__meta"), "{notice_html}");
+        assert!(!notice_html.contains("msg__avatar"), "{notice_html}");
+        assert!(notice_html.contains("Kim is raiding"), "{notice_html}");
+    }
+
+    #[test]
+    fn cozy_theme_renders_charms_and_tilt() {
+        let theme = Theme::from_builtin(Builtin::Cozy);
+        let msg = message(ChatPlatform::Twitch, "warm tea", MessageKind::Text);
+        let html = theme.render(&msg).unwrap();
+        assert!(html.contains(r#"class="msg msg--text msg--twitch msg--role-moderator msg--tilt-"#), "{html}");
+        assert!(html.contains(r#"<span class="msg__charm msg__charm--"#), "{html}");
+        assert!(html.contains("--chatter-hue:"), "{html}");
+
+        // System notices omit the header and charm, keeping a centered stationery note.
+        let notice = message(
+            ChatPlatform::Twitch,
+            "",
+            MessageKind::SystemNotice {
+                info: "Kim is raiding".into(),
+            },
+        );
+        let notice_html = theme.render(&notice).unwrap();
+        assert!(!notice_html.contains("msg__meta"), "{notice_html}");
+        assert!(!notice_html.contains("msg__charm"), "{notice_html}");
+        assert!(notice_html.contains("Kim is raiding"), "{notice_html}");
+    }
+
+    #[test]
+    fn retro_theme_renders_dialogue_box_and_portrait() {
+        let theme = Theme::from_builtin(Builtin::Retro);
+        let mut msg = message(ChatPlatform::YouTube, "press start", MessageKind::Text);
+        msg.author.avatar_url = Some("portrait.png".into());
+        let html = theme.render(&msg).unwrap();
+        assert!(html.contains(r#"<header class="msg__meta">"#), "{html}");
+        assert!(html.contains(r#"<div class="msg__box">"#), "{html}");
+        assert!(
+            html.contains(r#"<img class="msg__avatar" src="portrait.png" alt="">"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<div class="msg__content">"#), "{html}");
+
+        // System notices omit the speaker nameplate and portrait.
+        let mut notice = message(
+            ChatPlatform::Twitch,
+            "",
+            MessageKind::SystemNotice {
+                info: "Kim is raiding".into(),
+            },
+        );
+        notice.author.avatar_url = Some("portrait.png".into());
+        let notice_html = theme.render(&notice).unwrap();
+        assert!(!notice_html.contains("msg__meta"), "{notice_html}");
+        assert!(!notice_html.contains("msg__avatar"), "{notice_html}");
+        assert!(notice_html.contains("Kim is raiding"), "{notice_html}");
+    }
+
+    #[test]
+    fn neon_theme_renders_hud_panel_and_platform_tag() {
+        let theme = Theme::from_builtin(Builtin::Neon);
+        let msg = message(ChatPlatform::Twitch, "entering night city", MessageKind::Text);
+        let html = theme.render(&msg).unwrap();
+        assert!(html.contains(r#"<div class="msg__panel">"#), "{html}");
+        assert!(
+            html.contains(r#"<span class="msg__platform" title="twitch">twitch</span>"#),
+            "{html}"
+        );
+        assert!(html.contains("--chatter-hue:"), "{html}");
+
+        // System notices keep the HUD panel without a speaker header.
+        let notice = message(
+            ChatPlatform::Twitch,
+            "",
+            MessageKind::SystemNotice {
+                info: "Kim is raiding".into(),
+            },
+        );
+        let notice_html = theme.render(&notice).unwrap();
+        assert!(notice_html.contains(r#"<div class="msg__panel">"#), "{notice_html}");
+        assert!(!notice_html.contains("msg__meta"), "{notice_html}");
+        assert!(notice_html.contains("Kim is raiding"), "{notice_html}");
+    }
+
+    #[test]
     fn builtin_names_and_sources() {
         assert_eq!(Builtin::from_name(" Minimal "), Some(Builtin::Minimal));
-        assert_eq!(Builtin::from_name("cozy"), None);
+        assert_eq!(Builtin::from_name("BUBBLES"), Some(Builtin::Bubbles));
+        assert_eq!(Builtin::from_name("Cozy"), Some(Builtin::Cozy));
+        assert_eq!(Builtin::from_name("RETRO"), Some(Builtin::Retro));
+        assert_eq!(Builtin::from_name("Neon"), Some(Builtin::Neon));
+        assert_eq!(Builtin::from_name("studio"), None);
         let themes = Path::new("/themes");
         assert_eq!(
             ThemeSource::named(themes, "minimal"),
             ThemeSource::Builtin(Builtin::Minimal)
         );
         assert_eq!(
-            ThemeSource::named(themes, "cozy"),
-            ThemeSource::Folder(themes.join("cozy"))
+            ThemeSource::named(themes, "bubbles"),
+            ThemeSource::Builtin(Builtin::Bubbles)
         );
-        let anywhere = std::env::temp_dir().join("cozy");
+        assert_eq!(
+            ThemeSource::named(themes, "cozy"),
+            ThemeSource::Builtin(Builtin::Cozy)
+        );
+        assert_eq!(
+            ThemeSource::named(themes, "retro"),
+            ThemeSource::Builtin(Builtin::Retro)
+        );
+        assert_eq!(
+            ThemeSource::named(themes, "neon"),
+            ThemeSource::Builtin(Builtin::Neon)
+        );
+        assert_eq!(
+            ThemeSource::named(themes, "studio"),
+            ThemeSource::Folder(themes.join("studio"))
+        );
+        let anywhere = std::env::temp_dir().join("studio");
         assert_eq!(
             ThemeSource::named(themes, anywhere.to_str().unwrap()),
             ThemeSource::Folder(anywhere),
