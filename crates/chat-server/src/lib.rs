@@ -12,6 +12,7 @@
 //! | `/api/v1/ws`   | WebSocket: live events as JSON (see `api`, docs/api.md)  |
 //! | `/widgets/<name>` | a widget: a page that reads the JSON API (`widgets`) |
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -27,6 +28,7 @@ use axum::routing::get;
 use base64::Engine as _;
 use chat_core::{ChatEvent, Hub};
 use chat_render::Theme;
+use chat_render::options::{ResolvedStyle, ThemeManifest, ThemeValues, lookup_theme_values};
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, stream};
 use hide::OverlayFilter;
@@ -44,6 +46,7 @@ mod avatars;
 mod connections;
 mod hide;
 mod local;
+mod preview;
 mod stagger;
 pub mod widgets;
 
@@ -51,6 +54,7 @@ pub mod widgets;
 // don't need chat-render as a dependency of their own just to name them.
 pub use approvals::{ANSWER_TIMEOUT, ApiOrigins};
 pub use avatars::Avatars;
+pub use chat_render::options as theme_options;
 pub use chat_render::{Builtin, ThemeSource};
 pub use connections::Connections;
 pub use hide::Hide;
@@ -138,6 +142,10 @@ pub struct OverlayConfig {
     /// The app's theme: built-in, or a folder with a custom `message.html`
     /// / `overlay.css`.
     pub theme: ThemeSource,
+    /// Per-theme customization overrides keyed by [`ThemeSource::key`].
+    /// Applied to initial CSS/HTML responses and pushed live over SSE
+    /// (`event: style`) without reloading overlays.
+    pub theme_options: BTreeMap<String, ThemeValues>,
     /// Spacing of message bursts in the overlay (not in the API). Read when
     /// an overlay connects.
     pub stagger: Stagger,
@@ -259,11 +267,27 @@ impl ServerState {
         }
     }
 
-    fn source_for(&self, choice: ThemeChoice) -> ThemeSource {
+    fn source_for(&self, choice: &ThemeChoice) -> ThemeSource {
         match choice {
             ThemeChoice::App => self.current_theme(),
-            ThemeChoice::Pinned { source, .. } => source,
+            ThemeChoice::Pinned { source, .. } => source.clone(),
         }
+    }
+
+    /// Loads the theme's `theme.toml` manifest. Built-ins use the cached
+    /// manifest in memory; custom folders load off the async runtime. A broken
+    /// custom manifest logs and yields an empty manifest (no overrides).
+    async fn load_manifest(&self, source: ThemeSource) -> ThemeManifest {
+        let loaded = match source {
+            ThemeSource::Builtin(builtin) => Ok(builtin.manifest().clone()),
+            ThemeSource::Folder(_) => tokio::task::spawn_blocking(move || source.manifest())
+                .await
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("loading theme manifest failed: {e}"))),
+        };
+        loaded.unwrap_or_else(|e| {
+            error!("invalid theme manifest, ignoring options: {e:#}");
+            ThemeManifest::default()
+        })
     }
 
     /// Loaded per overlay connection, so "edit the template, refresh the
@@ -271,8 +295,7 @@ impl ServerState {
     /// return a shared cached copy; custom folders load on Tokio's blocking
     /// pool so disk I/O never stalls the 2-thread async runtime. A broken
     /// custom template logs and falls back to the built-in one.
-    async fn load_theme(&self, choice: ThemeChoice) -> Arc<Theme> {
-        let source = self.source_for(choice);
+    async fn load_theme(&self, source: ThemeSource) -> Arc<Theme> {
         let loaded = match source {
             ThemeSource::Builtin(builtin) => Ok(Theme::shared_builtin(builtin)),
             ThemeSource::Folder(_) => tokio::task::spawn_blocking(move || source.load_shared())
@@ -289,6 +312,9 @@ impl ServerState {
 pub fn router(state: ServerState) -> Router {
     Router::new()
         .route("/", get(overlay_page))
+        .route("/preview", get(preview::page))
+        .route("/preview/frame", get(preview::frame))
+        .route("/preview/events", get(preview::events))
         .route("/theme/{*path}", get(theme_file))
         .route("/themes/{name}/{*path}", get(named_theme_file))
         .route("/events", get(events))
@@ -317,18 +343,39 @@ async fn overlay_page(
     State(state): State<ServerState>,
     Query(query): Query<OverlayQuery>,
 ) -> impl IntoResponse {
-    // The default direction goes into an attribute of the chat element,
-    // outside the script: the script's hash in the CSP stays the same.
-    let newest = state.overlay.borrow().newest.as_str();
+    let choice = state.choose_theme(query.theme.as_deref()).await;
+    let source = state.source_for(&choice);
+    let manifest = state.load_manifest(source.clone()).await;
+    let (newest, resolved) = {
+        let overlay = state.overlay.borrow();
+        let values = lookup_theme_values(&overlay.theme_options, &source.key());
+        (overlay.newest.as_str(), manifest.resolve(values))
+    };
+    // The default direction and active style classes go into attributes of the
+    // chat element, outside the script: the script's hash in the CSP stays the
+    // same.
     let mut page = OVERLAY_HTML.replacen(
         r#"data-newest="bottom""#,
         &format!(r#"data-newest="{newest}""#),
         1,
     );
+    if !resolved.classes.is_empty() {
+        let joined = resolved.classes.join(" ");
+        page = page.replacen(
+            r#"<main class="chat""#,
+            &format!(r#"<main class="chat {joined}""#),
+            1,
+        );
+        page = page.replacen(
+            r#"data-style-classes="""#,
+            &format!(r#"data-style-classes="{joined}""#),
+            1,
+        );
+    }
     // A pinned theme's stylesheet, written into the page rather than
     // swapped by the script: the script reads `--max-messages` from the
     // stylesheet, which must be loaded by then.
-    if let ThemeChoice::Pinned { name, .. } = state.choose_theme(query.theme.as_deref()).await {
+    if let ThemeChoice::Pinned { name, .. } = choice {
         page = page.replacen(
             r#"href="theme/overlay.css""#,
             &format!(r#"href="themes/{}/overlay.css""#, url_segment(&name)),
@@ -364,7 +411,7 @@ fn url_segment(name: &str) -> String {
 /// relative URL in it (`url(bg.png)`) resolves to `/theme/bg.png`: a file
 /// in the same theme folder.
 async fn theme_file(State(state): State<ServerState>, UrlPath(path): UrlPath<String>) -> Response {
-    serve_theme_file(state.current_theme(), &path).await
+    serve_theme_file(&state, state.current_theme(), &path).await
 }
 
 /// A pinned theme's files (`/?theme=<name>`), the same way: its CSS's
@@ -376,16 +423,16 @@ async fn named_theme_file(
     UrlPath((name, path)): UrlPath<(String, String)>,
 ) -> Response {
     match state.choose_theme(Some(&name)).await {
-        ThemeChoice::Pinned { source, .. } => serve_theme_file(source, &path).await,
+        ThemeChoice::Pinned { source, .. } => serve_theme_file(&state, source, &path).await,
         ThemeChoice::App => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
 /// `path` from the theme `source`: its CSS, falling back to the built-in
 /// one, or one of its folder's files.
-async fn serve_theme_file(source: ThemeSource, path: &str) -> Response {
+async fn serve_theme_file(state: &ServerState, source: ThemeSource, path: &str) -> Response {
     if path == chat_render::CSS_FILE {
-        return overlay_css(source).await.into_response();
+        return overlay_css(state, source).await.into_response();
     }
     let Some(dir) = source.folder() else {
         return StatusCode::NOT_FOUND.into_response(); // built-in themes have no files
@@ -422,17 +469,39 @@ async fn serve_theme_file(source: ThemeSource, path: &str) -> Response {
     }
 }
 
-async fn overlay_css(source: ThemeSource) -> impl IntoResponse {
-    let css = match source {
-        ThemeSource::Builtin(builtin) => Ok(builtin.css().to_string()),
-        ThemeSource::Folder(_) => tokio::task::spawn_blocking(move || source.css())
-            .await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!("reading CSS failed: {e}"))),
+async fn overlay_css(state: &ServerState, source: ThemeSource) -> impl IntoResponse {
+    let key = source.key();
+    let (mut css, manifest) = match source {
+        ThemeSource::Builtin(builtin) => (builtin.css().to_string(), builtin.manifest().clone()),
+        ThemeSource::Folder(_) => {
+            let (css_res, manifest_res) =
+                tokio::task::spawn_blocking(move || (source.css(), source.manifest()))
+                    .await
+                    .unwrap_or_else(|e| {
+                        (
+                            Err(anyhow::anyhow!("reading CSS failed: {e}")),
+                            Err(anyhow::anyhow!("reading theme manifest failed: {e}")),
+                        )
+                    });
+            let css = css_res.unwrap_or_else(|e| {
+                error!("can't read custom CSS, using the built-in one: {e:#}");
+                chat_render::DEFAULT_CSS.to_string()
+            });
+            let manifest = manifest_res.unwrap_or_else(|e| {
+                error!("invalid theme manifest, ignoring options: {e:#}");
+                ThemeManifest::default()
+            });
+            (css, manifest)
+        }
+    };
+    let overrides: ResolvedStyle = {
+        let overlay = state.overlay.borrow();
+        let values = lookup_theme_values(&overlay.theme_options, &key);
+        manifest.resolve_overrides(values)
+    };
+    if !overrides.vars.is_empty() {
+        css.push_str(&overrides.to_css());
     }
-    .unwrap_or_else(|e| {
-        error!("can't read custom CSS, using the built-in one: {e:#}");
-        chat_render::DEFAULT_CSS.to_string()
-    });
     (
         [
             (header::CONTENT_TYPE, "text/css; charset=utf-8"),
@@ -486,7 +555,10 @@ async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQue
             .into_response();
     };
     let choice = state.choose_theme(query.theme.as_deref()).await;
-    let theme = state.load_theme(choice).await;
+    let source = state.source_for(&choice);
+    let style_key = source.key();
+    let theme = state.load_theme(source.clone()).await;
+    let manifest = state.load_manifest(source).await;
     let filter = OverlayFilter::new(&state.overlay, query.hide.as_deref());
     let (history, rx) = state.hub.subscribe();
 
@@ -538,12 +610,37 @@ async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQue
     let reload = WatchStream::from_changes(reload_rx)
         .map(|_| Event::default().event("reload").data("theme changed"));
 
+    // Push live theme option changes (`event: style`) whenever this overlay's
+    // resolved style changes, without reloading the page.
+    let mut style_rx = state.overlay.clone();
+    let initial_style = {
+        let overlay = style_rx.borrow_and_update();
+        let values = lookup_theme_values(&overlay.theme_options, &style_key);
+        manifest.resolve(values)
+    };
+    let style_events = WatchStream::from_changes(style_rx).filter_map({
+        let mut last = initial_style;
+        move |overlay| {
+            let values = lookup_theme_values(&overlay.theme_options, &style_key);
+            let next = manifest.resolve(values);
+            let event = if next != last {
+                last = next.clone();
+                serde_json::to_string(&next)
+                    .ok()
+                    .map(|json| Event::default().event("style").data(json))
+            } else {
+                None
+            };
+            std::future::ready(event)
+        }
+    });
+
     let avatars = state.avatars.clone();
     let events = replay
         .chain(live)
         .filter_map(move |event| std::future::ready(to_sse(&theme, &avatars, &event)));
-    // `select` merges both streams: whichever has something next goes first.
-    let stream = stream::select(events, reload)
+    // `select` merges the streams: whichever has something next goes first.
+    let stream = stream::select(stream::select(events, reload), style_events)
         .map(Ok::<_, Infallible>)
         // An SSE response never ends by itself, and graceful shutdown waits
         // for open responses to finish: without this, shutdown would hang
@@ -1214,5 +1311,71 @@ mod tests {
             while resp.chunk().await.ok().flatten().is_some() {}
         });
         end.await.expect("SSE stream still open after shutdown");
+    }
+
+    #[tokio::test]
+    async fn theme_options_apply_to_css_page_and_live_sse() {
+        use chat_render::options::{ThemeValue, ThemeValues};
+
+        let server = start(None).await;
+        let base = format!("http://{}", server.addr);
+
+        let mut opts = ThemeValues::new();
+        opts.insert("text_color".into(), ThemeValue::Text("#ffaa00".into()));
+        opts.insert("show_timestamps".into(), ThemeValue::Bool(true));
+        server.overlay.send_modify(|o| {
+            o.theme_options.insert("default".into(), opts);
+        });
+
+        let (_, page) = get_text(format!("{base}/")).await;
+        assert!(page.contains(r#"class="chat chat--show-time""#), "{page}");
+        assert!(
+            page.contains(r#"data-style-classes="chat--show-time""#),
+            "{page}"
+        );
+        let (_, css) = get_text(format!("{base}/theme/overlay.css")).await;
+        assert!(css.contains("--chat-text: #ffaa00;"), "{css}");
+
+        // Connected overlay receives live style updates without reloading.
+        let mut resp = reqwest::get(format!("{base}/events")).await.unwrap();
+        eventually(|| server.connections.overlays() == 1).await;
+
+        server.overlay.send_modify(|o| {
+            o.theme_options.clear();
+        });
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, "event: style").await;
+        assert!(seen.contains(r#""--chat-text":"#), "{seen}");
+        assert!(seen.contains(r#""classes":[]"#), "{seen}");
+        assert!(!seen.contains("event: reload"), "must not reload: {seen}");
+
+        // After reset, CSS returns to exact built-in stylesheet.
+        let (_, css) = get_text(format!("{base}/theme/overlay.css")).await;
+        assert_eq!(css, chat_render::DEFAULT_CSS);
+    }
+
+    #[tokio::test]
+    async fn pinned_theme_gets_its_own_theme_options_live() {
+        use chat_render::options::{ThemeValue, ThemeValues};
+
+        let server = start(None).await;
+        let base = format!("http://{}", server.addr);
+
+        let mut resp = reqwest::get(format!("{base}/events?theme=minimal"))
+            .await
+            .unwrap();
+        eventually(|| server.connections.overlays() == 1).await;
+
+        let mut opts = ThemeValues::new();
+        opts.insert("show_platform".into(), ThemeValue::Bool(false));
+        opts.insert("font_size".into(), ThemeValue::Number(28.0));
+        server.overlay.send_modify(|o| {
+            o.theme_options.insert("minimal".into(), opts);
+        });
+
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, "event: style").await;
+        assert!(seen.contains(r#""--chat-font-size":"28px""#), "{seen}");
+        assert!(seen.contains("chat--hide-platform"), "{seen}");
     }
 }

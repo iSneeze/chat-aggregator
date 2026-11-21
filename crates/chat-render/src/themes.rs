@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 
-use crate::{Builtin, CSS_FILE, DEFAULT_CSS, DEFAULT_MESSAGE_TEMPLATE, MESSAGE_FILE};
+use crate::{Builtin, CSS_FILE, MANIFEST_FILE, MESSAGE_FILE};
 
 /// The valid theme folders in `themes_dir`, sorted by name (case-insensitive).
 /// Only folders whose names pass [`validate_name`] are included, so the app's
@@ -66,9 +66,21 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Creates `themes_dir/<name>/` with copies of the built-in template and
-/// CSS, to edit from there. Never touches an existing theme.
+/// Creates `themes_dir/<name>/` with copies of the default built-in theme's
+/// template, CSS, and manifest, to edit from there. Never touches an existing
+/// theme.
 pub fn create_from_default(themes_dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    create_from_builtin(themes_dir, name, Builtin::Default)
+}
+
+/// Creates `themes_dir/<name>/` as an editable copy of any built-in theme
+/// (`message.html`, `overlay.css`, and `theme.toml`). Never touches an
+/// existing theme.
+pub fn create_from_builtin(
+    themes_dir: &Path,
+    name: &str,
+    base: Builtin,
+) -> anyhow::Result<PathBuf> {
     if let Err(problem) = validate_name(name) {
         bail!("{problem}");
     }
@@ -78,8 +90,9 @@ pub fn create_from_default(themes_dir: &Path, name: &str) -> anyhow::Result<Path
     }
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     for (file, contents) in [
-        (MESSAGE_FILE, DEFAULT_MESSAGE_TEMPLATE),
-        (CSS_FILE, DEFAULT_CSS),
+        (MESSAGE_FILE, base.message_template()),
+        (CSS_FILE, base.css()),
+        (MANIFEST_FILE, base.manifest_toml()),
     ] {
         let path = dir.join(file);
         std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
@@ -117,14 +130,25 @@ mod tests {
         assert_eq!(theme, dir.join("cozy"));
         assert_eq!(
             std::fs::read_to_string(theme.join(CSS_FILE)).unwrap(),
-            DEFAULT_CSS
+            Builtin::Default.css()
         );
         assert_eq!(
             std::fs::read_to_string(theme.join(MESSAGE_FILE)).unwrap(),
-            DEFAULT_MESSAGE_TEMPLATE
+            Builtin::Default.message_template()
         );
-        // The copy works as a theme.
+        assert_eq!(
+            std::fs::read_to_string(theme.join(MANIFEST_FILE)).unwrap(),
+            Builtin::Default.manifest_toml()
+        );
+        // The copy works as a theme and its manifest parses.
         crate::Theme::load(&theme).unwrap();
+        assert!(
+            !crate::ThemeSource::Folder(theme.clone())
+                .manifest()
+                .unwrap()
+                .options
+                .is_empty()
+        );
 
         std::fs::write(theme.join(CSS_FILE), "/* edited */").unwrap();
         assert!(create_from_default(&dir, "cozy").is_err());
@@ -133,7 +157,23 @@ mod tests {
             "/* edited */",
             "an existing theme is never overwritten"
         );
-        std::fs::remove_dir_all(dir).unwrap();
+
+        // Copying another built-in theme (Minimal) copies its own files.
+        let min = create_from_builtin(&dir, "my minimal", Builtin::Minimal).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(min.join(CSS_FILE)).unwrap(),
+            Builtin::Minimal.css()
+        );
+        assert_eq!(
+            std::fs::read_to_string(min.join(MESSAGE_FILE)).unwrap(),
+            Builtin::Minimal.message_template()
+        );
+        assert_eq!(
+            std::fs::read_to_string(min.join(MANIFEST_FILE)).unwrap(),
+            Builtin::Minimal.manifest_toml()
+        );
+        crate::Theme::load(&min).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

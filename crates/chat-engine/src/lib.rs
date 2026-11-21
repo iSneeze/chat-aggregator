@@ -47,7 +47,9 @@ pub use chat_reactions::{
     MAX_QUEUE_SECS, OBS_PASSWORD, ObsSettings, OutputState, OutputStatus, ReactionSettings,
     ReactionStatus, Role, Rule, RuleStatus, Target, Trigger, WarudoSettings,
 };
-pub use chat_server::{ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource, widgets};
+pub use chat_server::{
+    ANSWER_TIMEOUT, Builtin, Hide, Newest, Stagger, ThemeSource, theme_options, widgets,
+};
 pub use config::{SourceConfig, SourceToken, YouTubeChannel, YouTubeSettings};
 pub use config_file::{
     AppSettings, Appearance, ConfigFile, DEFAULT_PROFILE, Loaded, OverlaySettings, ProfileFile,
@@ -335,6 +337,7 @@ impl Engine {
         // The server reads these; the actor changes them (`Controls`).
         let (overlay_tx, overlay_rx) = watch::channel(OverlayConfig {
             theme: overlay.theme_source(config.themes_dir.as_deref()),
+            theme_options: overlay.theme_options.clone(),
             stagger: server.stagger(),
             newest: overlay.newest,
             hide: overlay.hide.clone(),

@@ -17,6 +17,7 @@ chat-render = { path = "../chat-render" }
 jiff.workspace = true
 anyhow.workspace = true
 gpui-kit.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -992,6 +992,7 @@ dependencies = [
  "chat-engine",
  "chat-render",
  "gpui-kit",
+ "image",
  "jiff",
  "tokio",
  "tracing",
@@ -1086,6 +1087,7 @@ dependencies = [
  "jiff",
  "minijinja",
  "serde",
+ "toml 1.2.1+spec-1.1.0",
 ]
 
 [[package]]

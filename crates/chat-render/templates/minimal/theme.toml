@@ -1,0 +1,165 @@
+# Customizable options for the Minimal built-in overlay theme.
+
+[[options]]
+name = "text_color"
+label = "Message text"
+group = "Colors"
+type = "color"
+default = "#ffffff"
+css_var = "--chat-text"
+
+[[options]]
+name = "viewer_name_color"
+label = "Viewer name"
+group = "Colors"
+type = "color"
+default = "#ffffff"
+css_var = "--name-viewer"
+
+[[options]]
+name = "outline"
+label = "Text outline"
+group = "Colors"
+type = "choice"
+default = "Standard"
+options = ["Standard", "Strong", "Soft shadow", "None"]
+css_var = "--chat-outline"
+[options.css_values]
+Standard = "-1px -1px 0 rgb(0 0 0 / 0.88), 1px -1px 0 rgb(0 0 0 / 0.88), -1px 1px 0 rgb(0 0 0 / 0.88), 1px 1px 0 rgb(0 0 0 / 0.88), 0 2px 4px rgb(0 0 0 / 0.65)"
+Strong = "-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 0 5px #000"
+"Soft shadow" = "0 1px 3px rgb(0 0 0 / 0.9), 0 2px 8px rgb(0 0 0 / 0.6)"
+None = "none"
+
+[[options]]
+name = "font"
+label = "Font"
+group = "Typography & layout"
+type = "choice"
+default = "Sans"
+options = ["Sans", "Rounded", "Serif", "Monospace"]
+css_var = "--chat-font"
+[options.css_values]
+Sans = '"Inter", "Segoe UI", system-ui, sans-serif'
+Rounded = '"Nunito", "Quicksand", "Varela Round", ui-rounded, system-ui, sans-serif'
+Serif = '"Georgia", "Cambria", ui-serif, serif'
+Monospace = '"JetBrains Mono", "Cascadia Code", ui-monospace, monospace'
+
+[[options]]
+name = "font_size"
+label = "Text size"
+group = "Typography & layout"
+type = "number"
+default = 20
+min = 12
+max = 42
+step = 1
+unit = "px"
+css_var = "--chat-font-size"
+
+[[options]]
+name = "spacing"
+label = "Spacing"
+group = "Typography & layout"
+type = "choice"
+default = "Cozy"
+options = ["Compact", "Cozy", "Airy"]
+css_var = "--chat-gap"
+[options.css_values]
+Compact = "3px"
+Cozy = "6px"
+Airy = "10px"
+
+[[options]]
+name = "animation"
+label = "Entrance"
+group = "Motion"
+type = "choice"
+default = "Fade"
+options = ["Fade", "Slide", "None"]
+css_var = "--msg-enter"
+[options.css_values]
+Fade = "msg-in-fade 0.2s ease-out"
+Slide = "msg-in-slide 0.24s cubic-bezier(0.22, 1, 0.36, 1)"
+None = "none"
+
+[[options]]
+name = "fade_after"
+label = "Fade out after"
+group = "Motion"
+help = "Hide older messages automatically after a while."
+type = "choice"
+default = "Never"
+options = ["Never", "15s", "30s", "60s"]
+css_var = "--msg-fade-delay"
+[options.css_values]
+Never = "0s"
+15s = "15s"
+30s = "30s"
+60s = "60s"
+[options.class_values]
+Never = ""
+15s = "chat--fade-out"
+30s = "chat--fade-out"
+60s = "chat--fade-out"
+
+[[options]]
+name = "show_platform"
+label = "Platform bar"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-platform"
+
+[[options]]
+name = "show_mod_icon"
+label = "Moderator icon"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-mod"
+
+[[options]]
+name = "max_messages"
+label = "Max messages"
+group = "Elements"
+help = "Older messages above this limit are removed."
+type = "number"
+default = 20
+min = 5
+max = 100
+step = 5
+css_var = "--max-messages"
+
+# 1-click curated styles shown at the top of the Themes window.
+
+[[presets]]
+name = "Classic"
+[presets.values]
+text_color = "#ffffff"
+viewer_name_color = "#ffffff"
+outline = "Standard"
+font = "Sans"
+
+[[presets]]
+name = "High Contrast"
+[presets.values]
+text_color = "#ffffff"
+viewer_name_color = "#ffe875"
+outline = "Strong"
+font = "Sans"
+
+[[presets]]
+name = "Soft Ivory"
+[presets.values]
+text_color = "#fdf7f0"
+viewer_name_color = "#ffd0b5"
+outline = "Soft shadow"
+font = "Rounded"
+
+[[presets]]
+name = "Terminal"
+[presets.values]
+text_color = "#d6ffe0"
+viewer_name_color = "#7bf59b"
+outline = "Soft shadow"
+font = "Monospace"

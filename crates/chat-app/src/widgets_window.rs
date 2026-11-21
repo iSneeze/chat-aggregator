@@ -29,8 +29,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_config::{AppConfig, edit_settings};
-use crate::ui::{Debouncer, card, confirm, open_folder, report};
-use form::{Form, parse_number, set, stepped};
+use crate::ui::{Debouncer, card, confirm, open_folder, parse_number, report, stepped};
+use form::{Form, set};
 
 mod form;
 
@@ -1569,7 +1569,7 @@ mod tests {
 
     #[test]
     fn a_step_lands_on_the_grid_from_min_within_the_range() {
-        use super::form::stepped;
+        use crate::ui::stepped;
         use gpui_kit::component::input::StepAction::{Decrement as Down, Increment as Up};
 
         // Live Emoji's size: 8 to 512, steps of 4.

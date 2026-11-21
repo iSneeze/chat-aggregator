@@ -56,6 +56,7 @@
         "sidebar.primary.background": "#ffd500",
         "sidebar.primary.foreground": "#000000",
 
+        "slider.thumb.background": "#ffd500",
         "switch.background": "#595959",
         "scrollbar.thumb.background": "#ffffffb3",
         "scrollbar.thumb.hover.background": "#ffffff",

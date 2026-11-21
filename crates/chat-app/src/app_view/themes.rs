@@ -1,11 +1,11 @@
 //! The Overlay card in the main window: URL copy, connection count, theme
-//! picker, new-theme creation, chat direction picker, and background theme
-//! folder scanning (so render frames never touch the filesystem).
+//! picker, link to the Themes customization window, chat direction picker, and
+//! background theme folder scanning (so render frames never touch the
+//! filesystem).
 
 use chat_engine::Newest;
 use chat_render::{Builtin, themes};
-use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::Select;
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
@@ -157,41 +157,6 @@ impl AppView {
         cx.notify();
     }
 
-    fn create_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(input) = &self.new_theme else {
-            return;
-        };
-        let name = input.read(cx).value().trim().to_string();
-        match themes::create_from_default(&self.config.read(cx).themes_dir(), &name) {
-            Ok(dir) => {
-                self.new_theme = None;
-                self.theme_error = None;
-                self.missing_theme = None;
-                if !self.themes.contains(&name) {
-                    self.themes.push(name.clone());
-                    self.themes.sort();
-                    let items = theme_items(&self.themes);
-                    self.theme_select
-                        .update(cx, |select, cx| select.set_items(items, window, cx));
-                }
-                let name = SharedString::from(name);
-                self.theme_select.update(cx, |select, cx| {
-                    select.set_selected_value(&name, window, cx)
-                });
-                self.select_theme(name, window, cx);
-                window.push_notification(
-                    Notification::success(format!(
-                        "Theme created in {}: edit overlay.css there, then reload the overlays.",
-                        dir.display()
-                    )),
-                    cx,
-                );
-            }
-            Err(e) => self.theme_error = Some(format!("{e:#}")),
-        }
-        cx.notify();
-    }
-
     /// The overlay's card: its address, how many are connected, and the
     /// theme it shows.
     pub(super) fn render_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -252,25 +217,21 @@ impl AppView {
                     .child(Select::new(&self.theme_select).small()),
             )
             .child(
+                Button::new("theme-customize")
+                    .label("Customize…")
+                    .small()
+                    .tooltip("Customize colors, typography, motion, and elements")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_themes_window(window, cx)),
+                    ),
+            )
+            .child(
                 Button::new("theme-reload")
                     .label("Reload overlays")
                     .small()
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.engine.reload_overlays();
                         window.push_notification(Notification::info("Overlays reloaded"), cx);
-                    })),
-            )
-            .child(
-                Button::new("theme-new")
-                    .icon(IconName::Plus)
-                    .label("New theme…")
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.new_theme = Some(cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("name for the new theme")
-                        }));
-                        this.theme_error = None;
-                        cx.notify();
                     })),
             )
             .child(
@@ -300,35 +261,5 @@ impl AppView {
                     "The theme folder \"{name}\" wasn't found; the overlay uses the built-in look."
                 ))
             }))
-            .children(self.new_theme.as_ref().map(|input| {
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().flex_1().child(Input::new(input).id("theme-name")))
-                    .child(
-                        Button::new("theme-create")
-                            .label("Create")
-                            .primary()
-                            .small()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.create_theme(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("theme-cancel")
-                            .label("Cancel")
-                            .small()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.new_theme = None;
-                                this.theme_error = None;
-                                cx.notify();
-                            })),
-                    )
-            }))
-            .children(
-                self.theme_error
-                    .clone()
-                    .map(|e| div().text_sm().text_color(cx.theme().danger).child(e)),
-            )
     }
 }

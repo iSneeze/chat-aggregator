@@ -276,8 +276,6 @@ impl AppView {
         self.newest_select.update(cx, |select, cx| {
             select.set_selected_value(&newest, window, cx);
         });
-        self.new_theme = None;
-        self.theme_error = None;
         self.rescan_themes(window, cx);
     }
 }

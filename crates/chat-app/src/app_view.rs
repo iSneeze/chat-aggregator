@@ -36,6 +36,7 @@ use crate::appearance;
 use crate::manual_window::ManualWindow;
 use crate::reactions_window::ReactionsWindow;
 use crate::settings_window::SettingsWindow;
+use crate::themes_window::ThemesWindow;
 use crate::ui::{SideWindow, card, light, render_output, report};
 use crate::widgets_window::WidgetsWindow;
 use crate::youtube_panel::YouTubePanel;
@@ -72,16 +73,14 @@ pub struct AppView {
     theme_select: Entity<SelectState<Vec<SharedString>>>,
     /// The overlay's default chat direction.
     newest_select: Entity<SelectState<Vec<SharedString>>>,
-    /// The "New theme" name field, while that form is open.
-    new_theme: Option<Entity<InputState>>,
     /// The profile name field (new, copy, rename), while it's open.
     profile_form: Option<ProfileForm>,
-    theme_error: Option<String>,
     /// Singleton side windows (typed handles; no downcasting needed).
     manual_window: Option<SideWindow<ManualWindow>>,
     settings_window: Option<SideWindow<SettingsWindow>>,
     reactions_window: Option<SideWindow<ReactionsWindow>>,
     widgets_window: Option<SideWindow<WidgetsWindow>>,
+    themes_window: Option<SideWindow<ThemesWindow>>,
     /// Modal dialog currently owned by the main window.
     active_dialog: ActiveDialog,
     /// Sites answered here whose question may still be in the status for a
@@ -174,8 +173,28 @@ impl AppView {
                     appearance::apply(appearance, Some(window), cx);
                 }
             }),
-            // Settings changed (here or in another window): redraw.
-            cx.observe(&config, |_, _, cx| cx.notify()),
+            // Settings changed (here or in another window, e.g. Themes):
+            // keep the theme picker synced (rescanning if a new custom folder
+            // was just created & activated) and redraw.
+            cx.observe_in(&config, window, |this, config, window, cx| {
+                let raw = config.read(cx).settings().profile.overlay.theme;
+                let current = theme_label(raw.as_deref());
+                let needs_rescan = raw.as_deref().is_some_and(|name| {
+                    chat_render::Builtin::from_name(name).is_none()
+                        && !this.themes.iter().any(|t| t == name)
+                });
+                if needs_rescan {
+                    this.rescan_themes(window, cx);
+                } else {
+                    let shown = this.theme_select.read(cx).selected_value().cloned();
+                    if shown.as_ref() != Some(&current) {
+                        this.theme_select.update(cx, |select, cx| {
+                            select.set_selected_value(&current, window, cx);
+                        });
+                    }
+                }
+                cx.notify();
+            }),
         ];
 
         let status = engine.status().borrow().clone();
@@ -197,13 +216,12 @@ impl AppView {
             theme_scan_gen: 0,
             theme_select,
             newest_select,
-            new_theme: None,
             profile_form: None,
-            theme_error: None,
             manual_window: None,
             settings_window: None,
             reactions_window: None,
             widgets_window: None,
+            themes_window: None,
             active_dialog: ActiveDialog::None,
             answered: Vec::new(),
             _subscriptions: subscriptions,
@@ -366,6 +384,34 @@ impl AppView {
         );
     }
 
+    pub(super) fn open_themes_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let config_ref = self.config.read(cx);
+        let dir = config_ref.themes_dir();
+        let active_key = config_ref
+            .settings()
+            .profile
+            .overlay
+            .theme_source(Some(&dir))
+            .key();
+        // If already open, focus it and select the active theme using its own window.
+        if let Some(side) = self.themes_window.as_ref()
+            && side.focus_and_update(cx, |view, window, cx| {
+                view.select_theme_key(active_key.clone(), window, cx);
+            })
+        {
+            return;
+        }
+        let (engine, config) = (self.engine.clone(), self.config.clone());
+        SideWindow::open_or_focus(
+            &mut self.themes_window,
+            "Themes",
+            size(px(900.), px(660.)),
+            move |window, cx| ThemesWindow::new(engine, config, active_key, window, cx),
+            window,
+            cx,
+        );
+    }
+
     /// Whether any open side window has unsaved form changes that a profile
     /// switch would discard.
     pub(super) fn has_unsaved_side_windows(&self, cx: &App) -> bool {
@@ -382,6 +428,9 @@ impl AppView {
             view.update(cx, |view, cx| view.flush(cx));
         }
         if let Some(view) = self.widgets_window.as_ref().and_then(SideWindow::view) {
+            view.update(cx, |view, cx| view.flush(cx));
+        }
+        if let Some(view) = self.themes_window.as_ref().and_then(SideWindow::view) {
             view.update(cx, |view, cx| view.flush(cx));
         }
     }
@@ -980,38 +1029,15 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn new_theme_is_created_selected_and_saved(cx: &mut TestAppContext) {
+    fn themes_window_opens_only_once(cx: &mut TestAppContext) {
         let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click("theme-new", cx);
-            window.click("theme-name", cx);
-            window.input("Cozy Night", cx);
-            window.click("theme-create", cx);
-        })
-        .unwrap();
-
-        let theme = ui.settings_dir.join("themes").join("Cozy Night");
-        assert!(
-            theme.join("overlay.css").exists(),
-            "created from the defaults"
-        );
-        let saved = || {
-            ConfigFile::load(&ui.settings_dir.join("config.toml"), None)
-                .is_ok_and(|file| file.profile.overlay.theme.as_deref() == Some("Cozy Night"))
-        };
-        run_until(cx, saved);
-        assert_eq!(
-            ui.engine
-                .handle()
-                .settings()
-                .borrow()
-                .profile
-                .overlay
-                .theme
-                .as_deref(),
-            Some("Cozy Night"),
-            "overlays switch to it"
-        );
+        for _ in 0..2 {
+            cx.update_window(ui.window.into(), |_, window, cx| {
+                window.click("theme-customize", cx);
+            })
+            .unwrap();
+        }
+        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
     }
 
     /// Lets GPUI tasks run until `done`; the engine answers from tokio's
@@ -1310,23 +1336,6 @@ mod tests {
             .unwrap();
         }
         assert_eq!(cx.update(|cx| cx.windows().len()), 2);
-    }
-
-    #[gpui_kit::test]
-    fn invalid_theme_name_is_refused(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click("theme-new", cx);
-            window.click("theme-name", cx);
-            window.input("../escape", cx);
-            window.click("theme-create", cx);
-            // The form stays open with the typed name, to correct it.
-            assert_eq!(window.find("theme-name").value(), Some("../escape"));
-        })
-        .unwrap();
-        let error = ui.view.read_with(cx, |view, _| view.theme_error.clone());
-        assert!(error.is_some_and(|e| e.contains("letters")));
-        assert!(!ui.settings_dir.join("escape").exists());
     }
 
     // ---- web sites asking for the JSON API ----

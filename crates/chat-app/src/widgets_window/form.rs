@@ -4,7 +4,6 @@
 use chat_engine::widgets::{Kind, Setting, Value, Values, Widget};
 use gpui_kit::component::input::{
     Input, InputEvent, InputState, MaskPattern, NumberInput, NumberInputEvent, NumberStep,
-    StepAction,
 };
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
@@ -12,7 +11,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::WidgetsWindow;
-use crate::ui::{choice, segmented};
+use crate::ui::{choice, parse_number, segmented};
 
 /// The width of a setting's label: the controls line up after it.
 const LABEL_WIDTH: Pixels = px(140.);
@@ -185,41 +184,6 @@ fn typed_value(setting: &Setting, text: &str) -> Result<Value, String> {
         // Switches and choices have no text field: nothing typed to read.
         Kind::Bool { .. } | Kind::Choice { .. } => Ok(setting.default_value()),
     }
-}
-
-/// A typed number, in or out of range.
-pub(super) fn parse_number(text: &str) -> Option<f64> {
-    // A comma too: "0,5" is how much of the world writes a half.
-    text.trim().replace(',', ".").parse().ok()
-}
-
-/// One step up or down from `from`, onto the grid of `min + n × step` that
-/// a browser's number field uses too (from 56, steps of 4 from 8 go to 60
-/// or 52; a typed 57 goes to 60 or 56), and kept from `min` to `max`.
-pub(super) fn stepped(from: f64, action: StepAction, min: f64, max: f64, step: f64) -> f64 {
-    // How many steps above `min`. A hair of slack, so float noise
-    // (0.1 + 0.2 is 0.30000000000000004) doesn't count as off the grid.
-    let steps = (from - min) / step;
-    let steps = match action {
-        StepAction::Increment => (steps + 1e-9).floor() + 1.0,
-        StepAction::Decrement => (steps - 1e-9).ceil() - 1.0,
-    };
-    // Rounded to the decimals the step and `min` are written with, so the
-    // field shows "0.3", not that noise.
-    let scale = 10f64.powi(decimals(step).max(decimals(min)));
-    let value = ((min + steps * step) * scale).round() / scale;
-    // `max`/`min` rather than `clamp`, which panics if `min > max` (a
-    // widget's block can't say that, but nothing here has to rely on it).
-    value.max(min).min(max)
-}
-
-/// How many decimals `x` is written with (0.25: 2).
-fn decimals(x: f64) -> i32 {
-    // `f64`'s `Display` writes the shortest text that reads back as the
-    // same number ("0.1"), never with an exponent.
-    let text = x.to_string();
-    text.split_once('.')
-        .map_or(0, |(_, fraction)| fraction.len() as i32)
 }
 
 impl WidgetsWindow {

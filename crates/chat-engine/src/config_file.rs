@@ -31,6 +31,7 @@ use chat_core::tiers::TipSettings;
 use chat_reactions::ReactionSettings;
 
 use crate::config::{SourceConfig, YouTubeSettings};
+use crate::theme_options::ThemeValues;
 use crate::widgets::Values;
 use crate::{DEFAULT_HISTORY, DEFAULT_PORT, EngineConfig, Hide, Newest, Stagger, ThemeSource};
 
@@ -263,6 +264,10 @@ pub struct OverlaySettings {
     /// (`?hide=…`). The JSON API and chat reactions still get them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<Hide>,
+    /// `[overlay.theme_options.<theme>]`: per-theme customization overrides
+    /// chosen in the Themes window (only non-default values are stored).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub theme_options: BTreeMap<String, ThemeValues>,
 }
 
 impl OverlaySettings {
@@ -363,6 +368,7 @@ impl OldConfigFile {
                 theme,
                 newest,
                 hide,
+                theme_options: BTreeMap::new(),
             },
             tips: self.tips,
             reactions: self.reactions,
@@ -942,6 +948,7 @@ mod tests {
                 theme: Some("cozy".into()),
                 newest: Newest::Top,
                 hide: vec![Hide::StreamElements, Hide::Notice],
+                theme_options: BTreeMap::new(),
             }
         );
         assert_eq!(profile.tips.currency(), Some("EUR"));
@@ -1409,5 +1416,23 @@ mod tests {
         std::fs::create_dir(profiles.join("folder.toml")).unwrap();
         assert_eq!(list_profiles(&profiles), ["collab", "Indie", "main"]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn theme_options_round_trip_in_profile_toml() {
+        use crate::theme_options::{ThemeValue, ThemeValues};
+
+        let mut profile = ProfileFile::default();
+        let mut opts = ThemeValues::new();
+        opts.insert("accent_mode".into(), ThemeValue::Text("Custom".into()));
+        opts.insert("accent_color".into(), ThemeValue::Text("#ff85b3".into()));
+        opts.insert("font_size".into(), ThemeValue::Number(24.0));
+        opts.insert("show_timestamps".into(), ThemeValue::Bool(true));
+        profile.overlay.theme_options.insert("default".into(), opts);
+
+        let text = toml::to_string_pretty(&profile).unwrap();
+        assert!(text.contains("[overlay.theme_options.default]"), "{text}");
+        let back = ProfileFile::parse(&text).unwrap();
+        assert_eq!(back, profile);
     }
 }

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use chat_engine::{Health, OutputStatus};
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::StepAction;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
     ActiveTheme, Root, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex,
@@ -35,15 +36,25 @@ impl Debouncer {
         self.dirty
     }
 
-    /// Marks the form dirty and (re)starts the debounce timer.
+    /// Marks the form dirty and (re)starts the debounce timer with [`APPLY_AFTER`].
     pub(crate) fn schedule<T: 'static>(
         &mut self,
         cx: &mut Context<T>,
         on_fire: impl FnOnce(&mut T, &mut Context<T>) + 'static,
     ) {
+        self.schedule_after(APPLY_AFTER, cx, on_fire);
+    }
+
+    /// Marks the form dirty and (re)starts the debounce timer with `delay`.
+    pub(crate) fn schedule_after<T: 'static>(
+        &mut self,
+        delay: Duration,
+        cx: &mut Context<T>,
+        on_fire: impl FnOnce(&mut T, &mut Context<T>) + 'static,
+    ) {
         self.dirty = true;
         self.pending = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(APPLY_AFTER).await;
+            cx.background_executor().timer(delay).await;
             let _ = this.update(cx, on_fire);
         }));
     }
@@ -120,6 +131,24 @@ impl<V: Render + 'static> SideWindow<V> {
     /// The live view entity if this side window is still open.
     pub(crate) fn view(&self) -> Option<Entity<V>> {
         self.view.upgrade()
+    }
+
+    /// Activates the side window and runs `f` against its own `Window` and
+    /// view entity if it is still open. Returns `false` if already closed.
+    pub(crate) fn focus_and_update(
+        &self,
+        cx: &mut App,
+        f: impl FnOnce(&mut V, &mut Window, &mut Context<V>),
+    ) -> bool {
+        let Some(view) = self.view.upgrade() else {
+            return false;
+        };
+        self.window
+            .update(cx, |_, window, cx| {
+                window.activate_window();
+                view.update(cx, |view, cx| f(view, window, cx));
+            })
+            .is_ok()
     }
 
     #[cfg(test)]
@@ -296,4 +325,28 @@ pub(crate) fn confirm_with_cancel(
                 on_close(window, cx);
             })
     });
+}
+
+/// Parses a typed number, accepting a decimal comma as well as a dot.
+pub(crate) fn parse_number(text: &str) -> Option<f64> {
+    text.trim().replace(',', ".").parse().ok()
+}
+
+/// One step up or down from `from` onto the `min + n * step` grid, clamped to
+/// `min..=max` and rounded to avoid floating-point noise.
+pub(crate) fn stepped(from: f64, action: StepAction, min: f64, max: f64, step: f64) -> f64 {
+    let steps = (from - min) / step;
+    let steps = match action {
+        StepAction::Increment => (steps + 1e-9).floor() + 1.0,
+        StepAction::Decrement => (steps - 1e-9).ceil() - 1.0,
+    };
+    let scale = 10f64.powi(decimals(step).max(decimals(min)));
+    let value = ((min + steps * step) * scale).round() / scale;
+    value.max(min).min(max)
+}
+
+fn decimals(x: f64) -> i32 {
+    let text = x.to_string();
+    text.split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len() as i32)
 }

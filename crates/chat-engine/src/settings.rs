@@ -63,9 +63,11 @@ impl Controls {
         let hide_changed = now_overlay.hide != was_overlay.hide;
         let newest_changed = now_overlay.newest != was_overlay.newest;
         let theme_changed = now_overlay.theme != was_overlay.theme;
-        if stagger_changed || hide_changed || newest_changed || theme_changed {
+        let options_changed = now_overlay.theme_options != was_overlay.theme_options;
+        if stagger_changed || hide_changed || newest_changed || theme_changed || options_changed {
             self.overlay.send_replace(OverlayConfig {
                 theme: now_overlay.theme_source(self.themes_dir.as_deref()),
+                theme_options: now_overlay.theme_options.clone(),
                 stagger: now_server.stagger(),
                 newest: now_overlay.newest,
                 hide: now_overlay.hide.clone(),
@@ -73,8 +75,8 @@ impl Controls {
         }
         // Theme and direction are picked up when an overlay connects/loads, so
         // changing either reloads connected overlays once (explicitly, after
-        // the new `OverlayConfig` is published above). Pacing and `hide` apply
-        // without a reload.
+        // the new `OverlayConfig` is published above). Pacing, `hide`, and
+        // `theme_options` apply live without a reload.
         if theme_changed || newest_changed {
             self.reload_overlays();
         }
@@ -266,5 +268,31 @@ mod tests {
         controls.apply(&old, &new);
         assert!(!changed(&server.overlay));
         assert!(!changed(&server.reload));
+    }
+
+    #[test]
+    fn theme_options_apply_without_a_reload() {
+        use crate::theme_options::{ThemeValue, ThemeValues};
+
+        let (controls, server) = controls();
+        let old = Settings::default();
+        let mut new = old.clone();
+        let mut opts = ThemeValues::new();
+        opts.insert("text_color".into(), ThemeValue::Text("#ff00aa".into()));
+        new.profile
+            .overlay
+            .theme_options
+            .insert("default".into(), opts.clone());
+
+        controls.apply(&old, &new);
+        assert!(changed(&server.overlay));
+        assert_eq!(
+            server.overlay.borrow().theme_options.get("default"),
+            Some(&opts)
+        );
+        assert!(
+            !changed(&server.reload),
+            "theme options update live over SSE without reloading"
+        );
     }
 }

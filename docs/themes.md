@@ -18,8 +18,25 @@ editor, share, and switch between in the app.
 Pick them in the app's theme list, or `theme = "minimal"` under
 `[overlay]` in a profile's file (`profiles/<name>.toml`). Each profile has
 its own theme. They're built into the app and improve with its updates,
-so they can't be edited in place; **New theme…** starts a folder of your
-own from a copy of Default.
+so they can't be edited in place; open **Customize…** and use **New theme…**
+(or **Copy as custom…** on any built-in theme) to create an editable folder
+starting from any built-in theme's files.
+
+## Customizing themes without CSS
+
+Click **Customize…** next to the theme picker to open the **Themes** window:
+
+- **1-click presets** let you switch palettes right away (e.g. *Midnight*,
+  *Twitch Neon*, *Sakura*, *Matcha*, *Warm Latte*, *Floating* on Default, or
+  *Classic*, *High Contrast*, *Soft Ivory*, *Terminal* on Minimal).
+- **Match image…** reads a screenshot of your OBS scene or character artwork
+  and suggests three contrast-checked color palettes you can apply in one click.
+- **Colors, typography, motion, and elements** update connected OBS overlays
+  **live without reloading** (and are saved per profile and per theme under
+  `[overlay.theme_options.<theme>]`).
+- **Preview** opens a local browser preview (`/preview?theme=…`) with sample
+  messages, switchable light/dark/checkerboard backdrops, width presets, and a
+  live animation drip mode so you can style your chat before going live.
 
 ## Where themes live
 
@@ -30,6 +47,7 @@ In the **themes** folder next to chat-aggregator's settings (the app's
 themes/
 ├── cozy/
 │   ├── overlay.css     the look: colours, fonts, sizes, animations
+│   ├── theme.toml      optional: customizable options and presets in the app
 │   ├── message.html    optional: the structure of one message
 │   └── bg.png, …       optional: images and fonts the CSS uses
 └── minimal/
@@ -37,17 +55,84 @@ themes/
 ```
 
 The folder name is the theme's name. Every file is optional: anything a
-theme doesn't have comes from the built-in theme. Most themes only need
-`overlay.css`. (A theme folder somewhere else works too: put its full path
+theme doesn't have comes from the built-in theme (except `theme.toml`: a
+custom folder without one simply shows no option controls). Most themes only
+need `overlay.css`. (A theme folder somewhere else works too: put its full path
 in the profile's file, e.g. `theme = "/home/me/obs/my-theme"`.)
+
+## Exposing options in a custom theme (`theme.toml`)
+
+Any custom theme folder can include a `theme.toml` file to get native controls
+in the **Themes** window (and live updates in OBS without reloading). Each
+`[[options]]` entry supports four types — `color`, `number`, `bool`, and
+`choice` — mapped onto CSS custom properties (`css_var` / `css_values`) and/or
+modifier classes on `<main class="chat">` (`class`, `class_when_false`,
+`class_values`):
+
+```toml
+[[options]]
+name = "accent_color"
+label = "Accent"
+group = "Colors"
+type = "color"
+default = "#9146ff"
+css_var = "--chat-accent"
+
+[[options]]
+name = "font_size"
+label = "Text size"
+group = "Typography"
+type = "number"
+default = 20
+min = 12
+max = 42
+step = 1
+unit = "px"
+css_var = "--chat-font-size"
+
+[[options]]
+name = "show_avatars"
+label = "Avatars"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-avatars"
+
+[[options]]
+name = "corners"
+label = "Corners"
+group = "Typography"
+type = "choice"
+default = "Rounded"
+options = ["Sharp", "Rounded", "Pill"]
+css_var = "--chat-radius"
+[options.css_values]
+Sharp = "4px"
+Rounded = "12px"
+Pill = "20px"
+
+# Optional 1-click presets shown above the form:
+[[presets]]
+name = "Sakura"
+[presets.values]
+accent_color = "#ff85b3"
+corners = "Pill"
+```
+
+Option names must be 1–40 ASCII characters starting with a letter; `css_var`
+must match `--lowercase-name`; class names must be lowercase and cannot use
+the reserved `chat` or `chat--newest-top` classes.
 
 ## Making a theme
 
-1. In the app: **New theme…**, give it a name, **Create**. This copies the
-   built-in `overlay.css` and `message.html` into a new folder and switches
-   the overlay to it.
-2. **Open themes folder**, open the new folder, edit `overlay.css`.
-3. **Reload overlays** in the app: OBS shows the change right away.
+1. In the app: open **Customize…**, click **New theme…** (or **Copy as
+   custom…** on a built-in theme), choose which built-in theme to start from,
+   give it a name, and click **Create**. This copies that built-in theme's
+   `overlay.css`, `message.html`, and `theme.toml` into a new folder.
+2. Click **Open folder**, open the new folder, and edit `overlay.css` (and
+   optionally `theme.toml` or `message.html`).
+3. Click **Use as active** and **Reload** in the app: OBS shows the change
+   right away.
 
 Start with the variables at the top of `overlay.css`: fonts, colours, card
 style and sizes are all set there. Two of them control the overlay's

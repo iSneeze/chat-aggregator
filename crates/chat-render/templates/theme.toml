@@ -1,0 +1,250 @@
+# Customizable options for the Default built-in overlay theme.
+# Custom theme folders can edit or replace this file to define their own
+# controls in the app's Themes window.
+
+[[options]]
+name = "accent_mode"
+label = "Accent style"
+group = "Colors"
+type = "choice"
+default = "Platform"
+options = ["Platform", "Custom"]
+[options.class_values]
+Platform = ""
+Custom = "chat--custom-accent"
+
+[[options]]
+name = "accent_color"
+label = "Custom accent"
+group = "Colors"
+help = "Used when Accent style is set to Custom."
+type = "color"
+default = "#9146ff"
+css_var = "--chat-accent"
+
+[[options]]
+name = "text_color"
+label = "Text color"
+group = "Colors"
+type = "color"
+default = "#f4f4f8"
+css_var = "--chat-text"
+
+[[options]]
+name = "bg_color"
+label = "Card color"
+group = "Colors"
+type = "color"
+default = "#14141d"
+css_var = "--chat-bg-color"
+
+[[options]]
+name = "bg_opacity"
+label = "Card opacity"
+group = "Colors"
+help = "Set to 0% for floating text with no card background."
+type = "number"
+default = 78
+min = 0
+max = 100
+step = 5
+unit = "%"
+css_var = "--chat-bg-opacity"
+
+[[options]]
+name = "font"
+label = "Font"
+group = "Typography & layout"
+type = "choice"
+default = "Sans"
+options = ["Sans", "Rounded", "Serif", "Monospace"]
+css_var = "--chat-font"
+[options.css_values]
+Sans = '"Inter", "Segoe UI", system-ui, sans-serif'
+Rounded = '"Nunito", "Quicksand", "Varela Round", ui-rounded, system-ui, sans-serif'
+Serif = '"Georgia", "Cambria", ui-serif, serif'
+Monospace = '"JetBrains Mono", "Cascadia Code", ui-monospace, monospace'
+
+[[options]]
+name = "font_size"
+label = "Text size"
+group = "Typography & layout"
+type = "number"
+default = 20
+min = 12
+max = 42
+step = 1
+unit = "px"
+css_var = "--chat-font-size"
+
+[[options]]
+name = "corners"
+label = "Corners"
+group = "Typography & layout"
+type = "choice"
+default = "Rounded"
+options = ["Sharp", "Rounded", "Pill"]
+css_var = "--chat-radius"
+[options.css_values]
+Sharp = "4px"
+Rounded = "12px"
+Pill = "20px"
+
+[[options]]
+name = "spacing"
+label = "Spacing"
+group = "Typography & layout"
+type = "choice"
+default = "Cozy"
+options = ["Compact", "Cozy", "Airy"]
+css_var = "--chat-gap"
+[options.css_values]
+Compact = "4px"
+Cozy = "8px"
+Airy = "12px"
+[options.class_values]
+Compact = "chat--compact"
+Cozy = ""
+Airy = "chat--airy"
+
+[[options]]
+name = "animation"
+label = "Entrance"
+group = "Motion"
+type = "choice"
+default = "Slide"
+options = ["Slide", "Fade", "Pop", "None"]
+css_var = "--msg-enter"
+[options.css_values]
+Slide = "msg-in-slide 0.28s cubic-bezier(0.22, 1, 0.36, 1)"
+Fade = "msg-in-fade 0.24s ease-out"
+Pop = "msg-in-pop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1)"
+None = "none"
+
+[[options]]
+name = "fade_after"
+label = "Fade out after"
+group = "Motion"
+help = "Hide older messages automatically after a while."
+type = "choice"
+default = "Never"
+options = ["Never", "15s", "30s", "60s"]
+css_var = "--msg-fade-delay"
+[options.css_values]
+Never = "0s"
+15s = "15s"
+30s = "30s"
+60s = "60s"
+[options.class_values]
+Never = ""
+15s = "chat--fade-out"
+30s = "chat--fade-out"
+60s = "chat--fade-out"
+
+[[options]]
+name = "show_timestamps"
+label = "Timestamps"
+group = "Elements"
+type = "bool"
+default = false
+class = "chat--show-time"
+
+[[options]]
+name = "show_avatars"
+label = "Avatars"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-avatars"
+
+[[options]]
+name = "show_badges"
+label = "Badges"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-badges"
+
+[[options]]
+name = "show_platform"
+label = "Platform dot"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-platform"
+
+[[options]]
+name = "show_accent_bar"
+label = "Accent bar"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-accent"
+
+[[options]]
+name = "max_messages"
+label = "Max messages"
+group = "Elements"
+help = "Older messages above this limit are removed."
+type = "number"
+default = 20
+min = 5
+max = 100
+step = 5
+css_var = "--max-messages"
+
+# 1-click curated palettes shown at the top of the Themes window.
+
+[[presets]]
+name = "Midnight"
+[presets.values]
+accent_mode = "Platform"
+accent_color = "#9146ff"
+text_color = "#f4f4f8"
+bg_color = "#14141d"
+bg_opacity = 78
+
+[[presets]]
+name = "Twitch Neon"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#a970ff"
+text_color = "#f6f2ff"
+bg_color = "#120e1f"
+bg_opacity = 84
+
+[[presets]]
+name = "Sakura"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#ff85b3"
+text_color = "#fff2f7"
+bg_color = "#231624"
+bg_opacity = 84
+
+[[presets]]
+name = "Matcha"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#7fd89b"
+text_color = "#f2faf4"
+bg_color = "#16211c"
+bg_opacity = 84
+
+[[presets]]
+name = "Warm Latte"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#c97a40"
+text_color = "#32251f"
+bg_color = "#faf3eb"
+bg_opacity = 92
+
+[[presets]]
+name = "Floating"
+[presets.values]
+accent_mode = "Platform"
+text_color = "#ffffff"
+bg_color = "#14141d"
+bg_opacity = 0
+show_accent_bar = false

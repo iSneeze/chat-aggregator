@@ -26,18 +26,28 @@ static BUILTIN_DEFAULT: LazyLock<Arc<Theme>> =
     LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Default)));
 static BUILTIN_MINIMAL: LazyLock<Arc<Theme>> =
     LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Minimal)));
+static BUILTIN_DEFAULT_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(DEFAULT_MANIFEST).expect("built-in Default theme.toml is valid")
+});
+static BUILTIN_MINIMAL_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(MINIMAL_MANIFEST).expect("built-in Minimal theme.toml is valid")
+});
 
+pub mod options;
 mod seed;
 pub mod themes;
 mod view;
 
 pub const DEFAULT_MESSAGE_TEMPLATE: &str = include_str!("../templates/message.html");
 pub const DEFAULT_CSS: &str = include_str!("../templates/overlay.css");
+pub const DEFAULT_MANIFEST: &str = include_str!("../templates/theme.toml");
 const MINIMAL_MESSAGE_TEMPLATE: &str = include_str!("../templates/minimal/message.html");
 const MINIMAL_CSS: &str = include_str!("../templates/minimal/overlay.css");
+const MINIMAL_MANIFEST: &str = include_str!("../templates/minimal/theme.toml");
 
 pub const MESSAGE_FILE: &str = "message.html";
 pub const CSS_FILE: &str = "overlay.css";
+pub use options::MANIFEST_FILE;
 
 /// The themes compiled into the binary. A theme folder falls back to
 /// `Default`'s files for whatever it doesn't have.
@@ -89,6 +99,22 @@ impl Builtin {
             Builtin::Minimal => MINIMAL_CSS,
         }
     }
+
+    /// The raw `theme.toml` manifest compiled in for this built-in theme.
+    pub fn manifest_toml(self) -> &'static str {
+        match self {
+            Builtin::Default => DEFAULT_MANIFEST,
+            Builtin::Minimal => MINIMAL_MANIFEST,
+        }
+    }
+
+    /// Cached parsed customization manifest for this built-in theme.
+    pub fn manifest(self) -> &'static options::ThemeManifest {
+        match self {
+            Builtin::Default => &BUILTIN_DEFAULT_MANIFEST,
+            Builtin::Minimal => &BUILTIN_MINIMAL_MANIFEST,
+        }
+    }
 }
 
 /// Where the overlay's theme comes from: compiled in, or a folder (usually
@@ -128,6 +154,19 @@ impl ThemeSource {
         }
     }
 
+    /// Canonical key for storing this theme's customization values in
+    /// `[overlay.theme_options.<key>]`.
+    pub fn key(&self) -> String {
+        match self {
+            Self::Builtin(builtin) => builtin.name().to_string(),
+            Self::Folder(dir) => dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| dir.display().to_string()),
+        }
+    }
+
     /// Loads the theme's message template. A folder is read now (see
     /// [`Theme::load`]).
     pub fn load(&self) -> anyhow::Result<Theme> {
@@ -152,6 +191,28 @@ impl ThemeSource {
         match self {
             Self::Builtin(builtin) => Ok(builtin.css().to_string()),
             Self::Folder(dir) => read_inside_or_default(dir, CSS_FILE, DEFAULT_CSS),
+        }
+    }
+
+    /// Loads the theme's customization manifest (`theme.toml`). A custom
+    /// folder without `theme.toml` returns an empty manifest (no options),
+    /// rather than inheriting the built-in one, because custom CSS may not
+    /// define the default theme's variables.
+    pub fn manifest(&self) -> anyhow::Result<options::ThemeManifest> {
+        match self {
+            Self::Builtin(builtin) => Ok(builtin.manifest().clone()),
+            Self::Folder(dir) => {
+                let path = dir.join(MANIFEST_FILE);
+                let Some(canon) = chat_core::fs::existing_inside_dir(dir, &path)
+                    .with_context(|| format!("checking {}", path.display()))?
+                else {
+                    return Ok(options::ThemeManifest::default());
+                };
+                let text = std::fs::read_to_string(&canon)
+                    .with_context(|| format!("reading {}", path.display()))?;
+                options::ThemeManifest::parse(&text)
+                    .with_context(|| format!("in {}", path.display()))
+            }
         }
     }
 }
@@ -659,9 +720,24 @@ mod tests {
         std::fs::write(&outside, "secret = 1").unwrap();
         std::os::unix::fs::symlink(&outside, dir.join(MESSAGE_FILE)).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join(CSS_FILE)).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(MANIFEST_FILE)).unwrap();
 
         assert!(Theme::load(&dir).is_err());
-        assert!(ThemeSource::Folder(dir).css().is_err());
+        assert!(ThemeSource::Folder(dir.clone()).css().is_err());
+        assert!(ThemeSource::Folder(dir).manifest().is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn folder_without_manifest_has_no_options() {
+        let dir =
+            std::env::temp_dir().join(format!("chat-render-nomanifest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(CSS_FILE), "/* custom */").unwrap();
+
+        let manifest = ThemeSource::Folder(dir.clone()).manifest().unwrap();
+        assert!(manifest.options.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

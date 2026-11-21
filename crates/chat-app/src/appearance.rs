@@ -37,6 +37,20 @@ pub fn apply(appearance: Appearance, window: Option<&mut Window>, cx: &mut App) 
         Appearance::Dark | Appearance::HighContrast => ThemeMode::Dark,
     };
     Theme::change(mode, window, cx);
+    // gpui-kit falls back `slider_thumb` to `primary_foreground` (near-black in
+    // Default Dark, near-white in Default Light), which makes slider indicators
+    // in the color picker's HSLA tab blend into dark/light surfaces. High
+    // Contrast sets its own bright yellow thumb in `high-contrast.json`.
+    if appearance != Appearance::HighContrast {
+        let theme = Theme::global_mut(cx);
+        let thumb: Hsla = if theme.is_dark() {
+            rgb(0xe4e4e7).into()
+        } else {
+            rgb(0x27272a).into()
+        };
+        theme.colors.slider_thumb = thumb;
+        theme.tokens.slider_thumb = thumb.into();
+    }
     // `change` only redraws the window it was given; the others too.
     cx.refresh_windows();
 }
@@ -69,13 +83,25 @@ mod tests {
             assert_eq!(Theme::global(cx).theme_name().as_ref(), "High Contrast");
             assert_eq!(cx.theme().background, gpui_kit::black());
             assert_eq!(cx.theme().foreground, gpui_kit::white());
+            assert!(
+                cx.theme().slider_thumb.l > 0.4,
+                "high-contrast slider thumb must be clearly visible"
+            );
 
             super::apply(Appearance::Dark, None, cx);
             assert!(cx.theme().is_dark());
             assert_eq!(Theme::global(cx).theme_name().as_ref(), "Default Dark");
+            assert!(
+                cx.theme().slider_thumb.l > 0.8,
+                "dark-mode slider thumb must not be near-black"
+            );
 
             super::apply(Appearance::Light, None, cx);
             assert!(!cx.theme().is_dark());
+            assert!(
+                cx.theme().slider_thumb.l < 0.3,
+                "light-mode slider thumb must contrast with light surfaces"
+            );
 
             // Back to high contrast: loaded only once, still works.
             super::apply(Appearance::HighContrast, None, cx);
