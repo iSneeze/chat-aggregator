@@ -127,30 +127,45 @@ fn script_hash(script: &str) -> String {
 /// used as what we declare (e.g. never run as script).
 const NO_SNIFF: (header::HeaderName, &str) = (header::X_CONTENT_TYPE_OPTIONS, "nosniff");
 
+/// Live overlay settings read by the server on page load, SSE connect, or per
+/// message. Grouped into one `watch` channel so adding future overlay options
+/// (such as built-in theme accents) doesn't multiply channels across
+/// `ServerState` and `chat-engine`. Reloading connected overlays is a separate
+/// explicit counter ([`ServerState::reload`]), so changing `stagger` or `hide`
+/// never reloads overlays.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OverlayConfig {
+    /// The app's theme: built-in, or a folder with a custom `message.html`
+    /// / `overlay.css`.
+    pub theme: ThemeSource,
+    /// Spacing of message bursts in the overlay (not in the API). Read when
+    /// an overlay connects.
+    pub stagger: Stagger,
+    /// The default chat direction, written into the overlay page when it
+    /// loads.
+    pub newest: Newest,
+    /// What overlays leave out, unless their URL says otherwise (`?hide=`).
+    /// Read for every message: a change applies to the next one.
+    pub hide: Vec<Hide>,
+}
+
 /// Shared by all request handlers. Cloned per request, which is cheap:
 /// every field is an `Arc` or a small handle around one.
 #[derive(Clone)]
 pub struct ServerState {
     pub hub: Arc<Hub>,
-    /// The app's theme: built-in, or a folder with a custom `message.html`
-    /// / `overlay.css`. A `watch` channel: the current value, plus a
-    /// notification when it changes, which makes connected overlays reload.
-    pub theme: watch::Receiver<ThemeSource>,
+    /// Live overlay settings (theme, pacing, direction, hidden items).
+    pub overlay: watch::Receiver<OverlayConfig>,
+    /// Incremented whenever connected overlays should reload (new theme, new
+    /// chat direction, profile switch, or manual "Reload overlays"). Separate
+    /// from `overlay` so non-reloading edits (`stagger`, `hide`) never reload
+    /// overlays and reloads are explicit.
+    pub reload: watch::Receiver<u64>,
     /// Cancelled when the app shuts down.
     pub shutdown: CancellationToken,
-    /// Spacing of message bursts in the overlay (not in the API). Read when
-    /// an overlay connects: a change applies to overlays connecting (or
-    /// reloading) afterwards.
-    pub stagger: watch::Receiver<Stagger>,
     /// Whether the JSON API accepts clients. Switching it off also closes
     /// the connected ones.
     pub api: watch::Receiver<bool>,
-    /// The default chat direction, written into the overlay page when it
-    /// loads (so a change needs an overlay reload).
-    pub newest: watch::Receiver<Newest>,
-    /// What overlays leave out, unless their URL says otherwise
-    /// (`?hide=`). Read for every message: a change applies to the next one.
-    pub hide: watch::Receiver<Vec<Hide>>,
     /// The folder of named themes (`themes/` next to `config.toml`), for
     /// overlays that pick their own with `?theme=<name>`. Fixed for the
     /// server's lifetime; `None`: every overlay uses the app's theme.
@@ -190,7 +205,7 @@ enum ThemeChoice {
 
 impl ServerState {
     fn current_theme(&self) -> ThemeSource {
-        self.theme.borrow().clone()
+        self.overlay.borrow().theme.clone()
     }
 
     /// The theme for `?theme=<requested>`. Only themes in the themes folder
@@ -304,7 +319,7 @@ async fn overlay_page(
 ) -> impl IntoResponse {
     // The default direction goes into an attribute of the chat element,
     // outside the script: the script's hash in the CSP stays the same.
-    let newest = state.newest.borrow().as_str();
+    let newest = state.overlay.borrow().newest.as_str();
     let mut page = OVERLAY_HTML.replacen(
         r#"data-newest="bottom""#,
         &format!(r#"data-newest="{newest}""#),
@@ -472,7 +487,7 @@ async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQue
     };
     let choice = state.choose_theme(query.theme.as_deref()).await;
     let theme = state.load_theme(choice).await;
-    let filter = OverlayFilter::new(&state.hide, query.hide.as_deref());
+    let filter = OverlayFilter::new(&state.overlay, query.hide.as_deref());
     let (history, rx) = state.hub.subscribe();
 
     // Hidden messages are left out before anything else: they take no
@@ -499,9 +514,9 @@ async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQue
     // replay above doesn't: after a reload the history should appear at once.
     // The two branches produce different stream types, so both are boxed
     // into one type ("type erasure") to fit in the same variable.
-    // `Stagger` is `Copy`: `*` copies the value out, so the watch's read
-    // lock is released right away instead of being held by this overlay.
-    let pacing = *state.stagger.borrow();
+    // `Stagger` is `Copy`: copying it out releases the watch's read lock right
+    // away instead of holding it across the overlay's lifetime.
+    let pacing = state.overlay.borrow().stagger;
     let live: BoxStream<'static, ChatEvent> = if pacing.is_off() {
         live.boxed()
     } else {
@@ -510,21 +525,17 @@ async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQue
         tokio_stream::wrappers::ReceiverStream::new(paced).boxed()
     };
 
-    // Tells the overlay to reload when the theme folder changes; it then
-    // reconnects and gets the new template and CSS. Overlays with a pinned
-    // theme reload too and come back with their own theme (it's in their
-    // URL): that keeps "Reload overlays" working after editing one.
+    // Tells the overlay to reload whenever `state.reload` ticks (theme or
+    // direction change, profile switch, or manual "Reload overlays"). Overlays
+    // with a pinned theme reload too and come back with their own theme (it's
+    // in their URL).
     //
     // A `watch` receiver remembers which version it last saw, and a clone
-    // copies that memory. The receiver kept in `state` is never read, so it
-    // still "remembers" the startup value: after any theme change, a fresh
-    // clone would see a "change" right away and reload a page that already
-    // has the new theme, which then reconnects and reloads again, forever.
-    // So: mark the current value as seen first, and only real changes from
-    // now on count.
-    let mut theme_changes = state.theme.clone();
-    theme_changes.borrow_and_update();
-    let reload = WatchStream::from_changes(theme_changes)
+    // copies that memory. Mark the current generation as seen first, so a
+    // freshly connected overlay only reloads on *future* reload ticks.
+    let mut reload_rx = state.reload.clone();
+    reload_rx.borrow_and_update();
+    let reload = WatchStream::from_changes(reload_rx)
         .map(|_| Event::default().event("reload").data("theme changed"));
 
     let avatars = state.avatars.clone();
@@ -586,14 +597,19 @@ mod tests {
         pub(crate) hub: Arc<Hub>,
         pub(crate) shutdown: CancellationToken,
         pub(crate) task: JoinHandle<std::io::Result<()>>,
-        pub(crate) theme: watch::Sender<ThemeSource>,
-        pub(crate) stagger: watch::Sender<Stagger>,
+        pub(crate) overlay: watch::Sender<OverlayConfig>,
+        pub(crate) reload: watch::Sender<u64>,
         pub(crate) api: watch::Sender<bool>,
-        pub(crate) newest: watch::Sender<Newest>,
-        pub(crate) hide: watch::Sender<Vec<Hide>>,
         pub(crate) connections: Arc<Connections>,
         pub(crate) origins: Arc<ApiOrigins>,
         pub(crate) avatars: Arc<Avatars>,
+    }
+
+    impl TestServer {
+        fn set_theme(&self, theme: ThemeSource) {
+            self.overlay.send_modify(|o| o.theme = theme);
+            self.reload.send_modify(|n| *n += 1);
+        }
     }
 
     pub(crate) async fn start(theme_dir: Option<PathBuf>) -> TestServer {
@@ -634,22 +650,21 @@ mod tests {
         let hub = Arc::new(Hub::new(20));
         let shutdown = CancellationToken::new();
         let source = theme_dir.map_or_else(ThemeSource::default, ThemeSource::Folder);
-        let (theme_tx, theme_rx) = watch::channel(source);
+        let (overlay_tx, overlay_rx) = watch::channel(OverlayConfig {
+            theme: source,
+            ..OverlayConfig::default()
+        });
+        let (reload_tx, reload_rx) = watch::channel(0u64);
         let connections = Arc::new(Connections::default());
-        let (stagger_tx, stagger_rx) = watch::channel(Stagger::default());
         // On in tests: most of them are about the API.
         let (api_tx, api_rx) = watch::channel(true);
-        let (newest_tx, newest_rx) = watch::channel(Newest::default());
-        let (hide_tx, hide_rx) = watch::channel(Vec::new());
         let avatars = Arc::new(Avatars::for_tests());
         let state = ServerState {
             hub: hub.clone(),
-            theme: theme_rx,
+            overlay: overlay_rx,
+            reload: reload_rx,
             shutdown: shutdown.clone(),
-            stagger: stagger_rx,
             api: api_rx,
-            newest: newest_rx,
-            hide: hide_rx,
             themes_dir,
             widgets_dir,
             connections: connections.clone(),
@@ -662,11 +677,9 @@ mod tests {
             hub,
             shutdown,
             task,
-            theme: theme_tx,
-            stagger: stagger_tx,
+            overlay: overlay_tx,
+            reload: reload_tx,
             api: api_tx,
-            newest: newest_tx,
-            hide: hide_tx,
             connections,
             origins,
             avatars,
@@ -766,7 +779,9 @@ mod tests {
     #[tokio::test]
     async fn hidden_messages_never_reach_the_overlay() {
         let server = start(None).await;
-        server.hide.send_replace(vec![Hide::StreamElements]);
+        server
+            .overlay
+            .send_modify(|o| o.hide = vec![Hide::StreamElements]);
         // In the history...
         server.hub.publish(tip("old-tip"));
         server.hub.publish(message("old-chat"));
@@ -785,7 +800,7 @@ mod tests {
         assert!(!seen.contains(r#"data-id="tip""#), "{seen}");
 
         // The app shows tips again: the next one gets through, no reload.
-        server.hide.send_replace(Vec::new());
+        server.overlay.send_modify(|o| o.hide.clear());
         server.hub.publish(tip("new-tip"));
         read_until(&mut resp, &mut seen, r#"data-id="new-tip""#).await;
     }
@@ -805,7 +820,9 @@ mod tests {
         assert!(!seen.contains(r#"data-id="tip""#), "{seen}");
 
         // The app hides tips; an empty `?hide=` still shows everything.
-        server.hide.send_replace(vec![Hide::StreamElements]);
+        server
+            .overlay
+            .send_modify(|o| o.hide = vec![Hide::StreamElements]);
         let mut resp = reqwest::get(format!("http://{}/events?hide=", server.addr))
             .await
             .unwrap();
@@ -819,11 +836,11 @@ mod tests {
     async fn overlays_connecting_after_a_stagger_change_use_the_new_values() {
         let server = start(None).await;
         // Very slow pacing: a burst of three would take 4 s...
-        server
-            .stagger
-            .send_replace(Stagger::new(Duration::from_secs(2), Duration::from_secs(5)));
+        server.overlay.send_modify(|o| {
+            o.stagger = Stagger::new(Duration::from_secs(2), Duration::from_secs(5));
+        });
         // ...but it's switched off before this overlay connects.
-        server.stagger.send_replace(Stagger::off());
+        server.overlay.send_modify(|o| o.stagger = Stagger::off());
         let mut resp = reqwest::get(format!("http://{}/events", server.addr))
             .await
             .unwrap();
@@ -882,7 +899,7 @@ mod tests {
             async move { reqwest::get(url).await.unwrap().text().await.unwrap() }
         };
         assert!(page(&server).await.contains(r#"data-newest="bottom""#));
-        server.newest.send_replace(Newest::Top);
+        server.overlay.send_modify(|o| o.newest = Newest::Top);
         let top = page(&server).await;
         assert!(top.contains(r#"data-newest="top""#), "{top}");
         assert!(!top.contains(r#"data-newest="bottom""#));
@@ -951,7 +968,7 @@ mod tests {
             "no reload without a change"
         );
 
-        server.theme.send_replace(ThemeSource::Folder(dir.clone()));
+        server.set_theme(ThemeSource::Folder(dir.clone()));
         read_until(&mut resp, &mut seen, "event: reload").await;
         let css = reqwest::get(format!("{base}/theme/overlay.css"))
             .await
@@ -970,9 +987,7 @@ mod tests {
     #[tokio::test]
     async fn overlay_connecting_after_a_theme_change_does_not_reload() {
         let server = start(None).await;
-        server
-            .theme
-            .send_replace(ThemeSource::Folder(std::env::temp_dir()));
+        server.set_theme(ThemeSource::Folder(std::env::temp_dir()));
 
         server.hub.publish(message("m1"));
         let mut resp = reqwest::get(format!("http://{}/events", server.addr))

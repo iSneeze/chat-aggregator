@@ -6,12 +6,12 @@
 //! change in: each runs on the settings the other one left.)
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::anyhow;
 use chat_core::{Activity, ChatEvent, ChatSource, Hub, Reporter, SetupError};
 use chat_reactions::ReactionStatus;
 use chat_server::Connections;
@@ -24,13 +24,11 @@ use tokio_util::task::AbortOnDropHandle;
 use tracing::{info, warn};
 
 use crate::config::{SourceConfig, YouTubeSettings};
-use crate::config_file::{
-    ConfigFile, ProfileFile, Settings, SourceEntry, find_profile_file, list_profiles,
-    normalize_profile_name, same_name, save_all, sort_profiles,
-};
+use crate::config_file::{Settings, SourceEntry};
 use crate::factory::{SourceFactory, is_login_required, needs_attention};
 use crate::settings::Controls;
 use crate::status::{SourceId, SourceState, SourceStatus, Status, label};
+use crate::store::ProfileStore;
 
 /// First retry after 2 s, doubling up to this.
 const MAX_BACKOFF: Duration = Duration::from_secs(5 * 60);
@@ -103,9 +101,6 @@ pub(crate) struct Saving {
     pub(crate) old_layout: bool,
 }
 
-/// Why profiles can't be managed without a settings folder.
-const NO_FOLDER: &str = "there are no profiles without a settings folder";
-
 /// A settings change: a closure that edits them. Every closure has a type
 /// of its own, made up by the compiler and without a name, so an enum
 /// variant can't hold "any closure" directly. Boxed as a trait object
@@ -135,23 +130,10 @@ pub(crate) struct Actor<F> {
     settings: watch::Sender<Settings>,
     /// What the settings steer (overlays, the JSON API, the hub).
     controls: Arc<Controls>,
-    /// Where the settings and sources are saved (`config.toml`, and the
-    /// active profile's file next to it); `None`: nowhere.
-    save_to: Option<PathBuf>,
-    /// The active profile: whose settings and sources are running.
-    profile: String,
-    /// Every profile, sorted (`Status::profiles`): those with a file at
-    /// startup, the active one, and those made since.
-    profiles: Vec<String>,
-    /// `Status::profile_switches`.
-    switches: u64,
-    /// `config.toml` is still a file from before profiles: the next save
-    /// converts it.
-    old_layout: bool,
-    /// A save did that (`Status::converted_to_profiles`).
-    converted: bool,
-    /// Why the last save failed, for the status; `None` once one works.
-    save_error: Option<String>,
+    /// Disk persistence, profile CRUD and legacy migration (`store.rs`).
+    store: ProfileStore,
+    /// Fixed for the engine's lifetime (`http://127.0.0.1:<port>/`).
+    overlay_url: String,
     // A BTreeMap keeps sources ordered by id, i.e. in the order they were
     // added, so status lists don't jump around.
     slots: BTreeMap<SourceId, Slot>,
@@ -324,10 +306,12 @@ impl Stats {
 }
 
 impl<F: SourceFactory> Actor<F> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         factory: F,
         settings: watch::Sender<Settings>,
         controls: Arc<Controls>,
+        overlay_url: String,
         status: watch::Sender<Status>,
         connections: Arc<Connections>,
         reactions: watch::Receiver<ReactionStatus>,
@@ -335,31 +319,12 @@ impl<F: SourceFactory> Actor<F> {
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
         let api_requests = controls.origins.requests();
-        let Saving {
-            to: save_to,
-            profile,
-            old_layout,
-        } = saving;
-        let mut profiles = Vec::new();
-        if let Some(settings_dir) = save_to.as_deref().map(settings_dir) {
-            profiles = list_profiles(&ConfigFile::profiles_dir(settings_dir));
-            // A new setup's has no file yet.
-            if !profiles.iter().any(|name| same_name(name, &profile)) {
-                profiles.push(profile.clone());
-                sort_profiles(&mut profiles);
-            }
-        }
         Self {
             factory: Arc::new(factory),
             settings,
             controls,
-            save_to,
-            profile,
-            profiles,
-            switches: 0,
-            old_layout,
-            converted: false,
-            save_error: None,
+            store: ProfileStore::new(saving),
+            overlay_url,
             slots: BTreeMap::new(),
             next_id: 1,
             internal_tx,
@@ -395,7 +360,7 @@ impl<F: SourceFactory> Actor<F> {
         loop {
             tokio::select! {
                 command = commands.recv() => match command {
-                    Some(command) => self.handle(command),
+                    Some(command) => self.handle(command).await,
                     None => break, // every EngineHandle is gone
                 },
                 // `internal_tx` lives in `self`, so this channel never closes
@@ -415,17 +380,17 @@ impl<F: SourceFactory> Actor<F> {
         // window's last change, sent while the app quits: it's applied and
         // saved. (A source one of them starts is stopped again right below.)
         while let Ok(command) = commands.try_recv() {
-            self.handle(command);
+            self.handle(command).await;
         }
         // Returning drops `self` and with it every slot's task handle, which
         // aborts all running sources.
     }
 
-    fn handle(&mut self, command: Command) {
+    async fn handle(&mut self, command: Command) {
         match command {
             Command::Add(config, start, reply) => {
                 let id = self.add(config, start);
-                self.save();
+                self.save().await;
                 let _ = reply.send(Ok(id));
             }
             Command::AddManual(reply) => {
@@ -444,7 +409,7 @@ impl<F: SourceFactory> Actor<F> {
                         info!(source = %slot.source.label(), "removed");
                         let config = slot.source.config().cloned();
                         if config.is_some() {
-                            self.save();
+                            self.save().await;
                         }
                         Ok(config) // dropping the slot aborts its task
                     }
@@ -464,7 +429,7 @@ impl<F: SourceFactory> Actor<F> {
                         slot.attempt = 0;
                         self.start(id);
                         if switched_on {
-                            self.save();
+                            self.save().await;
                         }
                         Ok(())
                     }
@@ -479,7 +444,7 @@ impl<F: SourceFactory> Actor<F> {
                         slot.stop();
                         info!(source = %slot.source.label(), "stopped");
                         if switched_off {
-                            self.save();
+                            self.save().await;
                         }
                         Ok(())
                     }
@@ -487,7 +452,7 @@ impl<F: SourceFactory> Actor<F> {
                 let _ = reply.send(result);
             }
             Command::EditSettings(change, reply) => {
-                let _ = reply.send(self.edit_settings(change).map(drop));
+                let _ = reply.send(self.edit_settings(change).await.map(drop));
             }
             Command::AnswerApiRequest {
                 origin,
@@ -498,25 +463,27 @@ impl<F: SourceFactory> Actor<F> {
                 // "Allow" is for good: it goes into the settings. ("Deny"
                 // only lasts until the engine restarts.)
                 if allow {
-                    // Can't be refused: only reaction settings are checked.
-                    let _ = self.edit_settings(Box::new(move |settings| {
-                        let allowed = &mut settings.server.api_origins;
-                        if !allowed.contains(&origin) {
-                            allowed.push(origin);
-                        }
-                    }));
+                    // Can't be refused: tips and reactions are untouched.
+                    let _ = self
+                        .edit_settings(Box::new(move |settings| {
+                            let allowed = &mut settings.server.api_origins;
+                            if !allowed.contains(&origin) {
+                                allowed.push(origin);
+                            }
+                        }))
+                        .await;
                 }
                 let _ = reply.send(Ok(()));
             }
             Command::YouTubeLoginsChanged(change, reply) => {
                 info!("YouTube logins changed");
-                let result = self.edit_settings(change).map(|restarted| {
+                let result = self.edit_settings(change).await.map(|restarted| {
                     // A channel logged in again changes no setting, but
                     // it's a new login all the same.
                     if !restarted {
                         self.restart_youtube();
                     }
-                    self.save_to.is_some() && self.save_error.is_none()
+                    self.store.is_saved()
                 });
                 let _ = reply.send(result);
             }
@@ -529,10 +496,12 @@ impl<F: SourceFactory> Actor<F> {
                 // YouTube sources by itself. The same file is news too, but
                 // only in its contents, which the settings can't see.
                 let same_file = self.settings.borrow().youtube.emojis.as_ref() == Some(&path);
-                // Can't be refused: only reaction settings are checked.
-                let _ = self.edit_settings(Box::new(move |settings| {
-                    settings.youtube.emojis = Some(path);
-                }));
+                // Can't be refused: tips and reactions are untouched.
+                let _ = self
+                    .edit_settings(Box::new(move |settings| {
+                        settings.youtube.emojis = Some(path);
+                    }))
+                    .await;
                 if same_file {
                     info!("YouTube emoji file replaced");
                     self.restart_youtube();
@@ -540,19 +509,27 @@ impl<F: SourceFactory> Actor<F> {
                 let _ = reply.send(Ok(()));
             }
             Command::SwitchProfile(name, reply) => {
-                let _ = reply.send(self.switch_profile(&name));
+                let _ = reply.send(self.switch_profile(&name).await);
             }
             Command::CreateProfile { name, copy, reply } => {
-                let _ = reply.send(self.create_profile(&name, copy));
+                let copy_from =
+                    copy.then(|| (self.settings.borrow().profile.clone(), self.sources()));
+                let _ = reply.send(self.store.create(&name, copy_from).await);
             }
             Command::RenameProfile { from, to, reply } => {
-                let _ = reply.send(self.rename_profile(&from, &to));
+                let current_settings = self.settings.borrow().clone();
+                let current_sources = self.sources();
+                let _ = reply.send(
+                    self.store
+                        .rename(&from, &to, current_settings, current_sources)
+                        .await,
+                );
             }
             Command::DeleteProfile(name, reply) => {
-                let _ = reply.send(self.delete_profile(&name));
+                let _ = reply.send(self.store.delete(&name).await);
             }
             Command::SecretInUse(name, reply) => {
-                let _ = reply.send(Ok(self.secret_in_use(&name)));
+                let _ = reply.send(Ok(self.secret_in_use(&name).await));
             }
             Command::Update(id, config, reply) => {
                 let result = match self.slots.get_mut(&id) {
@@ -588,7 +565,7 @@ impl<F: SourceFactory> Actor<F> {
                         if !was_stopped {
                             self.start(id);
                         }
-                        self.save();
+                        self.save().await;
                         Ok(())
                     }
                 };
@@ -611,46 +588,10 @@ impl<F: SourceFactory> Actor<F> {
         id
     }
 
-    /// Writes `config.toml` and the active profile's file, if the engine
-    /// has a place for them: the settings, and the sources with their
-    /// on/off switch (the test window's source has no settings, so it isn't
-    /// in there). Called after every change to either, but never at
-    /// startup: untouched files keep their comments. A problem shows in the
-    /// status until a later save works.
-    fn save(&mut self) {
-        let Some(path) = &self.save_to else {
-            return;
-        };
-        // Unpacked without `..`: a new part of the settings has to be
-        // placed here, or this doesn't compile (and it would never be
-        // saved).
-        let Settings {
-            server,
-            youtube,
-            app,
-            profile,
-        } = self.settings.borrow().clone();
-        let config = ConfigFile {
-            profile: self.profile.clone(),
-            server,
-            youtube,
-            app,
-        };
-        let profile = ProfileFile::new(profile, self.sources());
-        self.save_error = match save_all(path, &config, &profile, self.old_layout) {
-            Ok(()) => {
-                if self.old_layout {
-                    info!("settings converted to profiles, the old file kept as config.old.toml");
-                    self.old_layout = false;
-                    self.converted = true;
-                }
-                None
-            }
-            Err(e) => {
-                warn!("couldn't save the settings: {e:#}");
-                Some(format!("{e:#}"))
-            }
-        };
+    async fn save(&mut self) {
+        let settings = self.settings.borrow().clone();
+        let sources = self.sources();
+        self.store.save(settings, sources).await;
     }
 
     /// The active profile's sources as they're saved: on unless you
@@ -668,39 +609,16 @@ impl<F: SourceFactory> Actor<F> {
             .collect()
     }
 
-    /// The folder `config.toml` is in, if the engine saves.
-    fn settings_dir(&self) -> anyhow::Result<&Path> {
-        self.save_to.as_deref().map(settings_dir).context(NO_FOLDER)
-    }
-
-    /// The profile called `name` (case doesn't count), as it's spelled in
-    /// the list.
-    fn find_profile(&self, name: &str) -> anyhow::Result<String> {
-        let name = name.trim();
-        self.profiles
-            .iter()
-            .find(|profile| same_name(profile, name))
-            .cloned()
-            .ok_or_else(|| anyhow!("there's no profile named \"{name}\""))
-    }
-
-    fn switch_profile(&mut self, name: &str) -> anyhow::Result<()> {
-        let profiles_dir = ConfigFile::profiles_dir(self.settings_dir()?);
-        let name = self.find_profile(name)?;
-        if name == self.profile {
+    async fn switch_profile(&mut self, name: &str) -> anyhow::Result<()> {
+        let current_settings = self.settings.borrow().clone();
+        let current_sources = self.sources();
+        let Some((name, profile, sources)) = self
+            .store
+            .prepare_switch(name, current_settings, current_sources)
+            .await?
+        else {
             return Ok(());
-        }
-        // The profile being left must be on disk: once another one is
-        // active, its file is all there is of it. (It's saved after every
-        // change, but not before the first: a new setup, or a file from
-        // before profiles, which this converts.)
-        self.save();
-        if let Some(e) = &self.save_error {
-            bail!("couldn't save the current profile, so it stays active: {e}");
-        }
-        // Read before anything changes: a broken file leaves everything as
-        // it is.
-        let (profile, sources) = ProfileFile::load_or_default(&profiles_dir, &name)?.split();
+        };
         // The profile's sources go (dropping a slot aborts its task); the
         // test window's stays: it belongs to no profile.
         self.slots.retain(|_, slot| slot.source.config().is_none());
@@ -717,125 +635,19 @@ impl<F: SourceFactory> Actor<F> {
         self.settings.send_replace(new);
         self.controls.reload_overlays();
         info!(profile = %name, "switched profile");
-        self.profile = name;
-        self.switches += 1;
+        self.store.commit_switch(name);
         for entry in sources {
             self.add(entry.config, entry.enabled);
         }
         // `config.toml` names the new one now.
-        self.save();
+        self.save().await;
         Ok(())
-    }
-
-    fn create_profile(&mut self, name: &str, copy: bool) -> anyhow::Result<String> {
-        let settings_dir = self.settings_dir()?;
-        let name = normalize_profile_name(name).map_err(anyhow::Error::msg)?;
-        // A file not in the list (made by hand since the start) counts too:
-        // it isn't written over.
-        if self
-            .profiles
-            .iter()
-            .any(|profile| same_name(profile, &name))
-            || find_profile_file(&ConfigFile::profiles_dir(settings_dir), &name).is_some()
-        {
-            bail!("there's already a profile named \"{name}\"");
-        }
-        let path = ConfigFile::profile_path(settings_dir, &name);
-        let file = if copy {
-            ProfileFile::new(self.settings.borrow().profile.clone(), self.sources())
-        } else {
-            ProfileFile::default()
-        };
-        file.save(&path)?;
-        info!(profile = %name, copy, "profile created");
-        self.profiles.push(name.clone());
-        sort_profiles(&mut self.profiles);
-        Ok(name)
-    }
-
-    fn rename_profile(&mut self, from: &str, to: &str) -> anyhow::Result<String> {
-        let settings_dir = self.settings_dir()?.to_path_buf();
-        let profiles_dir = ConfigFile::profiles_dir(&settings_dir);
-        let from = self.find_profile(from)?;
-        let to = normalize_profile_name(to).map_err(anyhow::Error::msg)?;
-        if to == from {
-            return Ok(to);
-        }
-        let only_case = same_name(&from, &to);
-        if !only_case && self.profiles.iter().any(|profile| same_name(profile, &to)) {
-            bail!("there's already a profile named \"{to}\"");
-        }
-        let new_path = ConfigFile::profile_path(&settings_dir, &to);
-        if !only_case && find_profile_file(&profiles_dir, &to).is_some() {
-            bail!("{} already exists", new_path.display());
-        }
-        let old_path = find_profile_file(&profiles_dir, &from);
-        let active = from == self.profile;
-        if active && !only_case {
-            // Written under the new name first, then `config.toml` names
-            // it, then the old file goes: stopped anywhere in between, the
-            // profile is still there (twice, at worst).
-            self.profile = to.clone();
-            self.save();
-            if let Some(e) = self.save_error.clone() {
-                self.profile = from;
-                bail!("couldn't save the profile under its new name: {e}");
-            }
-            if let Some(old_path) = old_path
-                && let Err(e) = std::fs::remove_file(&old_path)
-            {
-                warn!("couldn't remove {}: {e}", old_path.display());
-            }
-        } else {
-            // Only the case changes, or the profile isn't running: renamed
-            // in place. (Written anew and the old one deleted, a change of
-            // case alone would delete it on Windows and macOS, where both
-            // names are one file.)
-            if let Some(old_path) = old_path {
-                std::fs::rename(&old_path, &new_path).with_context(|| {
-                    format!("renaming {} to {}", old_path.display(), new_path.display())
-                })?;
-            }
-            if active {
-                self.profile = to.clone();
-                self.save();
-            }
-        }
-        info!(%from, %to, "profile renamed");
-        self.profiles.retain(|profile| *profile != from);
-        self.profiles.push(to.clone());
-        sort_profiles(&mut self.profiles);
-        Ok(to)
-    }
-
-    fn delete_profile(&mut self, name: &str) -> anyhow::Result<Vec<SourceConfig>> {
-        let profiles_dir = ConfigFile::profiles_dir(self.settings_dir()?);
-        let name = self.find_profile(name)?;
-        if name == self.profile {
-            bail!("the active profile can't be deleted: switch to another one first");
-        }
-        // Its sources, for forgetting their secrets afterwards. A file that
-        // can't be read is deleted all the same (you asked for it gone),
-        // but whatever secrets it used stay behind.
-        let sources = match ProfileFile::load(&profiles_dir, &name) {
-            Ok(file) => file.sources.into_iter().map(|entry| entry.config).collect(),
-            Err(e) => {
-                warn!("deleting profile {name}, which can't be read: {e:#}");
-                Vec::new()
-            }
-        };
-        if let Some(path) = find_profile_file(&profiles_dir, &name) {
-            std::fs::remove_file(&path).with_context(|| format!("deleting {}", path.display()))?;
-        }
-        info!(profile = %name, "profile deleted");
-        self.profiles.retain(|profile| *profile != name);
-        Ok(sources)
     }
 
     /// Whether a source uses the secret `name`: one of the active
     /// profile's, or one in another profile's file. One that can't be
     /// read might: it counts as using it.
-    fn secret_in_use(&self, name: &str) -> bool {
+    async fn secret_in_use(&self, name: &str) -> bool {
         let uses = |config: &SourceConfig| {
             config
                 .token()
@@ -848,28 +660,18 @@ impl<F: SourceFactory> Actor<F> {
         {
             return true;
         }
-        let Ok(settings_dir) = self.settings_dir() else {
-            return false;
-        };
-        let profiles_dir = ConfigFile::profiles_dir(settings_dir);
-        self.profiles
-            .iter()
-            .filter(|profile| **profile != self.profile)
-            .any(|profile| match ProfileFile::load(&profiles_dir, profile) {
-                Ok(file) => file.sources.iter().any(|entry| uses(&entry.config)),
-                Err(_) => true,
-            })
+        self.store.secret_in_use_in_other_profiles(name).await
     }
 
     /// Runs `change` on the current settings, hands what changed to the
     /// running parts and publishes the new settings.
     /// Applies `change`; refused (and nothing changes) if it makes the
-    /// chat reactions invalid, as `config.toml` would be refused at
+    /// tips or chat reactions invalid, as `config.toml` would be refused at
     /// startup: the app's forms check most of it themselves, but the engine
     /// is what keeps the file loadable.
     /// Answers whether that restarted the YouTube sources (new YouTube
     /// settings do).
-    fn edit_settings(&mut self, change: SettingsChange) -> anyhow::Result<bool> {
+    async fn edit_settings(&mut self, change: SettingsChange) -> anyhow::Result<bool> {
         let old = self.settings.borrow().clone();
         let mut new = old.clone();
         change(&mut new);
@@ -894,7 +696,7 @@ impl<F: SourceFactory> Actor<F> {
             info!("YouTube settings changed");
             self.restart_youtube();
         }
-        self.save();
+        self.save().await;
         Ok(youtube_changed)
     }
 
@@ -1058,37 +860,25 @@ impl<F: SourceFactory> Actor<F> {
                 messages: slot.stats.messages.load(Ordering::Relaxed),
                 last_message: slot.stats.last_message(),
             })
-            .collect::<Vec<_>>();
-        let overlays = self.connections.overlays();
-        let api_clients = self.connections.api_clients();
-        let widgets = self.connections.widgets();
-        let api_requests = self.api_requests.borrow().clone();
-        let save_error = self.save_error.clone();
-        let reactions = self.reactions.borrow().clone();
+            .collect();
+        let next = Status {
+            overlay_url: self.overlay_url.clone(),
+            overlays_connected: self.connections.overlays(),
+            api_clients: self.connections.api_clients(),
+            widgets_connected: self.connections.widgets(),
+            api_requests: self.api_requests.borrow().clone(),
+            save_error: self.store.save_error().map(str::to_owned),
+            profile: self.store.profile().to_owned(),
+            profiles: self.store.profiles().to_vec(),
+            profile_switches: self.store.switches(),
+            converted_to_profiles: self.store.converted(),
+            sources,
+            reactions: self.reactions.borrow().clone(),
+        };
         self.status.send_if_modified(|status| {
-            let unchanged = status.sources == sources
-                && status.overlays_connected == overlays
-                && status.api_clients == api_clients
-                && status.widgets_connected == widgets
-                && status.api_requests == api_requests
-                && status.save_error == save_error
-                && status.profile == self.profile
-                && status.profiles == self.profiles
-                && status.profile_switches == self.switches
-                && status.converted_to_profiles == self.converted
-                && status.reactions == reactions;
-            status.sources = sources;
-            status.overlays_connected = overlays;
-            status.api_clients = api_clients;
-            status.widgets_connected = widgets;
-            status.api_requests = api_requests;
-            status.save_error = save_error;
-            status.profile.clone_from(&self.profile);
-            status.profiles.clone_from(&self.profiles);
-            status.profile_switches = self.switches;
-            status.converted_to_profiles = self.converted;
-            status.reactions = reactions;
-            !unchanged
+            let changed = *status != next;
+            *status = next;
+            changed
         });
     }
 }
@@ -1134,11 +924,6 @@ async fn run_manual(
         hub.publish(event);
     }
     Ok(())
-}
-
-/// The folder `config.toml` at `path` is in.
-fn settings_dir(path: &Path) -> &Path {
-    path.parent().unwrap_or(Path::new(""))
 }
 
 fn backoff(attempt: u32) -> Duration {

@@ -270,8 +270,10 @@ impl SourceFactory for Production {
             SourceConfig::Demo => SourceSpec::Demo(DemoSource::default()),
             SourceConfig::YouTube { video_id, account } => {
                 let settings = self.youtube();
-                let emojis = match &settings.emojis {
-                    Some(path) => EmojiMap::load(path)
+                let emojis = match settings.emojis.clone() {
+                    Some(path) => tokio::task::spawn_blocking(move || EmojiMap::load(&path))
+                        .await
+                        .map_err(|e| SetupError(format!("YouTube emoji file: {e}")))?
                         .map_err(|e| SetupError(format!("YouTube emoji file: {e:#}")))?,
                     None => EmojiMap::default(),
                 };

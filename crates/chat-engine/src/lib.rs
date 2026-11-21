@@ -21,7 +21,7 @@ use anyhow::{Context, anyhow};
 use chat_core::Hub;
 use chat_core::tiers::TipSettings;
 use chat_reactions::ReactionRequest;
-use chat_server::{ApiOrigins, Avatars, Connections, ServerState};
+use chat_server::{ApiOrigins, Avatars, Connections, OverlayConfig, ServerState};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -36,6 +36,7 @@ mod profiles;
 mod reactions;
 mod settings;
 mod status;
+mod store;
 mod tokens;
 mod youtube;
 
@@ -332,12 +333,14 @@ impl Engine {
         let mut tasks = JoinSet::new();
 
         // The server reads these; the actor changes them (`Controls`).
-        let (theme_tx, theme_rx) =
-            watch::channel(overlay.theme_source(config.themes_dir.as_deref()));
-        let (stagger_tx, stagger_rx) = watch::channel(server.stagger());
+        let (overlay_tx, overlay_rx) = watch::channel(OverlayConfig {
+            theme: overlay.theme_source(config.themes_dir.as_deref()),
+            stagger: server.stagger(),
+            newest: overlay.newest,
+            hide: overlay.hide.clone(),
+        });
+        let (reload_tx, reload_rx) = watch::channel(0u64);
         let (api_tx, api_rx) = watch::channel(server.api);
-        let (newest_tx, newest_rx) = watch::channel(overlay.newest);
-        let (hide_tx, hide_rx) = watch::channel(overlay.hide.clone());
         let origins = Arc::new(ApiOrigins::new(
             server.api_origins.clone(),
             config.ask_api_origins,
@@ -354,12 +357,10 @@ impl Engine {
         let (reaction_status_tx, reaction_status_rx) = watch::channel(Default::default());
         let state = ServerState {
             hub: hub.clone(),
-            theme: theme_rx,
+            overlay: overlay_rx,
+            reload: reload_rx,
             shutdown: shutdown.clone(),
-            stagger: stagger_rx,
             api: api_rx,
-            newest: newest_rx,
-            hide: hide_rx,
             themes_dir: config.themes_dir.clone(),
             widgets_dir: config.widgets_dir.clone(),
             connections: connections.clone(),
@@ -368,19 +369,18 @@ impl Engine {
         };
         let controls = Arc::new(Controls {
             hub: hub.clone(),
-            theme: theme_tx,
-            stagger: stagger_tx,
+            overlay: overlay_tx,
+            reload: reload_tx,
             api: api_tx,
-            newest: newest_tx,
-            hide: hide_tx,
             origins,
             reactions: reactions_tx,
             tips: tips_tx,
             themes_dir: config.themes_dir,
         });
 
+        let overlay_url = format!("http://{addr}/");
         let (status_tx, status_rx) = watch::channel(Status {
-            overlay_url: format!("http://{addr}/"),
+            overlay_url: overlay_url.clone(),
             overlays_connected: 0,
             api_clients: 0,
             widgets_connected: 0,
@@ -399,6 +399,7 @@ impl Engine {
             factory,
             settings_tx,
             controls.clone(),
+            overlay_url,
             status_tx,
             connections,
             reaction_status_rx,

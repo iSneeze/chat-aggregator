@@ -14,7 +14,7 @@ use std::sync::Arc;
 use chat_core::Hub;
 use chat_core::tiers::TipSettings;
 use chat_reactions::ReactionSettings;
-use chat_server::{ApiOrigins, Hide, Newest, Stagger, ThemeSource};
+use chat_server::{ApiOrigins, OverlayConfig};
 use tokio::sync::watch;
 
 use crate::config_file::Settings;
@@ -24,11 +24,9 @@ use crate::config_file::Settings;
 /// channels (`ServerState`), the reactor its own (`reactions`).
 pub(crate) struct Controls {
     pub(crate) hub: Arc<Hub>,
-    pub(crate) theme: watch::Sender<ThemeSource>,
-    pub(crate) stagger: watch::Sender<Stagger>,
+    pub(crate) overlay: watch::Sender<OverlayConfig>,
+    pub(crate) reload: watch::Sender<u64>,
     pub(crate) api: watch::Sender<bool>,
-    pub(crate) newest: watch::Sender<Newest>,
-    pub(crate) hide: watch::Sender<Vec<Hide>>,
     pub(crate) origins: Arc<ApiOrigins>,
     /// The chat reactions' rules and outputs: the reactor applies a change
     /// right away (and reconnects an output whose address changed).
@@ -47,41 +45,40 @@ impl Controls {
     /// business (they mean restarting sources): returns whether they
     /// changed.
     pub(crate) fn apply(&self, old: &Settings, new: &Settings) -> bool {
-        let (was, now) = (&old.server, &new.server);
-        if now.history != was.history {
-            self.hub.set_history(now.history);
-        }
-        // Read by overlays when they connect: no reload for this one.
-        if now.stagger() != was.stagger() {
-            self.stagger.send_replace(now.stagger());
+        let (was_server, now_server) = (&old.server, &new.server);
+        if now_server.history != was_server.history {
+            self.hub.set_history(now_server.history);
         }
         // Off also disconnects the connected clients.
-        if now.api != was.api {
-            self.api.send_replace(now.api);
+        if now_server.api != was_server.api {
+            self.api.send_replace(now_server.api);
         }
         // A removed site's clients are disconnected.
-        if now.api_origins != was.api_origins {
-            self.origins.set_allowed(now.api_origins.clone());
+        if now_server.api_origins != was_server.api_origins {
+            self.origins.set_allowed(now_server.api_origins.clone());
         }
-        let (was, now) = (&old.profile.overlay, &new.profile.overlay);
-        // Read by overlays for every message: no reload, the next message
-        // follows it.
-        if now.hide != was.hide {
-            self.hide.send_replace(now.hide.clone());
+
+        let (was_overlay, now_overlay) = (&old.profile.overlay, &new.profile.overlay);
+        let stagger_changed = now_server.stagger() != was_server.stagger();
+        let hide_changed = now_overlay.hide != was_overlay.hide;
+        let newest_changed = now_overlay.newest != was_overlay.newest;
+        let theme_changed = now_overlay.theme != was_overlay.theme;
+        if stagger_changed || hide_changed || newest_changed || theme_changed {
+            self.overlay.send_replace(OverlayConfig {
+                theme: now_overlay.theme_source(self.themes_dir.as_deref()),
+                stagger: now_server.stagger(),
+                newest: now_overlay.newest,
+                hide: now_overlay.hide.clone(),
+            });
         }
-        // An overlay takes up both when it connects (the direction is
-        // written into its page), so either change reloads the overlays,
-        // once. The direction goes first, so the reloaded page has it.
-        if now.newest != was.newest {
-            self.newest.send_replace(now.newest);
-        }
-        if now.theme != was.theme {
-            // A new value notifies the overlays, which then reload.
-            let theme = now.theme_source(self.themes_dir.as_deref());
-            self.theme.send_replace(theme);
-        } else if now.newest != was.newest {
+        // Theme and direction are picked up when an overlay connects/loads, so
+        // changing either reloads connected overlays once (explicitly, after
+        // the new `OverlayConfig` is published above). Pacing and `hide` apply
+        // without a reload.
+        if theme_changed || newest_changed {
             self.reload_overlays();
         }
+
         let (was, now) = (&old.profile, &new.profile);
         if now.reactions != was.reactions {
             self.reactions.send_replace(now.reactions.clone());
@@ -97,53 +94,44 @@ impl Controls {
 
     /// Makes connected overlays reload, e.g. after editing a theme's files.
     pub(crate) fn reload_overlays(&self) {
-        // `send_modify` notifies watchers even though nothing changed.
-        self.theme.send_modify(|_| {});
+        self.reload.send_modify(|n| *n += 1);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chat_server::Builtin;
+    use chat_server::{Builtin, Hide, Newest, Stagger, ThemeSource};
 
     /// Controls, and the receiving ends the server would hold.
     struct Server {
-        theme: watch::Receiver<ThemeSource>,
-        stagger: watch::Receiver<Stagger>,
+        overlay: watch::Receiver<OverlayConfig>,
+        reload: watch::Receiver<u64>,
         api: watch::Receiver<bool>,
-        newest: watch::Receiver<Newest>,
-        hide: watch::Receiver<Vec<Hide>>,
         reactions: watch::Receiver<ReactionSettings>,
         tips: watch::Receiver<TipSettings>,
     }
 
     fn controls() -> (Controls, Server) {
-        let (theme, theme_rx) = watch::channel(ThemeSource::default());
-        let (stagger, stagger_rx) = watch::channel(Stagger::default());
+        let (overlay, overlay_rx) = watch::channel(OverlayConfig::default());
+        let (reload, reload_rx) = watch::channel(0u64);
         let (api, api_rx) = watch::channel(false);
-        let (newest, newest_rx) = watch::channel(Newest::Bottom);
-        let (hide, hide_rx) = watch::channel(Vec::new());
         let (reactions, reactions_rx) = watch::channel(ReactionSettings::default());
         let (tips, tips_rx) = watch::channel(TipSettings::default());
         let controls = Controls {
             hub: Arc::new(Hub::new(20)),
-            theme,
-            stagger,
+            overlay,
+            reload,
             api,
-            newest,
-            hide,
             origins: Arc::new(ApiOrigins::new([], false)),
             reactions,
             tips,
             themes_dir: None,
         };
         let server = Server {
-            theme: theme_rx,
-            stagger: stagger_rx,
+            overlay: overlay_rx,
+            reload: reload_rx,
             api: api_rx,
-            newest: newest_rx,
-            hide: hide_rx,
             reactions: reactions_rx,
             tips: tips_rx,
         };
@@ -164,12 +152,10 @@ mod tests {
         new.app.appearance = crate::Appearance::Dark;
 
         assert!(!controls.apply(&old, &new), "YouTube unchanged");
-        assert!(changed(&server.stagger));
-        assert!(server.stagger.borrow().is_off());
-        assert!(!changed(&server.theme), "no reload for pacing");
+        assert!(changed(&server.overlay));
+        assert!(server.overlay.borrow().stagger.is_off());
+        assert!(!changed(&server.reload), "no reload for pacing");
         assert!(!changed(&server.api));
-        assert!(!changed(&server.newest));
-        assert!(!changed(&server.hide));
         assert!(!changed(&server.reactions));
         assert!(!changed(&server.tips));
     }
@@ -184,7 +170,7 @@ mod tests {
         assert!(changed(&server.tips));
         assert_eq!(server.tips.borrow().currency(), Some("EUR"));
         assert!(!changed(&server.reactions));
-        assert!(!changed(&server.theme), "overlays don't reload");
+        assert!(!changed(&server.reload), "overlays don't reload");
     }
 
     #[test]
@@ -194,9 +180,9 @@ mod tests {
         let mut new = old.clone();
         new.profile.overlay.hide = vec![Hide::StreamElements];
         controls.apply(&old, &new);
-        assert!(changed(&server.hide));
-        assert_eq!(*server.hide.borrow(), [Hide::StreamElements]);
-        assert!(!changed(&server.theme), "overlays don't reload");
+        assert!(changed(&server.overlay));
+        assert_eq!(server.overlay.borrow().hide, [Hide::StreamElements]);
+        assert!(!changed(&server.reload), "overlays don't reload");
     }
 
     #[test]
@@ -208,7 +194,7 @@ mod tests {
         assert!(!controls.apply(&old, &new));
         assert!(changed(&server.reactions));
         assert!(server.reactions.borrow().paused);
-        assert!(!changed(&server.theme), "overlays don't reload");
+        assert!(!changed(&server.reload), "overlays don't reload");
     }
 
     #[test]
@@ -218,9 +204,13 @@ mod tests {
         let mut new = old.clone();
         new.profile.overlay.newest = Newest::Top;
         controls.apply(&old, &new);
-        assert_eq!(*server.newest.borrow(), Newest::Top);
-        assert!(changed(&server.theme), "overlays reload");
-        assert_eq!(*server.theme.borrow(), ThemeSource::default(), "same theme");
+        assert_eq!(server.overlay.borrow().newest, Newest::Top);
+        assert!(changed(&server.reload), "overlays reload");
+        assert_eq!(
+            server.overlay.borrow().theme,
+            ThemeSource::default(),
+            "same theme"
+        );
     }
 
     #[test]
@@ -232,10 +222,11 @@ mod tests {
         new.profile.overlay.newest = Newest::Top;
         controls.apply(&old, &new);
         assert_eq!(
-            *server.theme.borrow(),
+            server.overlay.borrow().theme,
             ThemeSource::Builtin(Builtin::Minimal)
         );
-        assert_eq!(*server.newest.borrow(), Newest::Top);
+        assert_eq!(server.overlay.borrow().newest, Newest::Top);
+        assert_eq!(*server.reload.borrow(), 1, "reloaded once for both");
     }
 
     #[test]
@@ -273,6 +264,7 @@ mod tests {
         let mut new = old.clone();
         new.server.stagger_max_ms += 1000;
         controls.apply(&old, &new);
-        assert!(!changed(&server.stagger));
+        assert!(!changed(&server.overlay));
+        assert!(!changed(&server.reload));
     }
 }

@@ -14,6 +14,8 @@ use std::str::FromStr;
 use chat_core::{ChatEvent, ChatMessage, ChatPlatform, MessageKind};
 use tokio::sync::watch;
 
+use crate::OverlayConfig;
+
 /// Something an overlay can leave out: a platform or a kind of message.
 /// Named as in the JSON API (a message's `platform` and `kind.type`), in
 /// `config.toml` (`hide = ["streamelements"]`) and in an overlay URL
@@ -134,14 +136,14 @@ fn shown(hidden: &[Hide], msg: &ChatMessage) -> bool {
 pub(crate) enum OverlayFilter {
     /// The app's setting, read for every message: a change applies to the
     /// next one, without a reload.
-    App(watch::Receiver<Vec<Hide>>),
+    App(watch::Receiver<OverlayConfig>),
     /// The overlay URL's `?hide=`, which wins over the app's setting (also
     /// when empty: `?hide=` shows everything in that browser source).
     Url(Vec<Hide>),
 }
 
 impl OverlayFilter {
-    pub(crate) fn new(app: &watch::Receiver<Vec<Hide>>, url: Option<&str>) -> Self {
+    pub(crate) fn new(app: &watch::Receiver<OverlayConfig>, url: Option<&str>) -> Self {
         match url {
             Some(list) => OverlayFilter::Url(Hide::parse_list(list)),
             None => OverlayFilter::App(app.clone()),
@@ -151,7 +153,7 @@ impl OverlayFilter {
     pub(crate) fn shows_message(&self, msg: &ChatMessage) -> bool {
         match self {
             // `borrow` holds a read lock: only for this one check.
-            OverlayFilter::App(hidden) => shown(&hidden.borrow(), msg),
+            OverlayFilter::App(overlay) => shown(&overlay.borrow().hide, msg),
             OverlayFilter::Url(hidden) => shown(hidden, msg),
         }
     }
@@ -281,19 +283,25 @@ mod tests {
 
     #[test]
     fn the_url_wins_over_the_app() {
-        let (app_tx, app) = watch::channel(vec![Hide::StreamElements]);
+        let (app_tx, app) = watch::channel(OverlayConfig {
+            hide: vec![Hide::StreamElements],
+            ..OverlayConfig::default()
+        });
         let from_app = OverlayFilter::new(&app, None);
         assert!(!from_app.shows_message(&tip()));
         // An empty `?hide=` shows everything in that overlay.
         assert!(OverlayFilter::new(&app, Some("")).shows_message(&tip()));
         // The app's setting changes: the next message follows it.
-        app_tx.send_replace(vec![]);
+        app_tx.send_modify(|overlay| overlay.hide.clear());
         assert!(from_app.shows_message(&tip()));
     }
 
     #[test]
     fn moderation_always_gets_through() {
-        let (_tx, app) = watch::channel(Hide::ALL.to_vec());
+        let (_tx, app) = watch::channel(OverlayConfig {
+            hide: Hide::ALL.to_vec(),
+            ..OverlayConfig::default()
+        });
         let filter = OverlayFilter::new(&app, None);
         let delete = ChatEvent::Delete {
             platform: ChatPlatform::StreamElements,
