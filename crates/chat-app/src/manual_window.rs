@@ -166,7 +166,9 @@ pub struct ManualWindow {
     info: Entity<InputState>,
     error: Option<String>,
     sent: u64,
-    last_id: Option<String>,
+    /// Platform and id of the last sent message, so "Delete last" targets the
+    /// right platform even after switching the platform radio button.
+    last_sent: Option<(ChatPlatform, String)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -234,7 +236,7 @@ impl ManualWindow {
             info,
             error: None,
             sent: 0,
-            last_id: None,
+            last_sent: None,
             _subscriptions: subscriptions,
         }
     }
@@ -313,16 +315,16 @@ impl ManualWindow {
         };
         self.error = None;
         self.sent += 1;
-        self.last_id = Some(message.id.clone());
+        self.last_sent = Some((message.platform, message.id.clone()));
         cx.notify();
         self.send_event(ChatEvent::Message(message), window, cx);
     }
 
     /// Deletes the last sent message, to try out moderation in the overlay.
     fn delete_last(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(message_id) = self.last_id.take() {
+        if let Some((platform, message_id)) = self.last_sent.take() {
             let event = ChatEvent::Delete {
-                platform: self.platform,
+                platform,
                 message_id,
             };
             self.send_event(event, window, cx);
@@ -496,7 +498,7 @@ impl Render for ManualWindow {
                         Button::new("manual-delete")
                             .label("Delete last")
                             .small()
-                            .disabled(self.last_id.is_none())
+                            .disabled(self.last_sent.is_none())
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.delete_last(window, cx)),
                             ),

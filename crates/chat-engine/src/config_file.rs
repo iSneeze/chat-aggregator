@@ -666,14 +666,7 @@ pub fn normalize_profile_name(name: &str) -> Result<String, String> {
             "a profile's name can only have letters, digits, spaces, - and _ (not {c:?})"
         ));
     }
-    let upper = name.to_uppercase();
-    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str())
-        || ["COM", "LPT"].iter().any(|prefix| {
-            upper
-                .strip_prefix(prefix)
-                .is_some_and(|n| n.len() == 1 && n.chars().all(|c| c.is_ascii_digit()))
-        });
-    if reserved {
+    if chat_core::fs::is_windows_reserved_name(name) {
         return Err(format!(
             "\"{name}\" can't be a profile's name (Windows keeps it for itself)"
         ));

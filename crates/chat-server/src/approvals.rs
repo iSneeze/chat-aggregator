@@ -231,10 +231,14 @@ impl ApiOrigins {
     /// Finishes once a client from `origin` isn't allowed any more (its
     /// site was removed from the list); never, for local clients.
     pub(crate) async fn revoked(&self, origin: Option<&str>) {
+        // Local clients can never be revoked: don't subscribe to `revision` or
+        // touch the mutex at all.
+        if local::allowed_origin(origin) {
+            std::future::pending::<()>().await;
+        }
         let mut changes = self.revision.subscribe();
         loop {
-            let allowed = local::allowed_origin(origin)
-                || origin.is_some_and(|o| self.lock().allowed.contains(o));
+            let allowed = origin.is_some_and(|o| self.lock().allowed.contains(o));
             if !allowed {
                 return;
             }

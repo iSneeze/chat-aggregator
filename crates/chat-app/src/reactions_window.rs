@@ -625,8 +625,10 @@ impl ReactionsWindow {
             loop {
                 let current = status.borrow_and_update().reactions.clone();
                 let open = this.update(cx, |view, cx| {
-                    view.status = current;
-                    cx.notify();
+                    if view.status != current {
+                        view.status = current;
+                        cx.notify();
+                    }
                 });
                 if open.is_err() || status.changed().await.is_err() {
                     return;

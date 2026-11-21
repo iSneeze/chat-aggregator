@@ -28,7 +28,7 @@ use base64::Engine as _;
 use chat_core::{ChatEvent, Hub};
 use chat_render::Theme;
 use futures_util::stream::BoxStream;
-use futures_util::{Stream, StreamExt, stream};
+use futures_util::{StreamExt, stream};
 use hide::OverlayFilter;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -36,7 +36,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 mod api;
 mod approvals;
@@ -197,7 +197,7 @@ impl ServerState {
     /// can be picked, by a valid theme name (which rules out `..` and
     /// slashes); anything else is logged and gets the app's theme, so a
     /// typo in a scene's URL still shows chat.
-    fn choose_theme(&self, requested: Option<&str>) -> ThemeChoice {
+    async fn choose_theme(&self, requested: Option<&str>) -> ThemeChoice {
         let Some(name) = requested else {
             return ThemeChoice::App;
         };
@@ -210,20 +210,32 @@ impl ServerState {
             };
         }
         let valid = chat_render::themes::validate_name(name).is_ok() && name == name.trim();
-        let dir = self
+        let candidate = self
             .themes_dir
             .as_ref()
             .filter(|_| valid)
-            .map(|root| root.join(name))
-            // A tiny blocking check, once per page load or connection.
-            .filter(|dir| dir.is_dir());
+            .map(|root| root.join(name));
+        let dir = match candidate {
+            Some(dir) => {
+                let exists = tokio::task::spawn_blocking({
+                    let dir = dir.clone();
+                    move || dir.is_dir()
+                })
+                .await
+                .unwrap_or(false);
+                exists.then_some(dir)
+            }
+            None => None,
+        };
         match dir {
             Some(dir) => ThemeChoice::Pinned {
                 name: name.to_string(),
                 source: ThemeSource::Folder(dir),
             },
             None => {
-                warn!(
+                // `debug!` rather than `warn!`: any web page could send
+                // `/?theme=unknown` requests, which shouldn't fill the log file.
+                debug!(
                     theme = name,
                     "an overlay asked for a theme that isn't in the themes folder, using the app's theme"
                 );
@@ -240,15 +252,21 @@ impl ServerState {
     }
 
     /// Loaded per overlay connection, so "edit the template, refresh the
-    /// browser source" picks up changes without a restart. A broken custom
-    /// template must not take the overlay down mid-stream: log it and fall
-    /// back to the built-in one.
-    fn load_theme(&self, choice: ThemeChoice) -> Theme {
-        // Blocking file I/O in an async handler is normally a no-go, but
-        // this is two small local files, once per connection.
-        self.source_for(choice).load().unwrap_or_else(|e| {
+    /// browser source" picks up changes without a restart. Built-in themes
+    /// return a shared cached copy; custom folders load on Tokio's blocking
+    /// pool so disk I/O never stalls the 2-thread async runtime. A broken
+    /// custom template logs and falls back to the built-in one.
+    async fn load_theme(&self, choice: ThemeChoice) -> Arc<Theme> {
+        let source = self.source_for(choice);
+        let loaded = match source {
+            ThemeSource::Builtin(builtin) => Ok(Theme::shared_builtin(builtin)),
+            ThemeSource::Folder(_) => tokio::task::spawn_blocking(move || source.load_shared())
+                .await
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("loading theme failed: {e}"))),
+        };
+        loaded.unwrap_or_else(|e| {
             error!("invalid custom theme, using the built-in template: {e:#}");
-            Theme::builtin()
+            Theme::shared_builtin(Builtin::Default)
         })
     }
 }
@@ -295,7 +313,7 @@ async fn overlay_page(
     // A pinned theme's stylesheet, written into the page rather than
     // swapped by the script: the script reads `--max-messages` from the
     // stylesheet, which must be loaded by then.
-    if let ThemeChoice::Pinned { name, .. } = state.choose_theme(query.theme.as_deref()) {
+    if let ThemeChoice::Pinned { name, .. } = state.choose_theme(query.theme.as_deref()).await {
         page = page.replacen(
             r#"href="theme/overlay.css""#,
             &format!(r#"href="themes/{}/overlay.css""#, url_segment(&name)),
@@ -342,7 +360,7 @@ async fn named_theme_file(
     State(state): State<ServerState>,
     UrlPath((name, path)): UrlPath<(String, String)>,
 ) -> Response {
-    match state.choose_theme(Some(&name)) {
+    match state.choose_theme(Some(&name)).await {
         ThemeChoice::Pinned { source, .. } => serve_theme_file(source, &path).await,
         ThemeChoice::App => StatusCode::NOT_FOUND.into_response(),
     }
@@ -352,7 +370,7 @@ async fn named_theme_file(
 /// one, or one of its folder's files.
 async fn serve_theme_file(source: ThemeSource, path: &str) -> Response {
     if path == chat_render::CSS_FILE {
-        return overlay_css(&source).into_response();
+        return overlay_css(source).await.into_response();
     }
     let Some(dir) = source.folder() else {
         return StatusCode::NOT_FOUND.into_response(); // built-in themes have no files
@@ -360,7 +378,18 @@ async fn serve_theme_file(source: ThemeSource, path: &str) -> Response {
     let Some(file) = inside(dir, path) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    match tokio::fs::read(&file).await {
+    // Canonicalize both `dir` and `file` so symlinks inside a theme folder
+    // can't escape to read files outside it (e.g. `../../config.toml`).
+    let (Ok(canon_dir), Ok(canon_file)) = (
+        tokio::fs::canonicalize(dir).await,
+        tokio::fs::canonicalize(&file).await,
+    ) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !canon_file.starts_with(&canon_dir) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tokio::fs::read(&canon_file).await {
         Ok(bytes) => (
             [
                 (header::CONTENT_TYPE, content_type(&file)),
@@ -378,8 +407,14 @@ async fn serve_theme_file(source: ThemeSource, path: &str) -> Response {
     }
 }
 
-fn overlay_css(source: &ThemeSource) -> impl IntoResponse + use<> {
-    let css = source.css().unwrap_or_else(|e| {
+async fn overlay_css(source: ThemeSource) -> impl IntoResponse {
+    let css = match source {
+        ThemeSource::Builtin(builtin) => Ok(builtin.css().to_string()),
+        ThemeSource::Folder(_) => tokio::task::spawn_blocking(move || source.css())
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("reading CSS failed: {e}"))),
+    }
+    .unwrap_or_else(|e| {
         error!("can't read custom CSS, using the built-in one: {e:#}");
         chat_render::DEFAULT_CSS.to_string()
     });
@@ -426,11 +461,17 @@ fn content_type(file: &Path) -> &'static str {
     }
 }
 
-async fn events(
-    State(state): State<ServerState>,
-    Query(query): Query<OverlayQuery>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let theme = state.load_theme(state.choose_theme(query.theme.as_deref()));
+async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQuery>) -> Response {
+    // Counted as connected for as long as this response stream exists.
+    let Some(connected) = state.connections.try_overlay() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Too many overlays connected.",
+        )
+            .into_response();
+    };
+    let choice = state.choose_theme(query.theme.as_deref()).await;
+    let theme = state.load_theme(choice).await;
     let filter = OverlayFilter::new(&state.hide, query.hide.as_deref());
     let (history, rx) = state.hub.subscribe();
 
@@ -469,8 +510,6 @@ async fn events(
         tokio_stream::wrappers::ReceiverStream::new(paced).boxed()
     };
 
-    // Counted as connected for as long as this response stream exists.
-    let connected = state.connections.overlay();
     // Tells the overlay to reload when the theme folder changes; it then
     // reconnects and gets the new template and CSS. Overlays with a pinned
     // theme reload too and come back with their own theme (it's in their
@@ -494,7 +533,7 @@ async fn events(
         .filter_map(move |event| std::future::ready(to_sse(&theme, &avatars, &event)));
     // `select` merges both streams: whichever has something next goes first.
     let stream = stream::select(events, reload)
-        .map(Ok)
+        .map(Ok::<_, Infallible>)
         // An SSE response never ends by itself, and graceful shutdown waits
         // for open responses to finish: without this, shutdown would hang
         // for as long as an overlay is connected.
@@ -508,7 +547,9 @@ async fn events(
         });
 
     // Comment lines every 15s keep idle connections (and OBS) from timing out.
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+        .into_response()
 }
 
 /// One named SSE event per chat event; the overlay script listens by name.

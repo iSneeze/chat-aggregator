@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use chat_core::secrets::SecretStore;
@@ -16,16 +17,16 @@ use chat_core::tiers::TipSettings;
 use chat_core::{ChatEvent, ChatMessage, Hub};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::ReactionSettings;
 use crate::obs::{self, Effect};
 use crate::output::{Job, Outcome, Report};
 use crate::rules::{Action, Rules, Target};
 use crate::warudo;
-use crate::{ObsSettings, ReactionSettings, WarudoSettings};
 
 /// How many actions may be on their way to an output at once. Beyond that
 /// the output isn't keeping up, and more would only arrive late.
@@ -129,13 +130,17 @@ pub async fn run(
     let initial = settings.borrow_and_update().clone();
     let mut reactor = Reactor::new(initial, tips, status, secrets);
     loop {
+        let mut publish = true;
         tokio::select! {
             event = events.recv() => match event {
-                Ok(ChatEvent::Message(msg)) => reactor.react(&msg, Instant::now()),
+                // Only publish status when a rule actually fired: avoids
+                // cloning/diffing all rules and outputs on every chat message.
+                Ok(ChatEvent::Message(msg)) => publish = reactor.react(&msg, Instant::now()),
                 // Moderation: nothing to take back, the reaction has happened.
-                Ok(_) => {}
+                Ok(_) => publish = false,
                 Err(RecvError::Lagged(missed)) => {
                     warn!("reactions fell behind the chat: {missed} events skipped");
+                    publish = false;
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -161,7 +166,9 @@ pub async fn run(
             () = output_changed(&mut reactor.obs) => {}
             () = shutdown.cancelled() => break,
         }
-        reactor.publish();
+        if publish {
+            reactor.publish();
+        }
     }
     reactor.stop().await;
 }
@@ -177,8 +184,12 @@ struct Reactor {
     /// only amount rules need it, and only then.
     tips: watch::Receiver<TipSettings>,
     /// Each running while some enabled rule sends to it.
-    warudo: Option<Output<WarudoSettings, warudo::Job>>,
-    obs: Option<Output<ObsSettings, obs::Job>>,
+    warudo: Option<Output<warudo::Job>>,
+    obs: Option<Output<obs::Job>>,
+    /// Outputs that are finishing up after being disabled or having their URL
+    /// changed (e.g. OBS switching off active timed effects). Kept here instead
+    /// of detaching so shutdown still waits for them.
+    retiring: JoinSet<()>,
     secrets: Option<SecretStore>,
     status: watch::Sender<ReactionStatus>,
     /// How the outputs' jobs went (the sender goes into every job).
@@ -190,12 +201,13 @@ struct Reactor {
 
 /// A running output task and the reactor's ends of its channels.
 ///
-/// Dropping it (rules changed, new settings) closes the jobs channel, and
-/// the task ends by itself: after switching back what it switched on.
-/// That's why the task isn't aborted.
-struct Output<S, J> {
-    /// What it was started with: different settings, a new connection.
-    settings: S,
+/// Stopping closes the jobs channel, and the task ends by itself: after
+/// switching back what it switched on. That's why the task isn't aborted.
+struct Output<J> {
+    /// The address it was started with: a different URL starts a fresh
+    /// connection, whereas changing `queue_secs` updates in place.
+    url: String,
+    queue_secs: Arc<AtomicU32>,
     jobs: mpsc::Sender<J>,
     state: watch::Receiver<OutputState>,
     /// Cuts its pause between connection attempts short.
@@ -217,6 +229,7 @@ impl Reactor {
             tips,
             warudo: None,
             obs: None,
+            retiring: JoinSet::new(),
             secrets,
             status,
             results_tx,
@@ -250,8 +263,10 @@ impl Reactor {
     }
 
     /// Starts the outputs the rules need (and restarts those whose
-    /// settings changed), and stops the others.
+    /// address changed), and retires the others.
     fn start_outputs(&mut self) {
+        // Reap any previously retired outputs that already finished.
+        while self.retiring.try_join_next().is_some() {}
         let needed = |target| {
             self.rules
                 .rules()
@@ -262,8 +277,10 @@ impl Reactor {
         let warudo = self.settings.warudo.clone();
         keep(
             &mut self.warudo,
+            &mut self.retiring,
             needs_warudo,
-            warudo,
+            warudo.url,
+            warudo.queue_secs,
             Target::Warudo,
             warudo::run,
         );
@@ -271,26 +288,35 @@ impl Reactor {
         let obs = self.settings.obs.clone();
         keep(
             &mut self.obs,
+            &mut self.retiring,
             needs_obs,
-            obs,
+            obs.url,
+            obs.queue_secs,
             Target::Obs,
-            |settings, jobs, state, wake| obs::run(settings, secrets, jobs, state, wake),
+            |url, queue_secs, jobs, state, wake| {
+                obs::run(url, queue_secs, secrets, jobs, state, wake)
+            },
         );
     }
 
-    fn react(&mut self, msg: &ChatMessage, now: Instant) {
+    /// Evaluates `msg` against the rules and dispatches any fires. Returns
+    /// whether at least one rule fired (and thus status counts changed).
+    fn react(&mut self, msg: &ChatMessage, now: Instant) -> bool {
         // Copied over only when changed: a new currency set in the app
         // applies from the next message on.
         if self.tips.has_changed().unwrap_or(false) {
             self.rules.tip_currency = tip_currency(&mut self.tips);
         }
-        for fire in self.rules.check(msg, now) {
+        let fired = self.rules.check(msg, now);
+        let any = !fired.is_empty();
+        for fire in fired {
             // Only the rule's name: chatter names stay out of the log.
             info!(rule = %fire.rule, "reaction fired");
             if let Err(e) = self.dispatch(fire.rule.clone(), fire.action, now, None) {
                 warn!(rule = %fire.rule, "{e}: reaction dropped");
             }
         }
+        any
     }
 
     fn request(&mut self, request: ReactionRequest) {
@@ -441,8 +467,9 @@ impl Reactor {
         });
     }
 
-    /// Stops the outputs, all at once, and waits until they're done.
-    async fn stop(self) {
+    /// Stops the outputs (active and retiring), all at once, and waits until
+    /// they're done.
+    async fn stop(mut self) {
         let warudo = async {
             if let Some(output) = self.warudo {
                 output.stop().await;
@@ -453,38 +480,56 @@ impl Reactor {
                 output.stop().await;
             }
         };
-        tokio::join!(warudo, obs);
+        let retiring = async { while self.retiring.join_next().await.is_some() {} };
+        tokio::join!(warudo, obs, retiring);
     }
 }
 
-/// Starts, restarts or stops one output to match what the rules need.
-fn keep<S, J, F, Fut>(
-    slot: &mut Option<Output<S, J>>,
+/// Starts, restarts or retires one output to match what the rules need.
+/// Changing `queue_secs` updates the running output in place without dropping
+/// its WebSocket connection; changing `url` retires the old output cleanly
+/// (tracked in `retiring`) and starts a fresh one.
+fn keep<J, F, Fut>(
+    slot: &mut Option<Output<J>>,
+    retiring: &mut JoinSet<()>,
     needed: bool,
-    wanted: S,
+    url: String,
+    queue_secs: u32,
     target: Target,
     run: F,
 ) where
-    S: Clone + PartialEq,
     J: Send + 'static,
-    F: FnOnce(S, mpsc::Receiver<J>, watch::Sender<OutputState>, Arc<Notify>) -> Fut,
+    F: FnOnce(
+        String,
+        Arc<AtomicU32>,
+        mpsc::Receiver<J>,
+        watch::Sender<OutputState>,
+        Arc<Notify>,
+    ) -> Fut,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    match &*slot {
-        _ if !needed => *slot = None,
-        Some(running) if running.settings == wanted => {}
-        _ => {
-            info!("starting the {} output", target.label());
-            // Assigning drops the old output first, if any: it finishes
-            // on its own.
-            *slot = Some(Output::start(wanted, run));
+    if !needed {
+        if let Some(old) = slot.take() {
+            retiring.spawn(old.stop());
         }
+        return;
     }
+    if let Some(running) = slot.as_ref()
+        && running.url == url
+    {
+        running.queue_secs.store(queue_secs, Ordering::Relaxed);
+        return;
+    }
+    if let Some(old) = slot.take() {
+        retiring.spawn(old.stop());
+    }
+    info!("starting the {} output", target.label());
+    *slot = Some(Output::start(url, queue_secs, run));
 }
 
 /// Hands a rule's action to its output; `Err` says why it can't go.
-fn send<S, A>(
-    output: &Option<Output<S, Job<A>>>,
+fn send<A>(
+    output: &Option<Output<Job<A>>>,
     target: Target,
     rule: String,
     action: A,
@@ -509,20 +554,25 @@ fn send<S, A>(
 }
 
 /// An output's wake, if it runs and isn't connected.
-fn waking<S, J>(output: &Option<Output<S, J>>) -> Option<&Arc<Notify>> {
+fn waking<J>(output: &Option<Output<J>>) -> Option<&Arc<Notify>> {
     output
         .as_ref()
         .filter(|output| *output.state.borrow() != OutputState::Connected)
         .map(|output| &output.wake)
 }
 
-impl<S, J: Send + 'static> Output<S, J> {
-    /// Spawns `run(settings, jobs, state)`: the same shape for every
-    /// output, so starting one is the same code.
-    fn start<F, Fut>(settings: S, run: F) -> Self
+impl<J: Send + 'static> Output<J> {
+    /// Spawns `run(url, queue_secs, jobs, state, wake)`: the same shape for
+    /// every output, so starting one is the same code.
+    fn start<F, Fut>(url: String, queue_secs: u32, run: F) -> Self
     where
-        S: Clone,
-        F: FnOnce(S, mpsc::Receiver<J>, watch::Sender<OutputState>, Arc<Notify>) -> Fut,
+        F: FnOnce(
+            String,
+            Arc<AtomicU32>,
+            mpsc::Receiver<J>,
+            watch::Sender<OutputState>,
+            Arc<Notify>,
+        ) -> Fut,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let (jobs, jobs_rx) = mpsc::channel(OUTPUT_BUFFER);
@@ -530,9 +580,17 @@ impl<S, J: Send + 'static> Output<S, J> {
         // Shared: the reactor wakes, the output waits. `Arc`, since the
         // output task owns its half and may outlive this `Output`.
         let wake = Arc::new(Notify::new());
-        let task = tokio::spawn(run(settings.clone(), jobs_rx, state_tx, wake.clone()));
+        let queue_secs = Arc::new(AtomicU32::new(queue_secs));
+        let task = tokio::spawn(run(
+            url.clone(),
+            queue_secs.clone(),
+            jobs_rx,
+            state_tx,
+            wake.clone(),
+        ));
         Self {
-            settings,
+            url,
+            queue_secs,
             jobs,
             state,
             wake,
@@ -562,7 +620,7 @@ impl<S, J: Send + 'static> Output<S, J> {
 /// Finishes when the output's connection state changes; never without an
 /// output. (A function rather than inline in `select!`, which needs one
 /// future per branch, also when there's nothing to wait for.)
-async fn output_changed<S, J>(output: &mut Option<Output<S, J>>) {
+async fn output_changed<J>(output: &mut Option<Output<J>>) {
     match output {
         Some(output) => {
             if output.state.changed().await.is_err() {
@@ -577,6 +635,7 @@ async fn output_changed<S, J>(output: &mut Option<Output<S, J>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WarudoSettings;
     use crate::rules::tests::{command, message, rule};
     use crate::rules::{Guards, Trigger};
     use crate::warudo::tests::{fake_warudo, listener};

@@ -74,8 +74,16 @@ pub(crate) async fn ws(
         debug!(?origin, ?refusal, "refused an API client");
         return (StatusCode::FORBIDDEN, refusal.message()).into_response();
     }
+    let Some(connected) = state.connections.try_api_client() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Too many JSON API clients connected.",
+        )
+            .into_response();
+    };
     let widget = is_own_page(origin.as_deref(), headers.get(header::HOST));
-    upgrade.on_upgrade(move |socket| client(socket, state, params.history, origin, widget))
+    upgrade
+        .on_upgrade(move |socket| client(socket, state, params.history, origin, widget, connected))
 }
 
 /// Whether the client is a page this server served itself: its origin is
@@ -99,9 +107,8 @@ async fn client(
     history: bool,
     origin: Option<String>,
     widget: bool,
+    _connected: crate::connections::Guard,
 ) {
-    // Counted as connected until this function returns, however it returns.
-    let _connected = state.connections.api_client();
     // `Some(guard)` for a widget: counted the same way, dropped with it.
     let _widget = widget.then(|| state.connections.widget());
     let (snapshot, mut rx) = state.hub.subscribe();
@@ -120,6 +127,10 @@ async fn client(
     let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
     // A clone of its own: `switched_off` marks values as seen on it.
     let mut api = state.api.clone();
+    // Pinned outside the loop: recreating `revoked()` inside `select!` would
+    // subscribe to the watch channel and lock `ApiOrigins` on every message.
+    let revoked = state.origins.revoked(origin.as_deref());
+    tokio::pin!(revoked);
 
     loop {
         // Wait for whichever happens first; the other branches are simply
@@ -162,7 +173,7 @@ async fn client(
                 break;
             }
             // Its site was removed from the allowed ones in the settings.
-            () = state.origins.revoked(origin.as_deref()) => {
+            () = &mut revoked => {
                 close(&mut socket, "site no longer allowed").await;
                 break;
             }

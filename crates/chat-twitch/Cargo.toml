@@ -8,8 +8,6 @@ license.workspace = true
 # rustls instead of the default native-tls: one TLS library for the whole
 # app, and no OpenSSL to link (or find on the user's machine) on Linux.
 twitch-irc = { version = "6.1.1", default-features = false, features = ["transport-tcp-rustls-webpki-roots"] }
-# Only to choose rustls's crypto backend, see `TwitchSource::run`.
-rustls.workspace = true
 chat-core = { path = "../chat-core" }
 tokio.workspace = true
 anyhow.workspace = true

@@ -460,6 +460,7 @@ pub fn is_valid_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        && !chat_core::fs::is_windows_reserved_name(name)
 }
 
 /// A widget name from a title (or a file name): lowercase ASCII letters and
@@ -635,7 +636,13 @@ pub(crate) async fn page(
         let name = name.clone();
         move || {
             let path = dir.join(file_name(&name));
-            path.is_file().then(|| load(&path, &name))
+            // Reject symlinks pointing outside the widgets folder.
+            let canon = match chat_core::fs::existing_inside_dir(&dir, &path) {
+                Ok(Some(canon)) if canon.is_file() => canon,
+                Ok(_) => return None,
+                Err(_) => return None,
+            };
+            Some(load(&canon, &name))
         }
     })
     .await;

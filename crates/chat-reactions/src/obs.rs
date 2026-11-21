@@ -31,9 +31,9 @@ use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
+use crate::OBS_PASSWORD;
 use crate::output::{CONNECT_TIMEOUT, Outcome, Waiting, pause, taking_jobs};
 use crate::reactor::OutputState;
-use crate::{OBS_PASSWORD, ObsSettings};
 
 /// OBS answers a request within milliseconds; much longer means the
 /// connection is dead without having said so.
@@ -103,14 +103,15 @@ impl Timed {
 /// asks for one (`None`: nowhere, e.g. tests). `wake` cuts a pause between
 /// connection attempts short (a new password was stored).
 pub(crate) async fn run(
-    settings: ObsSettings,
+    url: String,
+    queue_secs: Arc<std::sync::atomic::AtomicU32>,
     secrets: Option<SecretStore>,
     mut jobs: mpsc::Receiver<Job>,
     state: watch::Sender<OutputState>,
     wake: Arc<Notify>,
 ) {
-    let url = settings.url.as_str();
-    let mut waiting = Waiting::new("OBS", settings.queue_secs);
+    let url = url.as_str();
+    let mut waiting = Waiting::new("OBS", queue_secs);
     let mut timed = Timed::default();
     // Read from the store when OBS first asks for it, and again only after
     // OBS refused it: a keyring may ask the user to unlock it each time.
@@ -192,8 +193,10 @@ async fn session(
     if end(obs, timed, Instant::now()).await.is_err() {
         return Ended::Lost { unsent: retry };
     }
-    let backlog = retry.into_iter().chain(waiting.take_fresh(Instant::now()));
-    for mut job in backlog {
+    // Pop one job at a time: if OBS drops mid-backlog, remaining queued jobs
+    // stay in `waiting` instead of being discarded.
+    let mut retry = retry;
+    while let Some(mut job) = retry.take().or_else(|| waiting.next_fresh(Instant::now())) {
         if apply(obs, timed, &mut job).await.is_err() {
             return Ended::Lost { unsent: Some(job) };
         }
@@ -805,11 +808,14 @@ pub(crate) mod tests {
     fn start(url: &str, secrets: Option<SecretStore>) -> Output {
         let (jobs, rx) = mpsc::channel(8);
         let (state_tx, state) = watch::channel(OutputState::Connecting);
-        let settings = ObsSettings {
-            url: url.into(),
-            queue_secs: 0,
-        };
-        let task = tokio::spawn(run(settings, secrets, rx, state_tx, Arc::default()));
+        let task = tokio::spawn(run(
+            url.into(),
+            Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            secrets,
+            rx,
+            state_tx,
+            Arc::default(),
+        ));
         Output {
             jobs: Some(jobs),
             state,

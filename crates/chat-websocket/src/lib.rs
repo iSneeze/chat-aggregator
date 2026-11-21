@@ -141,8 +141,8 @@ where
                 info!("{service} closed the connection");
                 format!("connection closed by {service}")
             }
-            // A wrong token or name stays wrong.
-            Err(e) if e.is::<SetupError>() => return Err(e),
+            // A wrong token or name stays wrong (even if wrapped with context).
+            Err(e) if chat_core::has_error::<SetupError>(&e) => return Err(e),
             Err(e) => {
                 warn!("{service}: {e:#}");
                 format!("connection problem: {e:#}")

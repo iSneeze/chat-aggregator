@@ -26,7 +26,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "fs", "io-util", "signal"] }
 # `static`: `jiff::tz::get!` builds a time zone's rules into the binary at
 # compile time (the YouTube quota resets at midnight in Los Angeles), so the
 # lookup can't fail at runtime.
@@ -37,7 +37,7 @@ serde = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13", features = ["json", "gzip"] }
 anyhow = "1"
 serde_json = "1"
-minijinja = "2"
+minijinja = { version = "2", features = ["fuel"] }
 axum = { version = "0.8", features = ["ws"] }
 # WebSockets without TLS (the reactions' outputs, the server's and engine's
 # tests); chat-websocket adds rustls for wss://. The version axum uses

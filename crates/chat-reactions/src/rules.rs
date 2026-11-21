@@ -276,7 +276,9 @@ impl Rule {
     /// the app's form, so it says the same as `config.toml` would.
     pub fn check(&self) -> Result<(), &'static str> {
         match &self.trigger {
-            Trigger::Command { command } if command.split_whitespace().count() != 1 => {
+            Trigger::Command { command }
+                if command != command.trim() || command.split_whitespace().count() != 1 =>
+            {
                 return Err("a command is one word, e.g. \"!bonk\"");
             }
             Trigger::Keyword { keyword } if keyword.trim().is_empty() => {
@@ -349,7 +351,7 @@ impl Trigger {
                 .text
                 .split_whitespace()
                 .next()
-                .is_some_and(|first| first.to_lowercase() == command.to_lowercase()),
+                .is_some_and(|first| first.to_lowercase() == command.trim().to_lowercase()),
             Trigger::Keyword { keyword } => contains_words(&msg.text, keyword),
             Trigger::Emote { emote } => msg.emotes.iter().any(|e| e.code == *emote),
             Trigger::Paid { min_tier } => match &msg.kind {
@@ -1090,5 +1092,11 @@ pub(crate) mod tests {
         // Past everyone's cooldown, the next one clears the map.
         list.check(&by(message("!x"), "new", &[]), after(start, 11));
         assert_eq!(list.state["x"].users.len(), 1);
+    }
+
+    #[test]
+    fn untrimmed_command_is_rejected_by_check() {
+        let r = rule("bonk", command(" !bonk "), Guards::default());
+        assert!(r.check().is_err());
     }
 }

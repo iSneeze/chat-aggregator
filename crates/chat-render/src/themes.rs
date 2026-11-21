@@ -20,8 +20,10 @@ use anyhow::{Context, bail};
 
 use crate::{Builtin, CSS_FILE, DEFAULT_CSS, DEFAULT_MESSAGE_TEMPLATE, MESSAGE_FILE};
 
-/// The theme folders in `themes_dir`, sorted by name (case-insensitive).
-/// A missing folder simply means no themes yet.
+/// The valid theme folders in `themes_dir`, sorted by name (case-insensitive).
+/// Only folders whose names pass [`validate_name`] are included, so the app's
+/// theme picker and overlay `?theme=<name>` URLs always agree. A missing folder
+/// simply means no themes yet.
 pub fn list(themes_dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(themes_dir) else {
         return Vec::new();
@@ -30,7 +32,7 @@ pub fn list(themes_dir: &Path) -> Vec<String> {
         .filter_map(Result::ok)
         .filter(|entry| entry.path().is_dir())
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| !name.starts_with('.'))
+        .filter(|name| validate_name(name).is_ok() && name == name.trim())
         .collect();
     names.sort_by_key(|name| name.to_lowercase());
     names
@@ -43,7 +45,7 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("give the theme a name".into());
     }
-    if name.len() > 40 {
+    if name.chars().count() > 40 {
         return Err("that name is too long (40 characters at most)".into());
     }
     // The built-in themes' names: config.toml and overlay URLs use them.
@@ -55,6 +57,11 @@ pub fn validate_name(name: &str) -> Result<(), String> {
         .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
     {
         return Err("use letters, digits, spaces, - and _ only".into());
+    }
+    if chat_core::fs::is_windows_reserved_name(name) {
+        return Err(format!(
+            "\"{name}\" can't be a theme name (Windows keeps it for itself)"
+        ));
     }
     Ok(())
 }
@@ -141,5 +148,23 @@ mod tests {
         assert!(validate_name("../escape").is_err());
         assert!(validate_name("a/b").is_err());
         assert!(validate_name(&"x".repeat(41)).is_err());
+        assert!(
+            validate_name(&"ä".repeat(40)).is_ok(),
+            "limit is in characters, not bytes"
+        );
+        assert!(validate_name(&"ä".repeat(41)).is_err());
+        assert!(validate_name("CON").is_err());
+        assert!(validate_name("nul").is_err());
+        assert!(validate_name("COM1").is_err());
+    }
+
+    #[test]
+    fn list_skips_folders_with_invalid_names() {
+        let dir = temp("list-valid");
+        for name in ["Cozy", "my.theme", "default", "CON"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+        assert_eq!(list(&dir), ["Cozy"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

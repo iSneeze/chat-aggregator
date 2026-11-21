@@ -86,7 +86,7 @@ impl Session {
                 // A 4xx is about the key (RPlay answers 401
                 // LIVE_TOOL_UNAUTHORIZED to a wrong one); a 5xx is RPlay
                 // being down, worth retrying.
-                if let Some(http) = e.downcast_ref::<HttpError>()
+                if let Some(http) = chat_core::find_error::<HttpError>(&e)
                     && http.status.is_client_error()
                 {
                     warn!("RPlay refused the widget link: {http}");

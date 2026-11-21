@@ -108,13 +108,20 @@ pub(crate) fn wait_duration(now: Timestamp) -> Duration {
     Duration::try_from(reset.duration_since(now)).unwrap_or_default() + RESET_GRACE
 }
 
+/// Maximum chunk for a single `tokio::time::sleep` while waiting for the daily
+/// reset. `tokio::time::sleep` uses the monotonic clock, which pauses while a
+/// Linux machine is suspended; waking periodically to compare against the wall
+/// clock ensures we resume on time after laptop sleep.
+const SLEEP_CHUNK: Duration = Duration::from_secs(5 * 60);
+
 /// Reports and logs a clear message, then sleeps until the quota should be
 /// back.
 pub(crate) async fn wait_for_reset(detail: &str, activity: &Reporter) {
     let now = Timestamp::now();
     let wait = wait_duration(now);
+    let resume_at = now + wait;
     // The user's own clock time; `wait` is at most a day, far from overflow.
-    let resume = (now + wait).to_zoned(TimeZone::system());
+    let resume = resume_at.to_zoned(TimeZone::system());
     let resume = resume.strftime("%H:%M");
     activity.set(Activity::Blocked(format!(
         "YouTube quota used up for today; resuming at {resume}"
@@ -125,7 +132,22 @@ pub(crate) async fn wait_for_reset(detail: &str, activity: &Reporter) {
         wait.as_secs() / 3600,
         wait.as_secs() % 3600 / 60,
     );
-    tokio::time::sleep(wait).await;
+    sleep_until_wall_clock(resume_at).await;
+}
+
+/// Sleeps until wall-clock `target`, waking at most every [`SLEEP_CHUNK`] to
+/// account for system suspend pausing the monotonic clock.
+async fn sleep_until_wall_clock(target: Timestamp) {
+    loop {
+        let remaining = target.duration_since(Timestamp::now());
+        let Ok(remaining) = Duration::try_from(remaining) else {
+            return;
+        };
+        if remaining.is_zero() {
+            return;
+        }
+        tokio::time::sleep(remaining.min(SLEEP_CHUNK)).await;
+    }
 }
 
 #[cfg(test)]

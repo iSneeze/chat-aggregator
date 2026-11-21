@@ -10,12 +10,22 @@
 //! [`Theme`]), and [`ThemeSource::css`] the stylesheet, which is served as
 //! it is.
 
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Context;
 use chat_core::ChatMessage;
 use minijinja::Environment;
+
+/// Maximum template execution steps per message render. Generous enough for
+/// any real chat message template while stopping hostile or accidental infinite
+/// loops (e.g. `{% for i in range(10**9) %}`) from stalling a worker thread.
+const TEMPLATE_FUEL: u64 = 100_000;
+
+static BUILTIN_DEFAULT: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Default)));
+static BUILTIN_MINIMAL: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Minimal)));
 
 mod seed;
 pub mod themes;
@@ -127,12 +137,21 @@ impl ThemeSource {
         }
     }
 
+    /// Like [`load`](Self::load), but built-in themes return a cached shared
+    /// [`Arc<Theme>`] instead of re-parsing the template on every connection.
+    pub fn load_shared(&self) -> anyhow::Result<Arc<Theme>> {
+        match self {
+            Self::Builtin(builtin) => Ok(Theme::shared_builtin(*builtin)),
+            Self::Folder(dir) => Theme::load(dir).map(Arc::new),
+        }
+    }
+
     /// The theme's stylesheet. A folder without one gets the default
     /// built-in stylesheet.
     pub fn css(&self) -> anyhow::Result<String> {
         match self {
             Self::Builtin(builtin) => Ok(builtin.css().to_string()),
-            Self::Folder(dir) => read_or_default(&dir.join(CSS_FILE), DEFAULT_CSS),
+            Self::Folder(dir) => read_inside_or_default(dir, CSS_FILE, DEFAULT_CSS),
         }
     }
 }
@@ -156,12 +175,20 @@ impl Theme {
             .expect("built-in message template is valid")
     }
 
+    /// Cached built-in theme, compiled once per process.
+    pub fn shared_builtin(builtin: Builtin) -> Arc<Self> {
+        match builtin {
+            Builtin::Default => Arc::clone(&BUILTIN_DEFAULT),
+            Builtin::Minimal => Arc::clone(&BUILTIN_MINIMAL),
+        }
+    }
+
     /// Loads `message.html` from `dir`, or the built-in one if the folder
     /// has none. Syntax errors in the template are reported here, not at
     /// render time.
     pub fn load(dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let dir = dir.as_ref();
-        let message = read_or_default(&dir.join(MESSAGE_FILE), DEFAULT_MESSAGE_TEMPLATE)?;
+        let message = read_inside_or_default(dir, MESSAGE_FILE, DEFAULT_MESSAGE_TEMPLATE)?;
         Self::from_template(message)
             .with_context(|| format!("invalid {MESSAGE_FILE} in {}", dir.display()))
     }
@@ -172,6 +199,9 @@ impl Theme {
         // so `{% if %}` lines don't leave blank lines in the output.
         env.set_trim_blocks(true);
         env.set_lstrip_blocks(true);
+        // Cap execution steps so a hostile or buggy custom template can't
+        // hang the server's worker threads.
+        env.set_fuel(Some(TEMPLATE_FUEL));
         // `value | seed(n, salt)`: a stable number per chatter (seed.rs).
         env.add_filter("seed", seed::filter);
         // The `.html` name also switches on HTML auto-escaping.
@@ -192,12 +222,16 @@ impl Default for Theme {
     }
 }
 
-fn read_or_default(path: &Path, default: &str) -> anyhow::Result<String> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => Ok(s),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(default.to_string()),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
+/// Reads `dir/file_name` if it exists and stays inside `dir` (rejecting
+/// symlinks pointing outside the theme folder), otherwise returns `default`.
+fn read_inside_or_default(dir: &Path, file_name: &str, default: &str) -> anyhow::Result<String> {
+    let path = dir.join(file_name);
+    let Some(canon) = chat_core::fs::existing_inside_dir(dir, &path)
+        .with_context(|| format!("checking {}", path.display()))?
+    else {
+        return Ok(default.to_string());
+    };
+    std::fs::read_to_string(&canon).with_context(|| format!("reading {}", path.display()))
 }
 
 #[cfg(test)]
@@ -597,5 +631,30 @@ mod tests {
         assert!(ThemeSource::Folder(dir.clone()).css().is_err());
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn runaway_template_hits_fuel_limit() {
+        let theme =
+            Theme::from_template("{% for i in range(1000000) %}x{% endfor %}".into()).unwrap();
+        let msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
+        assert!(theme.render(&msg).is_err(), "fuel cap stops infinite loops");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_outside_theme_folder_is_refused() {
+        let root = std::env::temp_dir().join(format!("chat-render-sym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("cozy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside = root.join("config.toml");
+        std::fs::write(&outside, "secret = 1").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(MESSAGE_FILE)).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(CSS_FILE)).unwrap();
+
+        assert!(Theme::load(&dir).is_err());
+        assert!(ThemeSource::Folder(dir).css().is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

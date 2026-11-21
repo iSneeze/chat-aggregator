@@ -19,6 +19,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -34,9 +35,12 @@ use tracing::{debug, warn};
 
 use crate::{NO_SNIFF, ServerState};
 
-/// How many avatars are kept. At about 5 kB each, the worst case is around
-/// 25 MB; the oldest is dropped first.
+/// How many avatars are kept. At about 5 kB each, typical use is around 25 MB;
+/// [`MAX_CACHE_BYTES`] caps total memory even if every avatar is large.
 const CAPACITY: usize = 5000;
+
+/// Total cached image bytes kept in memory across all avatars (32 MiB).
+const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 /// How long an avatar is kept: as long as Google's own `cache-control`
 /// allows. Browsers get the same `max-age` from us.
@@ -79,11 +83,16 @@ struct Entries {
     /// move, so this is also the order of `Entry::added`.
     order: VecDeque<String>,
     cap: usize,
+    total_bytes: usize,
+    max_bytes: usize,
 }
 
 struct Entry {
     url: Url,
     added: Instant,
+    /// Size of the downloaded image once cached (0 until accounted in
+    /// `Entries::total_bytes`).
+    bytes: AtomicUsize,
     /// Filled by the first successful download. A failed one leaves it
     /// empty, so the next request tries again; requests arriving during a
     /// download wait for that one instead of starting their own.
@@ -148,6 +157,8 @@ impl Avatars {
                 by_key: HashMap::new(),
                 order: VecDeque::new(),
                 cap,
+                total_bytes: 0,
+                max_bytes: MAX_CACHE_BYTES,
             }),
             client,
             downloads: Semaphore::new(PARALLEL_DOWNLOADS),
@@ -196,12 +207,33 @@ impl Avatars {
         entries.by_key.get(key).cloned()
     }
 
-    async fn image(&self, entry: &Entry) -> Result<Image, FetchError> {
-        entry
+    async fn image(&self, key: &str, entry: &Entry) -> Result<Image, FetchError> {
+        let image = entry
             .image
             .get_or_try_init(|| self.download_patiently(&entry.url))
             .await
-            .cloned()
+            .cloned()?;
+        let len = image.bytes.len();
+        if len > 0
+            && entry
+                .bytes
+                .compare_exchange(0, len, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            self.record_bytes(key, len);
+        }
+        Ok(image)
+    }
+
+    /// Accounts for a newly downloaded avatar's bytes and evicts oldest entries
+    /// (other than `keep_key`) if the cache exceeds its byte budget.
+    fn record_bytes(&self, keep_key: &str, len: usize) {
+        let mut entries = self.lock_entries();
+        if !entries.by_key.contains_key(keep_key) {
+            return; // already evicted before the download finished
+        }
+        entries.total_bytes += len;
+        entries.evict_over_budget(keep_key);
     }
 
     /// Downloads `url`, waiting through rate-limit pauses for up to
@@ -216,9 +248,19 @@ impl Avatars {
                 tokio::time::sleep_until(until).await;
             }
             // Never closed, so `acquire` can't fail.
-            let _permit = self.downloads.acquire().await.expect("semaphore open");
+            let permit = self.downloads.acquire().await.expect("semaphore open");
+            // Another in-flight request may have triggered a cooldown while we
+            // waited for a permit: drop the permit before sleeping so we don't
+            // fire into an active pause.
+            if self.paused_until().is_some() {
+                drop(permit);
+                continue;
+            }
             match self.download(url).await {
-                Err(FetchError::RateLimited(retry_after)) => self.rate_limited(retry_after),
+                Err(FetchError::RateLimited(retry_after)) => {
+                    drop(permit);
+                    self.rate_limited(retry_after);
+                }
                 result => {
                     if result.is_ok() {
                         self.lock_cooldown().next_pause = FIRST_PAUSE;
@@ -274,9 +316,14 @@ impl Avatars {
     fn rate_limited(&self, retry_after: Option<Duration>) {
         let mut cooldown = self.lock_cooldown();
         let now = Instant::now();
-        let pause = retry_after.unwrap_or(cooldown.next_pause).min(MAX_PAUSE);
-        cooldown.next_pause = (cooldown.next_pause * 2).min(MAX_PAUSE);
         let was_paused = cooldown.until.is_some_and(|until| until > now);
+        let pause = retry_after.unwrap_or(cooldown.next_pause).min(MAX_PAUSE);
+        // Only escalate backoff once per pause window: up to `PARALLEL_DOWNLOADS`
+        // concurrent requests can hit 429 together, and they shouldn't jump
+        // straight from 2 s to 30 s in a single wave.
+        if !was_paused {
+            cooldown.next_pause = (cooldown.next_pause * 2).min(MAX_PAUSE);
+        }
         cooldown.until = Some(cooldown.until.map_or(now + pause, |u| u.max(now + pause)));
         if !was_paused {
             warn!(
@@ -302,6 +349,7 @@ impl Entries {
         let entry = Entry {
             url,
             added: Instant::now(),
+            bytes: AtomicUsize::new(0),
             image: OnceCell::new(),
         };
         self.by_key.insert(key.clone(), Arc::new(entry));
@@ -326,9 +374,22 @@ impl Entries {
         }
     }
 
+    fn evict_over_budget(&mut self, keep_key: &str) {
+        while self.total_bytes > self.max_bytes {
+            match self.order.front() {
+                Some(oldest) if oldest != keep_key => self.drop_oldest(),
+                _ => break,
+            }
+        }
+    }
+
     fn drop_oldest(&mut self) {
-        if let Some(key) = self.order.pop_front() {
-            self.by_key.remove(&key);
+        if let Some(key) = self.order.pop_front()
+            && let Some(entry) = self.by_key.remove(&key)
+        {
+            self.total_bytes = self
+                .total_bytes
+                .saturating_sub(entry.bytes.load(Ordering::Acquire));
         }
     }
 }
@@ -343,7 +404,7 @@ pub(crate) async fn avatar(
     let Some(entry) = state.avatars.entry(&key) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    match state.avatars.image(&entry).await {
+    match state.avatars.image(&key, &entry).await {
         Ok(image) => (
             [
                 (header::CONTENT_TYPE, image.content_type),
@@ -632,5 +693,17 @@ mod tests {
         assert!(avatars.entry(&key).is_some());
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(avatars.entry(&key).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_429s_only_escalate_backoff_once_per_window() {
+        let avatars = Avatars::new();
+        avatars.rate_limited(None);
+        let pause_after_first = avatars.lock_cooldown().next_pause;
+        // Three more concurrent 429s from the same wave shouldn't keep doubling.
+        for _ in 0..3 {
+            avatars.rate_limited(None);
+        }
+        assert_eq!(avatars.lock_cooldown().next_pause, pause_after_first);
     }
 }

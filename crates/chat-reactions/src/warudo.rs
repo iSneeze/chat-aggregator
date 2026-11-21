@@ -8,6 +8,7 @@
 //! there's nothing to lock.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Notify, mpsc, watch};
@@ -15,7 +16,6 @@ use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info};
 
-use crate::WarudoSettings;
 use crate::output::{CONNECT_TIMEOUT, Outcome, Waiting, pause, taking_jobs};
 use crate::reactor::OutputState;
 
@@ -31,13 +31,14 @@ fn payload(job: &Job) -> String {
 /// Runs until `jobs` closes (the reactor no longer needs Warudo). `wake`
 /// cuts a pause between connection attempts short.
 pub(crate) async fn run(
-    settings: WarudoSettings,
+    url: String,
+    queue_secs: Arc<AtomicU32>,
     mut jobs: mpsc::Receiver<Job>,
     state: watch::Sender<OutputState>,
     wake: Arc<Notify>,
 ) {
-    let url = settings.url.as_str();
-    let mut waiting = Waiting::new("Warudo", settings.queue_secs);
+    let url = url.as_str();
+    let mut waiting = Waiting::new("Warudo", queue_secs);
     // A job whose sending failed: the connection was dead without us
     // knowing. It gets one more try on a fresh connection, whatever the
     // queue setting: the output wasn't "down" when it fired.
@@ -109,8 +110,10 @@ async fn connected_loop(
     // the receiving one while sending on the other, and Rust allows only one
     // `&mut` to the whole socket at a time.
     let (mut send, mut receive) = socket.split();
-    let backlog = retry.into_iter().chain(waiting.take_fresh(Instant::now()));
-    for mut job in backlog {
+    // Pop one job at a time: if sending fails mid-backlog, the remaining fresh
+    // jobs stay in `waiting` for the next connection instead of being dropped.
+    let mut retry = retry;
+    while let Some(mut job) = retry.take().or_else(|| waiting.next_fresh(Instant::now())) {
         if let Err(e) = send.send(Message::text(payload(&job))).await {
             debug!("sending to Warudo failed: {e}");
             return Ended::Lost { unsent: Some(job) };
@@ -220,11 +223,13 @@ pub(crate) mod tests {
     fn start(url: &str, queue_secs: u32) -> Output {
         let (jobs, rx) = mpsc::channel(8);
         let (state_tx, state) = watch::channel(OutputState::Connecting);
-        let settings = WarudoSettings {
-            url: url.into(),
-            queue_secs,
-        };
-        let task = tokio::spawn(run(settings, rx, state_tx, Arc::default()));
+        let task = tokio::spawn(run(
+            url.into(),
+            Arc::new(AtomicU32::new(queue_secs)),
+            rx,
+            state_tx,
+            Arc::default(),
+        ));
         Output {
             jobs,
             state,

@@ -47,6 +47,20 @@ impl std::fmt::Display for SetupError {
 
 impl std::error::Error for SetupError {}
 
+/// Whether `err` or any error in its `std::error::Error::source()` chain is of
+/// type `T`. Unlike `err.is::<T>()` (which only checks the root error inside
+/// `anyhow::Error`, not nested `source()` errors), this walks the full chain.
+pub fn has_error<T: std::error::Error + Send + Sync + 'static>(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.is::<T>())
+}
+
+/// The first error of type `T` anywhere in `err`'s cause chain. Unlike
+/// `err.downcast_ref::<T>()`, this walks nested `std::error::Error::source()`
+/// causes too.
+pub fn find_error<T: std::error::Error + Send + Sync + 'static>(err: &anyhow::Error) -> Option<&T> {
+    err.chain().find_map(|cause| cause.downcast_ref::<T>())
+}
+
 // JSON format: every type below is part of the public WebSocket API
 // (docs/api.md). serde attributes decide the exact JSON; renaming a field or
 // variant here is a breaking change for API consumers, and the contract test
@@ -335,6 +349,27 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn error_chain_helpers_find_wrapped_errors() {
+        #[derive(Debug)]
+        struct Wrapper(SetupError);
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("outer wrapper")
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let wrapped = anyhow::Error::new(Wrapper(SetupError("bad token".into())));
+        assert!(!wrapped.is::<SetupError>());
+        assert!(has_error::<SetupError>(&wrapped));
+        assert_eq!(find_error::<SetupError>(&wrapped).unwrap().0, "bad token");
     }
 }
 

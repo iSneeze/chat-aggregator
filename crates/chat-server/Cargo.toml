@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 chat-core = { path = "../chat-core" }
 chat-render = { path = "../chat-render" }
+anyhow.workspace = true
 axum.workspace = true
 base64.workspace = true
 futures-util.workspace = true

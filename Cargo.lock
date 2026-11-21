@@ -1108,6 +1108,7 @@ dependencies = [
 name = "chat-server"
 version = "0.4.0"
 dependencies = [
+ "anyhow",
  "axum",
  "base64 0.22.1",
  "chat-core",
@@ -1163,7 +1164,6 @@ dependencies = [
  "anyhow",
  "chat-core",
  "jiff",
- "rustls",
  "tokio",
  "twitch-irc",
 ]
@@ -7754,7 +7754,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2 0.6.5",

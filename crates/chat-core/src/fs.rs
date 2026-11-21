@@ -63,6 +63,47 @@ fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether `name` is one of the reserved device names Windows keeps for itself
+/// (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, case-insensitive).
+/// Creating a file or folder with one of these fails or behaves strangely on
+/// Windows, so profile, theme and widget names refuse them on every OS.
+pub fn is_windows_reserved_name(name: &str) -> bool {
+    let upper = name.trim().to_ascii_uppercase();
+    ["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str())
+        || ["COM", "LPT"].iter().any(|prefix| {
+            upper
+                .strip_prefix(prefix)
+                .is_some_and(|n| n.len() == 1 && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+}
+
+/// Resolves `path` (which is expected to live inside `dir`) and verifies it
+/// does not escape `dir` through symlinks.
+///
+/// - `Ok(Some(canonical))` if `path` exists and resolves inside `dir`.
+/// - `Ok(None)` if `path` (or `dir`) does not exist.
+/// - `Err(PermissionDenied)` if `path` resolves outside `dir`.
+pub fn existing_inside_dir(dir: &Path, path: &Path) -> io::Result<Option<PathBuf>> {
+    let canon_dir = match std::fs::canonicalize(dir) {
+        Ok(canon) => canon,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let canon_path = match std::fs::canonicalize(path) {
+        Ok(canon) => canon,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if canon_path.starts_with(&canon_dir) {
+        Ok(Some(canon_path))
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} points outside {}", path.display(), dir.display()),
+        ))
+    }
+}
+
 /// Creates (or empties) `path`, readable only by the current user.
 fn open_private(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
@@ -140,5 +181,40 @@ mod tests {
         assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn windows_reserved_names_are_caught() {
+        for bad in ["CON", "nul", "PRN", "aux", "COM1", "lpt9", " NUL "] {
+            assert!(is_windows_reserved_name(bad), "{bad}");
+        }
+        for ok in ["cozy", "COM10", "console", "COM", "LPTa"] {
+            assert!(!is_windows_reserved_name(ok), "{ok}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_inside_dir_rejects_escaping_symlinks() {
+        let root = temp_dir("inside-dir");
+        let theme = root.join("theme");
+        std::fs::create_dir_all(&theme).unwrap();
+        let secret = root.join("config.toml");
+        std::fs::write(&secret, "secret").unwrap();
+        let inside = theme.join("ok.css");
+        std::fs::write(&inside, "body{}").unwrap();
+        let escape = theme.join("escape.css");
+        std::os::unix::fs::symlink(&secret, &escape).unwrap();
+
+        assert!(existing_inside_dir(&theme, &inside).unwrap().is_some());
+        assert!(
+            existing_inside_dir(&theme, &theme.join("missing.css"))
+                .unwrap()
+                .is_none()
+        );
+        let err = existing_inside_dir(&theme, &escape).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

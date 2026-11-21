@@ -179,7 +179,7 @@ impl ChatSource for YouTubeSource {
                 }
                 // Every call fails until the daily reset: wait for it
                 // instead of ending the source.
-                Err(e) if e.is::<QuotaExhausted>() => {
+                Err(e) if chat_core::has_error::<QuotaExhausted>(&e) => {
                     quota::wait_for_reset(&format!("{e:#}"), &activity).await;
                     continue 'outer;
                 }

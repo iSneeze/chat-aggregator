@@ -4,6 +4,8 @@
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -132,23 +134,30 @@ pub(crate) async fn pause(failures: u32, wake: &Notify) {
 pub(crate) struct Waiting<A> {
     jobs: VecDeque<Job<A>>,
     /// How long one may wait (`queue_secs`); zero: none waits at all.
-    max_age: Duration,
+    /// Shared with the reactor via an atomic so changing `queue_secs` in
+    /// settings updates the queue policy without tearing down a live output
+    /// connection.
+    queue_secs: Arc<AtomicU32>,
     /// The program's name, for the log.
     target: &'static str,
 }
 
 impl<A> Waiting<A> {
-    pub(crate) fn new(target: &'static str, queue_secs: u32) -> Self {
+    pub(crate) fn new(target: &'static str, queue_secs: Arc<AtomicU32>) -> Self {
         Self {
             jobs: VecDeque::new(),
-            max_age: Duration::from_secs(queue_secs.into()),
+            queue_secs,
             target,
         }
     }
 
+    fn max_age(&self) -> Duration {
+        Duration::from_secs(u64::from(self.queue_secs.load(Ordering::Relaxed)))
+    }
+
     pub(crate) fn push(&mut self, job: Job<A>) {
         let target = self.target;
-        if self.max_age.is_zero() {
+        if self.max_age().is_zero() {
             info!(rule = %job.rule, "{target} isn't connected: reaction dropped");
             return;
         }
@@ -169,8 +178,9 @@ impl<A> Waiting<A> {
     /// The oldest job that may still be sent at `now`; older ones are
     /// dropped on the way.
     pub(crate) fn next_fresh(&mut self, now: Instant) -> Option<Job<A>> {
+        let max_age = self.max_age();
         while let Some(job) = self.jobs.pop_front() {
-            if now.duration_since(job.fired_at) <= self.max_age {
+            if now.duration_since(job.fired_at) <= max_age {
                 return Some(job);
             }
             info!(rule = %job.rule, "reaction waited too long for {}: dropped", self.target);
@@ -179,6 +189,7 @@ impl<A> Waiting<A> {
     }
 
     /// Everything that may still be sent at `now`, oldest first.
+    #[cfg(test)]
     pub(crate) fn take_fresh(&mut self, now: Instant) -> Vec<Job<A>> {
         std::iter::from_fn(|| self.next_fresh(now)).collect()
     }
@@ -200,10 +211,14 @@ mod tests {
             .collect()
     }
 
+    fn waiting(queue_secs: u32) -> Waiting<String> {
+        Waiting::new("test", Arc::new(AtomicU32::new(queue_secs)))
+    }
+
     #[test]
     fn without_a_queue_nothing_waits() {
         let now = Instant::now();
-        let mut waiting = Waiting::new("test", 0);
+        let mut waiting = waiting(0);
         waiting.push(job("a", now));
         assert!(actions(&mut waiting, now).is_empty());
     }
@@ -211,7 +226,7 @@ mod tests {
     #[test]
     fn the_queue_keeps_fresh_ones_in_order_and_drops_old_ones() {
         let start = Instant::now();
-        let mut waiting = Waiting::new("test", 30);
+        let mut waiting = waiting(30);
         waiting.push(job("old", start));
         waiting.push(job("newer", start + Duration::from_secs(20)));
         waiting.push(job("newest", start + Duration::from_secs(25)));
@@ -239,7 +254,7 @@ mod tests {
     #[test]
     fn the_queue_is_bounded() {
         let now = Instant::now();
-        let mut waiting = Waiting::new("test", 30);
+        let mut waiting = waiting(30);
         for n in 0..MAX_WAITING + 3 {
             waiting.push(job(&n.to_string(), now));
         }

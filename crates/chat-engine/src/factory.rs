@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use chat_core::demo::DemoSource;
@@ -86,13 +87,24 @@ impl ChatSource for SourceSpec {
     }
 }
 
+struct LoginCache {
+    /// Generation at which these providers were loaded. When `login_epoch`
+    /// advances (`forget_login`), stale entries are discarded even if a
+    /// `login()` call was mid-flight while `forget_login` ran.
+    epoch: u64,
+    providers: HashMap<Account, TokenProvider>,
+}
+
 pub(crate) struct Production {
     // Changed at runtime by `set_youtube`, read by every build. A std Mutex:
     // only ever held for a quick clone, never across an `.await`.
     youtube: std::sync::Mutex<YouTubeSettings>,
+    /// Bumped by `forget_login` (lock-free), so an invalidation is never lost
+    /// even if a build is loading from the keyring at the same moment.
+    login_epoch: AtomicU64,
     /// One login per account, shared by all YouTube sources that use it:
     /// one cached access token, refreshed once, instead of one per source.
-    logins: tokio::sync::Mutex<HashMap<Account, TokenProvider>>,
+    logins: tokio::sync::Mutex<LoginCache>,
     /// See `EngineConfig::emoji_cache_dir`.
     emoji_cache: Option<PathBuf>,
     /// See `EngineConfig::secrets`: the YouTube logins, the tip services'
@@ -117,7 +129,11 @@ impl Production {
     ) -> Self {
         Self {
             youtube: std::sync::Mutex::new(youtube),
-            logins: tokio::sync::Mutex::new(HashMap::new()),
+            login_epoch: AtomicU64::new(0),
+            logins: tokio::sync::Mutex::new(LoginCache {
+                epoch: 0,
+                providers: HashMap::new(),
+            }),
             emoji_cache,
             secrets,
             tips,
@@ -171,6 +187,7 @@ impl Production {
     /// login of older versions (until the app has moved it, see
     /// `chat_engine::youtube`; headless mode never does).
     async fn login(&self, account: Option<&str>) -> anyhow::Result<TokenProvider> {
+        let epoch = self.login_epoch.load(Ordering::Acquire);
         let settings = self.youtube();
         let account = match settings.account_for(account) {
             Some(listed) => Account::Channel(listed.channel_id.clone()),
@@ -178,9 +195,15 @@ impl Production {
             // hand); if not, that's what the error says.
             None => account.map_or(Account::Legacy, |id| Account::Channel(id.into())),
         };
-        let mut cached = self.logins.lock().await;
-        if let Some(provider) = cached.get(&account) {
-            return Ok(provider.clone());
+        {
+            let mut cached = self.logins.lock().await;
+            if cached.epoch != epoch {
+                cached.providers.clear();
+                cached.epoch = epoch;
+            }
+            if let Some(provider) = cached.providers.get(&account) {
+                return Ok(provider.clone());
+            }
         }
         // The missing client first: that's what the streamer can fix.
         let app = settings.oauth_app()?;
@@ -191,7 +214,17 @@ impl Production {
         };
         let app = app.with_store(secrets.clone());
         let provider = TokenProvider::from_store(app, account.clone()).await?;
-        cached.insert(account, provider.clone());
+        let mut cached = self.logins.lock().await;
+        // Only cache if `forget_login` didn't advance the epoch while we were
+        // loading from the keyring.
+        let current = self.login_epoch.load(Ordering::Acquire);
+        if current == epoch {
+            if cached.epoch != epoch {
+                cached.providers.clear();
+                cached.epoch = epoch;
+            }
+            cached.providers.insert(account, provider.clone());
+        }
         Ok(provider)
     }
 }
@@ -270,10 +303,13 @@ impl SourceFactory for Production {
     }
 
     fn forget_login(&self) {
-        // `try_lock`: this is sync; if a build holds the lock right now, it's
-        // loading a fresh login anyway.
+        let next = self.login_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        // Best-effort eager clear so dropped `TokenProvider`s free memory right
+        // away; even if `try_lock` misses, the bumped epoch guarantees the next
+        // `login()` clears stale entries and won't cache an in-flight load.
         if let Ok(mut cached) = self.logins.try_lock() {
-            cached.clear();
+            cached.providers.clear();
+            cached.epoch = next;
         }
     }
 

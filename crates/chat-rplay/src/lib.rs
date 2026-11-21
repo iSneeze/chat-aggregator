@@ -344,7 +344,7 @@ async fn wait_for_chat(
         play.log();
         let refused = match session.chat_token(http).await {
             Ok(token) => return Ok(Some((play, token))),
-            Err(e) => match e.downcast_ref::<HttpError>() {
+            Err(e) => match chat_core::find_error::<HttpError>(&e) {
                 Some(refusal) if refusal.status == StatusCode::FORBIDDEN && !play.is_live() => {
                     refusal.to_string()
                 }
