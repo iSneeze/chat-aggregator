@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 chat-core = { path = "../chat-core" }
 anyhow.workspace = true
+futures-util.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 # The sources reach tungstenite through this crate's re-export, so they all

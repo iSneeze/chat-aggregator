@@ -8,10 +8,10 @@
 //! need, skipping a message that lacks it, keeps one odd frame from failing
 //! the whole connection.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use chat_core::tiers::coins_tier;
-use chat_core::{Author, ChatEvent, ChatMessage, ChatPlatform, MessageKind};
+use chat_core::{Author, BoundedIdSet, ChatEvent, ChatMessage, ChatPlatform, MessageKind};
 use serde_json::{Map, Value};
 use tracing::{info, warn};
 
@@ -61,8 +61,27 @@ pub(crate) struct Pending {
     /// The sender hid their name (shown anonymously if the channel has
     /// anonymous chat on).
     hidden: bool,
+    /// Whether the channel had anonymous chat on when this donation arrived.
+    anonymous_chat: bool,
+    /// Fallback nickname from an earlier chat message, if known.
+    fallback_name: Option<String>,
     /// Complete but for the author's name.
     message: ChatMessage,
+}
+
+impl Pending {
+    /// Fills in the donation's sender name: `looked_up` from RPlay if that
+    /// worked, else `fallback_name` from an earlier chat message.
+    pub(crate) fn finish(self, looked_up: Option<String>) -> ChatMessage {
+        let nickname = looked_up.or(self.fallback_name).unwrap_or_default();
+        let mut message = self.message;
+        message.author.name = if self.anonymous_chat && self.hidden {
+            anonymous_name(&nickname)
+        } else {
+            nickname
+        };
+        message
+    }
 }
 
 /// What converting needs to know about the channel's chat, kept up to date
@@ -83,7 +102,7 @@ pub(crate) struct Room {
     /// Nicknames from the messages so far, by user id: a donation from
     /// someone who chatted needs no lookup.
     names: HashMap<String, String>,
-    seen: Seen,
+    seen: BoundedIdSet,
     /// The kinds of frames logged already (see [`Room::first_time`]).
     logged: HashSet<String>,
 }
@@ -103,7 +122,7 @@ impl Room {
             anonymous_chat,
             emotes,
             names: HashMap::new(),
-            seen: Seen::default(),
+            seen: BoundedIdSet::new(SEEN_MAX),
             logged: HashSet::new(),
         }
     }
@@ -135,17 +154,6 @@ impl Room {
                 Frame::Ignored
             }
         }
-    }
-
-    /// Fills in the donation's sender name: `looked_up` from RPlay, if that
-    /// worked, else what an earlier message of theirs said.
-    pub(crate) fn finish(&self, pending: Pending, looked_up: Option<String>) -> ChatMessage {
-        let nickname = looked_up
-            .or_else(|| self.names.get(&pending.user_id).cloned())
-            .unwrap_or_default();
-        let mut message = pending.message;
-        message.author.name = self.shown_name(&nickname, pending.hidden);
-        message
     }
 
     fn message(&mut self, frame: &Value) -> Frame {
@@ -330,11 +338,13 @@ impl Room {
         let pending = Pending {
             user_id: user_id.to_owned(),
             hidden,
+            anonymous_chat: self.anonymous_chat,
+            fallback_name: self.names.get(user_id).cloned(),
             message,
         };
         // Someone who chatted already: no lookup needed.
-        if self.names.contains_key(user_id) {
-            Frame::Event(ChatEvent::Message(self.finish(pending, None)))
+        if pending.fallback_name.is_some() {
+            Frame::Event(ChatEvent::Message(pending.finish(None)))
         } else {
             Frame::Donation(pending)
         }
@@ -440,30 +450,6 @@ impl Room {
     /// first time only, and only up to [`LOGGED_MAX`] kinds.
     fn first_time(&mut self, kind: &str) -> bool {
         self.logged.len() < LOGGED_MAX && self.logged.insert(kind.to_owned())
-    }
-}
-
-/// The ids seen lately, oldest first.
-#[derive(Default)]
-struct Seen {
-    order: VecDeque<String>,
-    ids: HashSet<String>,
-}
-
-impl Seen {
-    /// `false` if the id was seen already.
-    fn insert(&mut self, id: &str) -> bool {
-        if self.ids.contains(id) {
-            return false;
-        }
-        if self.order.len() == SEEN_MAX
-            && let Some(oldest) = self.order.pop_front()
-        {
-            self.ids.remove(&oldest);
-        }
-        self.order.push_back(id.to_owned());
-        self.ids.insert(id.to_owned());
-        true
     }
 }
 
@@ -737,7 +723,7 @@ mod tests {
             panic!("expected a donation to finish");
         };
         assert_eq!(pending.user_id, VIEWER);
-        let m = room.finish(pending, Some("Viewer42".into()));
+        let m = pending.finish(Some("Viewer42".into()));
         assert_eq!(m.id, "Eventdonation");
         assert_eq!(m.author.name, "Viewer42");
         assert_eq!(m.text, "a *** joke");
@@ -772,7 +758,7 @@ mod tests {
         let Frame::Donation(pending) = room.decode(&frame) else {
             panic!("expected a donation to finish");
         };
-        let m = room.finish(pending, None);
+        let m = pending.finish(None);
         assert_eq!(m.author.name, "");
         // A donor who hid their profile shows no photo either.
         assert_eq!(m.author.avatar_url, None);

@@ -18,21 +18,17 @@
 
 mod frames;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use chat_core::tiers::TipSettings;
 use chat_core::{Activity, ChatEvent, ChatSource, Reporter, SetupError};
-use chat_websocket::Ended;
 use chat_websocket::tungstenite::{self, Message};
-use futures_util::{SinkExt, StreamExt};
+use chat_websocket::{Ended, Event, Keepalive, Session};
 use tokio::sync::{mpsc, watch};
-use tokio::time::Instant;
 use tracing::{Instrument, debug, info, info_span};
 
 use frames::Frame;
 
 const SOCKETS: &str = "wss://sockets.streamlabs.com/socket.io/";
-/// The longest label: it's shown in the app's source list.
-const LABEL_MAX: usize = 40;
 
 pub struct StreamlabsSource {
     /// The streamer's name for this account (passed [`normalize_label`]):
@@ -50,17 +46,7 @@ pub struct StreamlabsSource {
 /// The label as typed, checked: it names the account in the app and keys
 /// its token, so an empty one (or one with line breaks) won't do.
 pub fn normalize_label(input: &str) -> Result<String, String> {
-    let label = input.trim();
-    if label.is_empty() {
-        return Err("give this Streamlabs account a name, like \"Main\"".into());
-    }
-    if label.chars().count() > LABEL_MAX {
-        return Err(format!("the name is longer than {LABEL_MAX} characters"));
-    }
-    if label.chars().any(char::is_control) {
-        return Err("the name can't contain line breaks or tabs".into());
-    }
-    Ok(label.to_owned())
+    chat_core::normalize_source_label(input, "Streamlabs account")
 }
 
 /// Streamlabs refused the token (its reason in `why`): only the user can
@@ -103,7 +89,7 @@ impl StreamlabsSource {
         // The errors end up in the log and the app: only the status of a
         // refused handshake, and any other error without the token, in
         // case it quotes the address.
-        let mut socket = match chat_websocket::connect(url).await {
+        let socket = match chat_websocket::connect(url).await {
             Ok(socket) => socket,
             Err(tungstenite::Error::Http(response)) => {
                 bail!(
@@ -118,64 +104,47 @@ impl StreamlabsSource {
         };
         debug!("connected to Streamlabs");
 
-        let mut ping_interval = frames::PING_INTERVAL;
-        let mut ping_timeout = frames::PING_TIMEOUT;
-        let mut next_ping = Instant::now() + ping_interval;
-        let mut heard = Instant::now();
+        // Engine.IO 3: the client pings (`2`), the server answers `3`.
+        // Without our pings, Streamlabs drops the connection.
+        let mut session = Session::new(
+            "Streamlabs",
+            socket,
+            Keepalive::with_ping(
+                frames::PING_INTERVAL,
+                Message::text("2"),
+                frames::PING_INTERVAL + frames::PING_TIMEOUT,
+            ),
+        );
         loop {
-            tokio::select! {
-                frame = socket.next() => {
-                    let Some(frame) = frame else {
-                        return Ok(Ended::Closed);
-                    };
-                    heard = Instant::now();
-                    match frame.context("reading from Streamlabs")? {
-                        Message::Text(text) => match frames::decode(&text) {
-                            Frame::Open { interval, timeout } => {
-                                ping_interval = interval;
-                                ping_timeout = timeout;
-                                next_ping = Instant::now() + ping_interval;
-                            }
-                            Frame::Connected => {
-                                info!("reading Streamlabs donations");
-                                activity.set(Activity::Receiving);
-                            }
-                            Frame::Refused(why) => return Err(token_refused(&why).into()),
-                            Frame::Donations(donations) => {
-                                for tip in donations {
-                                    // The tip settings as they are now. In a
-                                    // statement of its own: `borrow`'s read
-                                    // lock ends with it, and a lock held
-                                    // across the `.await` below would make
-                                    // the task unsendable between threads.
-                                    let message = tip.into_message(&self.tips.borrow());
-                                    if tx.send(ChatEvent::Message(message)).await.is_err() {
-                                        return Ok(Ended::ReceiverGone);
-                                    }
-                                }
-                            }
-                            Frame::Ignored => {}
-                        },
-                        Message::Close(close) => {
-                            debug!(?close, "Streamlabs said goodbye");
-                            return Ok(Ended::Closed);
-                        }
-                        // WebSocket-level keep-alive, answered by tungstenite.
-                        _ => {}
+            match session.next().await? {
+                Event::Text(text) => match frames::decode(&text) {
+                    Frame::Open { interval, timeout } => {
+                        session.set_timing(interval, interval + timeout);
                     }
+                    Frame::Connected => {
+                        info!("reading Streamlabs donations");
+                        activity.set(Activity::Receiving);
+                    }
+                    Frame::Refused(why) => return Err(token_refused(&why).into()),
+                    Frame::Donations(donations) => {
+                        for tip in donations {
+                            // The tip settings as they are now. In a statement
+                            // of its own: `borrow`'s read lock ends with it,
+                            // and a lock held across the `.await` below would
+                            // make the task unsendable between threads.
+                            let message = tip.into_message(&self.tips.borrow());
+                            if tx.send(ChatEvent::Message(message)).await.is_err() {
+                                return Ok(Ended::ReceiverGone);
+                            }
+                        }
+                    }
+                    Frame::Ignored => {}
+                },
+                Event::Closed(close) => {
+                    debug!(?close, "Streamlabs said goodbye");
+                    return Ok(Ended::Closed);
                 }
-                () = tokio::time::sleep_until(next_ping) => {
-                    // Engine.IO 3: the client pings, the server answers `3`.
-                    // Without our pings, Streamlabs drops the connection.
-                    socket.send(Message::text("2")).await.context("pinging Streamlabs")?;
-                    next_ping = Instant::now() + ping_interval;
-                }
-                () = tokio::time::sleep_until(heard + ping_interval + ping_timeout) => {
-                    bail!(
-                        "no answer from Streamlabs for {} s",
-                        (ping_interval + ping_timeout).as_secs()
-                    );
-                }
+                Event::Renew => unreachable!("Streamlabs sessions do not schedule renewal"),
             }
         }
     }
@@ -212,7 +181,12 @@ mod tests {
     fn labels_are_trimmed_and_checked() {
         assert_eq!(normalize_label("  Corpo \n").unwrap(), "Corpo");
         assert_eq!(normalize_label("インディー").unwrap(), "インディー");
-        for input in ["", "   ", "two\nlines", &"x".repeat(LABEL_MAX + 1)] {
+        for input in [
+            "",
+            "   ",
+            "two\nlines",
+            &"x".repeat(chat_core::MAX_SOURCE_LABEL_LEN + 1),
+        ] {
             assert!(normalize_label(input).is_err(), "{input:?}");
         }
     }

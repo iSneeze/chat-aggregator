@@ -7,7 +7,7 @@
 //! and a flood of `!bonk`s doesn't pile up into a burst that all fires once
 //! Warudo is back.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -162,8 +162,7 @@ pub async fn run(
                 reactor.request(request);
             }
             Some((rule, outcome)) = reactor.results.recv() => reactor.record(rule, outcome),
-            () = output_changed(&mut reactor.warudo) => {}
-            () = output_changed(&mut reactor.obs) => {}
+            () = any_output_changed(&mut reactor.outputs) => {}
             () = shutdown.cancelled() => break,
         }
         if publish {
@@ -183,9 +182,9 @@ struct Reactor {
     /// Read when a message arrives rather than in the loop's `select!`:
     /// only amount rules need it, and only then.
     tips: watch::Receiver<TipSettings>,
-    /// Each running while some enabled rule sends to it.
-    warudo: Option<Output<warudo::Job>>,
-    obs: Option<Output<obs::Job>>,
+    /// Active outputs, keyed by `Target` (in canonical `Ord` order). Each
+    /// runs only while at least one enabled rule targets it.
+    outputs: BTreeMap<Target, Output>,
     /// Outputs that are finishing up after being disabled or having their URL
     /// changed (e.g. OBS switching off active timed effects). Kept here instead
     /// of detaching so shutdown still waits for them.
@@ -199,16 +198,22 @@ struct Reactor {
     problems: HashMap<String, String>,
 }
 
+/// Typed job sender for a running output task.
+enum OutputSender {
+    Warudo(mpsc::Sender<warudo::Job>),
+    Obs(mpsc::Sender<obs::Job>),
+}
+
 /// A running output task and the reactor's ends of its channels.
 ///
 /// Stopping closes the jobs channel, and the task ends by itself: after
 /// switching back what it switched on. That's why the task isn't aborted.
-struct Output<J> {
+struct Output {
     /// The address it was started with: a different URL starts a fresh
     /// connection, whereas changing `queue_secs` updates in place.
     url: String,
     queue_secs: Arc<AtomicU32>,
-    jobs: mpsc::Sender<J>,
+    sender: OutputSender,
     state: watch::Receiver<OutputState>,
     /// Cuts its pause between connection attempts short.
     wake: Arc<Notify>,
@@ -227,8 +232,7 @@ impl Reactor {
             rules: Rules::new(&settings),
             settings,
             tips,
-            warudo: None,
-            obs: None,
+            outputs: BTreeMap::new(),
             retiring: JoinSet::new(),
             secrets,
             status,
@@ -267,36 +271,51 @@ impl Reactor {
     fn start_outputs(&mut self) {
         // Reap any previously retired outputs that already finished.
         while self.retiring.try_join_next().is_some() {}
-        let needed = |target| {
-            self.rules
+        for target in Target::ALL {
+            let needed = self
+                .rules
                 .rules()
                 .iter()
-                .any(|rule| rule.enabled && rule.action.target() == target)
-        };
-        let (needs_warudo, needs_obs) = (needed(Target::Warudo), needed(Target::Obs));
-        let warudo = self.settings.warudo.clone();
-        keep(
-            &mut self.warudo,
-            &mut self.retiring,
-            needs_warudo,
-            warudo.url,
-            warudo.queue_secs,
-            Target::Warudo,
-            warudo::run,
-        );
-        let secrets = self.secrets.clone();
-        let obs = self.settings.obs.clone();
-        keep(
-            &mut self.obs,
-            &mut self.retiring,
-            needs_obs,
-            obs.url,
-            obs.queue_secs,
-            Target::Obs,
-            |url, queue_secs, jobs, state, wake| {
-                obs::run(url, queue_secs, secrets, jobs, state, wake)
-            },
-        );
+                .any(|rule| rule.enabled && rule.action.target() == target);
+            if !needed {
+                if let Some(old) = self.outputs.remove(&target) {
+                    self.retiring.spawn(old.stop());
+                }
+                continue;
+            }
+            let (url, queue_secs) = match target {
+                Target::Warudo => (
+                    self.settings.warudo.url.clone(),
+                    self.settings.warudo.queue_secs,
+                ),
+                Target::Obs => (self.settings.obs.url.clone(), self.settings.obs.queue_secs),
+            };
+            if let Some(running) = self.outputs.get(&target)
+                && running.url == url
+            {
+                running.queue_secs.store(queue_secs, Ordering::Relaxed);
+                continue;
+            }
+            if let Some(old) = self.outputs.remove(&target) {
+                self.retiring.spawn(old.stop());
+            }
+            info!("starting the {} output", target.label());
+            let output = match target {
+                Target::Warudo => Output::start(url, queue_secs, OutputSender::Warudo, warudo::run),
+                Target::Obs => {
+                    let secrets = self.secrets.clone();
+                    Output::start(
+                        url,
+                        queue_secs,
+                        OutputSender::Obs,
+                        |url, queue_secs, jobs, state, wake| {
+                            obs::run(url, queue_secs, secrets, jobs, state, wake)
+                        },
+                    )
+                }
+            };
+            self.outputs.insert(target, output);
+        }
     }
 
     /// Evaluates `msg` against the rules and dispatches any fires. Returns
@@ -323,17 +342,13 @@ impl Reactor {
         match request {
             ReactionRequest::Test { rule, reply } => self.test(rule, reply),
             ReactionRequest::Retry(target) => {
-                let wake = |output: Option<&Arc<Notify>>| {
-                    if let Some(wake) = output {
-                        wake.notify_one();
-                    }
-                };
                 // Only one that isn't connected is pausing; for a connected
                 // one the wake would only shorten the next outage's first
                 // (one second) pause.
-                match target {
-                    Target::Warudo => wake(waking(&self.warudo)),
-                    Target::Obs => wake(waking(&self.obs)),
+                if let Some(output) = self.outputs.get(&target)
+                    && *output.state.borrow() != OutputState::Connected
+                {
+                    output.wake.notify_one();
                 }
             }
         }
@@ -375,50 +390,66 @@ impl Reactor {
         now: Instant,
         reply: Option<oneshot::Sender<Outcome>>,
     ) -> Result<(), String> {
-        let seconds = |secs: Option<u32>| secs.map(|s| Duration::from_secs(s.into()));
-        let test = reply.is_some();
+        let target = action.target();
+        let label = target.label();
+        // No output: no enabled rule sends there (only a test gets here then).
+        let Some(output) = self.outputs.get(&target) else {
+            return Err(format!("{label} isn't connected"));
+        };
+        if reply.is_some() && *output.state.borrow() != OutputState::Connected {
+            return Err(format!("{label} isn't connected"));
+        }
         let report = Report {
             results: Some(self.results_tx.clone()),
             reply,
         };
-        match action {
-            Action::Warudo { action } => send(
-                &self.warudo,
-                Target::Warudo,
+        let seconds = |secs: Option<u32>| secs.map(|s| Duration::from_secs(s.into()));
+        match (&output.sender, action) {
+            (OutputSender::Warudo(tx), Action::Warudo { action }) => {
+                try_send(tx, label, rule, action, now, report)
+            }
+            (
+                OutputSender::Obs(tx),
+                Action::ObsFilter {
+                    source,
+                    filter,
+                    seconds: secs,
+                },
+            ) => try_send(
+                tx,
+                label,
                 rule,
-                action,
-                now,
-                report,
-                test,
-            ),
-            Action::ObsFilter {
-                source,
-                filter,
-                seconds: secs,
-            } => {
-                let effect = Effect::Filter {
+                Effect::Filter {
                     source,
                     filter,
                     duration: seconds(secs),
-                };
-                send(&self.obs, Target::Obs, rule, effect, now, report, test)
-            }
-            Action::ObsSource {
-                scene,
-                source,
-                seconds: secs,
-            } => {
-                let effect = Effect::Show {
+                },
+                now,
+                report,
+            ),
+            (
+                OutputSender::Obs(tx),
+                Action::ObsSource {
+                    scene,
+                    source,
+                    seconds: secs,
+                },
+            ) => try_send(
+                tx,
+                label,
+                rule,
+                Effect::Show {
                     scene,
                     source,
                     duration: seconds(secs),
-                };
-                send(&self.obs, Target::Obs, rule, effect, now, report, test)
+                },
+                now,
+                report,
+            ),
+            (OutputSender::Obs(tx), Action::ObsMedia { source }) => {
+                try_send(tx, label, rule, Effect::Restart { source }, now, report)
             }
-            Action::ObsMedia { source } => {
-                let effect = Effect::Restart { source };
-                send(&self.obs, Target::Obs, rule, effect, now, report, test)
-            }
+            _ => unreachable!("output sender always matches action.target()"),
         }
     }
 
@@ -440,13 +471,11 @@ impl Reactor {
 
     /// Sends the status if it changed.
     fn publish(&self) {
-        let mut outputs = Vec::new();
-        if let Some(output) = &self.warudo {
-            outputs.push(output.status(Target::Warudo));
-        }
-        if let Some(output) = &self.obs {
-            outputs.push(output.status(Target::Obs));
-        }
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|(&target, output)| output.status(target))
+            .collect();
         let rules = self
             .rules
             .counts()
@@ -467,105 +496,43 @@ impl Reactor {
         });
     }
 
-    /// Stops the outputs (active and retiring), all at once, and waits until
-    /// they're done.
+    /// Stops all active and retiring outputs concurrently, waiting for each up
+    /// to `STOP_TIMEOUT`.
     async fn stop(mut self) {
-        let warudo = async {
-            if let Some(output) = self.warudo {
-                output.stop().await;
-            }
-        };
-        let obs = async {
-            if let Some(output) = self.obs {
-                output.stop().await;
-            }
-        };
-        let retiring = async { while self.retiring.join_next().await.is_some() {} };
-        tokio::join!(warudo, obs, retiring);
-    }
-}
-
-/// Starts, restarts or retires one output to match what the rules need.
-/// Changing `queue_secs` updates the running output in place without dropping
-/// its WebSocket connection; changing `url` retires the old output cleanly
-/// (tracked in `retiring`) and starts a fresh one.
-fn keep<J, F, Fut>(
-    slot: &mut Option<Output<J>>,
-    retiring: &mut JoinSet<()>,
-    needed: bool,
-    url: String,
-    queue_secs: u32,
-    target: Target,
-    run: F,
-) where
-    J: Send + 'static,
-    F: FnOnce(
-        String,
-        Arc<AtomicU32>,
-        mpsc::Receiver<J>,
-        watch::Sender<OutputState>,
-        Arc<Notify>,
-    ) -> Fut,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    if !needed {
-        if let Some(old) = slot.take() {
-            retiring.spawn(old.stop());
+        for output in self.outputs.into_values() {
+            self.retiring.spawn(output.stop());
         }
-        return;
+        while self.retiring.join_next().await.is_some() {}
     }
-    if let Some(running) = slot.as_ref()
-        && running.url == url
-    {
-        running.queue_secs.store(queue_secs, Ordering::Relaxed);
-        return;
-    }
-    if let Some(old) = slot.take() {
-        retiring.spawn(old.stop());
-    }
-    info!("starting the {} output", target.label());
-    *slot = Some(Output::start(url, queue_secs, run));
 }
 
-/// Hands a rule's action to its output; `Err` says why it can't go.
-fn send<A>(
-    output: &Option<Output<Job<A>>>,
-    target: Target,
+fn try_send<A>(
+    tx: &mpsc::Sender<Job<A>>,
+    label: &str,
     rule: String,
     action: A,
     now: Instant,
     report: Report,
-    test: bool,
 ) -> Result<(), String> {
-    let label = target.label();
-    // No output: no enabled rule sends there (only a test gets here then).
-    let Some(output) = output else {
-        return Err(format!("{label} isn't connected"));
-    };
-    if test && *output.state.borrow() != OutputState::Connected {
-        return Err(format!("{label} isn't connected"));
-    }
     let mut job = Job::new(rule, action, now);
     job.report = report;
-    output.jobs.try_send(job).map_err(|e| match e {
+    tx.try_send(job).map_err(|e| match e {
         mpsc::error::TrySendError::Full(_) => format!("{label} isn't keeping up"),
         mpsc::error::TrySendError::Closed(_) => format!("{label} isn't connected"),
     })
 }
 
-/// An output's wake, if it runs and isn't connected.
-fn waking<J>(output: &Option<Output<J>>) -> Option<&Arc<Notify>> {
-    output
-        .as_ref()
-        .filter(|output| *output.state.borrow() != OutputState::Connected)
-        .map(|output| &output.wake)
-}
-
-impl<J: Send + 'static> Output<J> {
+impl Output {
     /// Spawns `run(url, queue_secs, jobs, state, wake)`: the same shape for
     /// every output, so starting one is the same code.
-    fn start<F, Fut>(url: String, queue_secs: u32, run: F) -> Self
+    fn start<J, F, Fut>(
+        url: String,
+        queue_secs: u32,
+        wrap: impl FnOnce(mpsc::Sender<J>) -> OutputSender,
+        run: F,
+    ) -> Self
     where
+        J: Send + 'static,
         F: FnOnce(
             String,
             Arc<AtomicU32>,
@@ -591,7 +558,7 @@ impl<J: Send + 'static> Output<J> {
         Self {
             url,
             queue_secs,
-            jobs,
+            sender: wrap(jobs),
             state,
             wake,
             task,
@@ -608,8 +575,10 @@ impl<J: Send + 'static> Output<J> {
     /// Closes the jobs channel and waits for the task to finish, at most
     /// `STOP_TIMEOUT`; then it's aborted.
     async fn stop(self) {
-        let Output { jobs, mut task, .. } = self;
-        drop(jobs);
+        let Output {
+            sender, mut task, ..
+        } = self;
+        drop(sender);
         if tokio::time::timeout(STOP_TIMEOUT, &mut task).await.is_err() {
             warn!("an output didn't stop in time");
             task.abort();
@@ -617,19 +586,24 @@ impl<J: Send + 'static> Output<J> {
     }
 }
 
-/// Finishes when the output's connection state changes; never without an
-/// output. (A function rather than inline in `select!`, which needs one
-/// future per branch, also when there's nothing to wait for.)
-async fn output_changed<J>(output: &mut Option<Output<J>>) {
-    match output {
-        Some(output) => {
-            if output.state.changed().await.is_err() {
-                // The task ended (it doesn't by itself): don't spin.
-                std::future::pending::<()>().await;
-            }
-        }
-        None => std::future::pending().await,
+/// Finishes when any active output's connection state changes; never without
+/// any active output.
+async fn any_output_changed(outputs: &mut BTreeMap<Target, Output>) {
+    if outputs.is_empty() {
+        std::future::pending::<()>().await;
     }
+    let waits: Vec<_> = outputs
+        .values_mut()
+        .map(|output| {
+            Box::pin(async move {
+                if output.state.changed().await.is_err() {
+                    // The task ended (it doesn't by itself): don't spin.
+                    std::future::pending::<()>().await;
+                }
+            })
+        })
+        .collect();
+    let _ = futures_util::future::select_all(waits).await;
 }
 
 #[cfg(test)]

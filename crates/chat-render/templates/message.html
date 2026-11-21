@@ -9,7 +9,8 @@
                  | "membership" | "gift" | "notice"
     paid         true for donation and special
     author       .id  .name  .color (e.g. "#7f5af0", or none)
-                 .badges (list of names)  .avatar_url (or none)
+                 .badges (list of names)  .role ("everyone" | "subscriber" |
+                 "vip" | "moderator" | "broadcaster")  .avatar_url (or none)
     timestamp    ISO 8601, for machines;  time: "18:40", for humans
     body         list of parts, each either
                    { type: "text",  text }  or

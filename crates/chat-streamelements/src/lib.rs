@@ -21,10 +21,8 @@ use anyhow::{Context, bail};
 use chat_core::tiers::TipSettings;
 use chat_core::{Activity, ChatEvent, ChatSource, Reporter, SetupError};
 use chat_websocket::tungstenite::Message;
-use chat_websocket::{Ended, Socket};
-use futures_util::{SinkExt, StreamExt};
+use chat_websocket::{Ended, Event, Keepalive, Session};
 use tokio::sync::{mpsc, watch};
-use tokio::time::Instant;
 use tracing::{debug, info};
 
 use frames::Frame;
@@ -85,69 +83,57 @@ impl StreamElementsSource {
         tx: &mpsc::Sender<ChatEvent>,
         activity: &Reporter,
     ) -> anyhow::Result<Ended> {
-        let mut socket = chat_websocket::connect(ASTRO)
+        let socket = chat_websocket::connect(ASTRO)
             .await
             .context("connecting to StreamElements")?;
         debug!("connected to StreamElements");
 
-        let mut heard = Instant::now();
+        let mut session = Session::new(
+            "StreamElements",
+            socket,
+            Keepalive::server_pings(SILENT_FOR),
+        );
         loop {
-            tokio::select! {
-                frame = socket.next() => {
-                    let Some(frame) = frame else {
-                        return Ok(Ended::Closed);
-                    };
-                    heard = Instant::now();
-                    match frame.context("reading from StreamElements")? {
-                        Message::Text(text) => match frames::decode(&text) {
-                            // Astro's own examples wait for the welcome
-                            // before subscribing.
-                            Frame::Welcome => self.subscribe(&mut socket).await?,
-                            Frame::Subscribed => {
-                                info!("reading StreamElements tips");
-                                activity.set(Activity::Receiving);
-                            }
-                            Frame::Refused(why) => return Err(token_refused(&why).into()),
-                            Frame::Failed(why) => {
-                                bail!("StreamElements refused the subscription: {why}")
-                            }
-                            Frame::Tip(tip) => {
-                                // The tip settings as they are now. In a
-                                // statement of its own: `borrow`'s read lock
-                                // ends with it, and a lock held across the
-                                // `.await` below would make the task
-                                // unsendable between threads.
-                                let message = tip.into_message(&self.tips.borrow());
-                                if tx.send(ChatEvent::Message(message)).await.is_err() {
-                                    return Ok(Ended::ReceiverGone);
-                                }
-                            }
-                            // Astro's reconnect token would resume the old
-                            // session, but a fresh one is simpler and only
-                            // a moment away. A tip in that moment is
-                            // missed, as with any reconnect.
-                            Frame::Reconnect => return Ok(Ended::Restarting),
-                            Frame::Ignored => {}
-                        },
-                        Message::Close(close) => {
-                            debug!(?close, "StreamElements said goodbye");
-                            return Ok(Ended::Closed);
-                        }
-                        // WebSocket-level keep-alive: tungstenite answers
-                        // Astro's pings by itself.
-                        _ => {}
+            match session.next().await? {
+                Event::Text(text) => match frames::decode(&text) {
+                    // Astro's own examples wait for the welcome before subscribing.
+                    Frame::Welcome => self.subscribe(&mut session).await?,
+                    Frame::Subscribed => {
+                        info!("reading StreamElements tips");
+                        activity.set(Activity::Receiving);
                     }
+                    Frame::Refused(why) => return Err(token_refused(&why).into()),
+                    Frame::Failed(why) => {
+                        bail!("StreamElements refused the subscription: {why}")
+                    }
+                    Frame::Tip(tip) => {
+                        // The tip settings as they are now. In a statement of
+                        // its own: `borrow`'s read lock ends with it, and a
+                        // lock held across the `.await` below would make the
+                        // task unsendable between threads.
+                        let message = tip.into_message(&self.tips.borrow());
+                        if tx.send(ChatEvent::Message(message)).await.is_err() {
+                            return Ok(Ended::ReceiverGone);
+                        }
+                    }
+                    // Astro's reconnect token would resume the old session,
+                    // but a fresh one is simpler and only a moment away. A
+                    // tip in that moment is missed, as with any reconnect.
+                    Frame::Reconnect => return Ok(Ended::Restarting),
+                    Frame::Ignored => {}
+                },
+                Event::Closed(close) => {
+                    debug!(?close, "StreamElements said goodbye");
+                    return Ok(Ended::Closed);
                 }
-                () = tokio::time::sleep_until(heard + SILENT_FOR) => {
-                    bail!("no sign of life from StreamElements for {} s", SILENT_FOR.as_secs());
-                }
+                Event::Renew => unreachable!("StreamElements sessions do not schedule renewal"),
             }
         }
     }
 
-    async fn subscribe(&self, socket: &mut Socket) -> anyhow::Result<()> {
+    async fn subscribe(&self, session: &mut Session) -> anyhow::Result<()> {
         let command = frames::subscribe(&self.account, &self.token);
-        socket
+        session
             .send(Message::text(command))
             .await
             .context("subscribing to StreamElements' activity feed")

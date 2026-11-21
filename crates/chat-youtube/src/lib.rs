@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
-use chat_core::{Activity, ChatEvent, ChatSource, Reporter};
+use chat_core::{Activity, BoundedIdSet, ChatEvent, ChatSource, Reporter};
 use tokio::sync::mpsc;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
@@ -42,7 +42,6 @@ mod quota;
 mod resolver;
 pub mod web_chat;
 
-use convert::BoundedIdSet;
 use emoji_cache::{BroadcastEmojis, EmojiCache};
 use oauth::TokenProvider;
 use pb::LiveChatMessageListRequest;

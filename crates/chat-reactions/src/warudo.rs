@@ -14,9 +14,11 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, info};
+use tracing::debug;
 
-use crate::output::{CONNECT_TIMEOUT, Outcome, Waiting, pause, taking_jobs};
+use crate::output::{
+    Outcome, OutputBackend, PING_EVERY, SEND_TIMEOUT, SessionEnded, Waiting, run_loop,
+};
 use crate::reactor::OutputState;
 
 /// A fired rule's Warudo action name.
@@ -28,70 +30,42 @@ fn payload(job: &Job) -> String {
     serde_json::json!({ "action": job.action }).to_string()
 }
 
+struct WarudoBackend;
+
+impl OutputBackend for WarudoBackend {
+    type Action = String;
+    type Conn = Socket;
+
+    const TARGET: &'static str = "Warudo";
+
+    async fn connect(&mut self, url: &str) -> Result<Self::Conn, String> {
+        let (socket, _response) = tokio_tungstenite::connect_async(url)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(socket)
+    }
+
+    async fn session(
+        &mut self,
+        conn: Self::Conn,
+        jobs: &mut mpsc::Receiver<Job>,
+        waiting: &mut Waiting<String>,
+        retry: Option<Job>,
+    ) -> SessionEnded<String> {
+        connected_loop(conn, jobs, waiting, retry).await
+    }
+}
+
 /// Runs until `jobs` closes (the reactor no longer needs Warudo). `wake`
 /// cuts a pause between connection attempts short.
 pub(crate) async fn run(
     url: String,
     queue_secs: Arc<AtomicU32>,
-    mut jobs: mpsc::Receiver<Job>,
+    jobs: mpsc::Receiver<Job>,
     state: watch::Sender<OutputState>,
     wake: Arc<Notify>,
 ) {
-    let url = url.as_str();
-    let mut waiting = Waiting::new("Warudo", queue_secs);
-    // A job whose sending failed: the connection was dead without us
-    // knowing. It gets one more try on a fresh connection, whatever the
-    // queue setting: the output wasn't "down" when it fired.
-    let mut retry: Option<Job> = None;
-    let mut failures = 0;
-    loop {
-        let connect = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url));
-        let Some(connected) = taking_jobs(connect, &mut jobs, &mut waiting).await else {
-            return;
-        };
-        let socket = match connected {
-            Ok(Ok((socket, _response))) => socket,
-            failed => {
-                let error = match failed {
-                    Ok(Err(e)) => e.to_string(),
-                    _ => "no answer".to_string(),
-                };
-                // Logged once per outage, not every few seconds while
-                // Warudo isn't running.
-                if failures == 0 {
-                    info!("can't reach Warudo at {url}: {error}");
-                }
-                failures += 1;
-                waiting.extend(retry.take());
-                state.send_replace(OutputState::Retrying { error });
-                let pause = pause(failures, &wake);
-                if taking_jobs(pause, &mut jobs, &mut waiting).await.is_none() {
-                    return;
-                }
-                continue;
-            }
-        };
-        info!("connected to Warudo at {url}");
-        failures = 0;
-        state.send_replace(OutputState::Connected);
-        match connected_loop(socket, &mut jobs, &mut waiting, retry.take()).await {
-            Ended::Unneeded => return,
-            Ended::Lost { unsent } => {
-                // Straight back to connecting: Warudo might just close each
-                // connection after a message (not known yet, see WARUDO.md).
-                debug!("Warudo connection closed");
-                retry = unsent;
-                state.send_replace(OutputState::Connecting);
-            }
-        }
-    }
-}
-
-enum Ended {
-    /// The reactor dropped its sender: Warudo isn't needed any more.
-    Unneeded,
-    /// The connection is gone; `unsent` failed on its way out.
-    Lost { unsent: Option<Job> },
+    run_loop(WarudoBackend, url, queue_secs, jobs, state, wake).await;
 }
 
 type Socket =
@@ -105,7 +79,7 @@ async fn connected_loop(
     jobs: &mut mpsc::Receiver<Job>,
     waiting: &mut Waiting<String>,
     retry: Option<Job>,
-) -> Ended {
+) -> SessionEnded<String> {
     // Split into a sending and a receiving half: the loop below waits on
     // the receiving one while sending on the other, and Rust allows only one
     // `&mut` to the whole socket at a time.
@@ -114,33 +88,56 @@ async fn connected_loop(
     // jobs stay in `waiting` for the next connection instead of being dropped.
     let mut retry = retry;
     while let Some(mut job) = retry.take().or_else(|| waiting.next_fresh(Instant::now())) {
-        if let Err(e) = send.send(Message::text(payload(&job))).await {
-            debug!("sending to Warudo failed: {e}");
-            return Ended::Lost { unsent: Some(job) };
+        if !send_with_timeout(&mut send, Message::text(payload(&job))).await {
+            return SessionEnded::Lost { unsent: Some(job) };
         }
         job.finish("Warudo", Outcome::Sent);
     }
+    let mut next_ping = Instant::now() + PING_EVERY;
     loop {
         tokio::select! {
             job = jobs.recv() => {
                 let Some(mut job) = job else {
-                    let _ = send.close().await;
-                    return Ended::Unneeded;
+                    let _ = tokio::time::timeout(SEND_TIMEOUT, send.close()).await;
+                    return SessionEnded::Unneeded;
                 };
-                if let Err(e) = send.send(Message::text(payload(&job))).await {
-                    debug!("sending to Warudo failed: {e}");
-                    return Ended::Lost { unsent: Some(job) };
+                if !send_with_timeout(&mut send, Message::text(payload(&job))).await {
+                    return SessionEnded::Lost { unsent: Some(job) };
                 }
                 job.finish("Warudo", Outcome::Sent);
+                next_ping = Instant::now() + PING_EVERY;
+            }
+            () = tokio::time::sleep_until(next_ping) => {
+                if !send_with_timeout(&mut send, Message::Ping(Default::default())).await {
+                    return SessionEnded::Lost { unsent: None };
+                }
+                next_ping = Instant::now() + PING_EVERY;
             }
             frame = receive.next() => match frame {
                 // Warudo isn't known to say anything; whatever it is, it's
                 // ignored. (Pings are answered by tungstenite itself.)
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
-                    return Ended::Lost { unsent: None };
+                    return SessionEnded::Lost { unsent: None };
                 }
                 Some(Ok(_)) => {}
             },
+        }
+    }
+}
+
+async fn send_with_timeout(
+    send: &mut futures_util::stream::SplitSink<Socket, Message>,
+    msg: Message,
+) -> bool {
+    match tokio::time::timeout(SEND_TIMEOUT, send.send(msg)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            debug!("sending to Warudo failed: {e}");
+            false
+        }
+        Err(_) => {
+            debug!("sending to Warudo timed out");
+            false
         }
     }
 }

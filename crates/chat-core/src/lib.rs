@@ -1,3 +1,4 @@
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use tokio::sync::mpsc;
 
@@ -152,6 +153,16 @@ pub enum ChatPlatform {
 }
 
 impl ChatPlatform {
+    /// Every platform in canonical UI display order.
+    pub const ALL: [ChatPlatform; 6] = [
+        ChatPlatform::Twitch,
+        ChatPlatform::YouTube,
+        ChatPlatform::Picarto,
+        ChatPlatform::Rplay,
+        ChatPlatform::StreamElements,
+        ChatPlatform::Streamlabs,
+    ];
+
     /// Lowercase name, as used in HTML classes and event payloads.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -163,6 +174,142 @@ impl ChatPlatform {
             ChatPlatform::Streamlabs => "streamlabs",
         }
     }
+
+    /// Human-readable display name for UI labels and status lines.
+    pub fn label(self) -> &'static str {
+        match self {
+            ChatPlatform::Twitch => "Twitch",
+            ChatPlatform::YouTube => "YouTube",
+            ChatPlatform::Rplay => "RPlay",
+            ChatPlatform::Picarto => "Picarto",
+            ChatPlatform::StreamElements => "StreamElements",
+            ChatPlatform::Streamlabs => "Streamlabs",
+        }
+    }
+}
+
+/// A chatter's standing, across platforms. Ordered from least to most, so a
+/// check like "at least moderator" is simply `role >= min_role`
+/// (`PartialOrd`/`Ord` derived on an enum compare by declaration order).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    #[default]
+    Everyone,
+    /// Twitch subscriber (or founder), YouTube member, Picarto subscriber.
+    #[serde(alias = "member")]
+    Subscriber,
+    /// Twitch VIP.
+    Vip,
+    Moderator,
+    /// The channel's owner.
+    Broadcaster,
+}
+
+impl Role {
+    /// The highest role among the author's badges. Platforms name them
+    /// differently (Twitch `broadcaster`/`lead_moderator`, YouTube
+    /// `owner`/`member`), so badges are mapped here in one canonical place.
+    pub fn of(msg: &ChatMessage) -> Role {
+        msg.author
+            .badges
+            .iter()
+            .map(|badge| match badge.as_str() {
+                "broadcaster" | "owner" => Role::Broadcaster,
+                "moderator" | "lead_moderator" => Role::Moderator,
+                "vip" => Role::Vip,
+                "subscriber" | "founder" | "member" => Role::Subscriber,
+                _ => Role::Everyone,
+            })
+            .max()
+            .unwrap_or(Role::Everyone)
+    }
+
+    /// Lowercase name, matching serde's `snake_case` representation and
+    /// overlay templates' `author.role` variable.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Everyone => "everyone",
+            Role::Subscriber => "subscriber",
+            Role::Vip => "vip",
+            Role::Moderator => "moderator",
+            Role::Broadcaster => "broadcaster",
+        }
+    }
+}
+
+/// Keeps recently seen message/event IDs in FIFO insertion order, bounded in
+/// size so a 24/7 source never grows memory without bound.
+pub struct BoundedIdSet {
+    seen: HashSet<String>,
+    order: VecDeque<String>,
+    cap: usize,
+}
+
+impl BoundedIdSet {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            cap,
+        }
+    }
+
+    /// Inserts `id` and returns `true` if it had not been seen recently.
+    /// Avoids allocating a `String` when `id` is already present.
+    pub fn insert(&mut self, id: impl AsRef<str> + Into<String>) -> bool {
+        if self.seen.contains(id.as_ref()) {
+            return false;
+        }
+        if self.cap == 0 {
+            return true;
+        }
+        if self.order.len() == self.cap
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.seen.remove(&oldest);
+        }
+        let owned = id.into();
+        self.seen.insert(owned.clone());
+        self.order.push_back(owned);
+        true
+    }
+}
+
+/// Maximum length (in Unicode scalar values) of a user-assigned source label
+/// (used by sources whose credentials don't carry a channel name, e.g. RPlay
+/// and Streamlabs).
+pub const MAX_SOURCE_LABEL_LEN: usize = 40;
+
+/// Trims and validates a user-assigned source label. `kind` describes the
+/// source in the empty-input hint (e.g. `"RPlay channel"`,
+/// `"Streamlabs account"`).
+pub fn normalize_source_label(input: &str, kind: &str) -> Result<String, String> {
+    let label = input.trim();
+    if label.is_empty() {
+        return Err(format!("give this {kind} a name, like \"Main\""));
+    }
+    if label.chars().count() > MAX_SOURCE_LABEL_LEN {
+        return Err(format!(
+            "the name is longer than {MAX_SOURCE_LABEL_LEN} characters"
+        ));
+    }
+    if label.chars().any(char::is_control) {
+        return Err("the name can't contain line breaks or tabs".into());
+    }
+    Ok(label.to_owned())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -370,6 +517,45 @@ mod tests {
         assert!(!wrapped.is::<SetupError>());
         assert!(has_error::<SetupError>(&wrapped));
         assert_eq!(find_error::<SetupError>(&wrapped).unwrap().0, "bad token");
+    }
+
+    #[test]
+    fn bounded_id_set_evicts_oldest() {
+        let mut set = BoundedIdSet::new(2);
+        assert!(set.insert("a"));
+        assert!(!set.insert("a"));
+        assert!(set.insert("b"));
+        assert!(set.insert("c")); // evicts "a"
+        assert!(!set.insert("b"));
+        assert!(set.insert("a")); // evicted, so new again
+    }
+
+    #[test]
+    fn role_of_picks_highest_badge_across_platforms() {
+        let mut msg = demo::sample_messages(0).remove(0);
+        msg.author.badges = vec![];
+        assert_eq!(Role::of(&msg), Role::Everyone);
+        msg.author.badges = vec!["member".into()];
+        assert_eq!(Role::of(&msg), Role::Subscriber);
+        msg.author.badges = vec!["subscriber".into(), "vip".into()];
+        assert_eq!(Role::of(&msg), Role::Vip);
+        msg.author.badges = vec!["lead_moderator".into()];
+        assert_eq!(Role::of(&msg), Role::Moderator);
+        msg.author.badges = vec!["moderator".into(), "owner".into()];
+        assert_eq!(Role::of(&msg), Role::Broadcaster);
+    }
+
+    #[test]
+    fn source_label_validation() {
+        assert_eq!(
+            normalize_source_label("  Main \n", "RPlay channel").unwrap(),
+            "Main"
+        );
+        assert!(normalize_source_label("   ", "RPlay channel").is_err());
+        assert!(normalize_source_label("a\nb", "RPlay channel").is_err());
+        assert!(
+            normalize_source_label(&"x".repeat(MAX_SOURCE_LABEL_LEN + 1), "RPlay channel").is_err()
+        );
     }
 }
 

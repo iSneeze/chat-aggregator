@@ -32,11 +32,10 @@ mod frames;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use chat_core::{Activity, ChatEvent, ChatSource, Reporter};
-use chat_websocket::Ended;
 use chat_websocket::tungstenite::Message;
-use futures_util::{SinkExt, StreamExt};
+use chat_websocket::{Ended, Event, Keepalive, Session as WsSession};
 use reqwest::{StatusCode, Url};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -44,7 +43,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use api::{ChatToken, HttpError, Play, Session};
 use avatars::Avatars;
-use frames::{Frame, Room};
+use frames::{Frame, Pending, Room};
 
 /// How often to ping the chat server. IVS answers every ping, so anything
 /// heard proves the connection alive.
@@ -61,8 +60,10 @@ const RENEW_AFTER: Duration = Duration::from_secs(55 * 60);
 /// How often to ask again while RPlay gives no chat token because the
 /// channel is offline.
 const OFFLINE_RETRY: Duration = Duration::from_secs(60);
-/// The longest name for a source: it's shown in the app's source list.
-const LABEL_MAX: usize = 40;
+/// Bounded buffer between the WebSocket reader and the ordered enrichment
+/// task (avatar HEAD checks + donation nickname lookups), so slow HTTP checks
+/// never starve WebSocket keepalive pings.
+const ENRICH_BUFFER: usize = 64;
 /// Where to tell the streamer to find a widget link.
 const WHERE_THE_LINK_IS: &str = "in your RPlay studio, open Dashboard Widget, click Generate \
      Widget URLs, then Show next to Stream Chat, and copy that link";
@@ -105,17 +106,7 @@ impl RplaySource {
 /// The label as typed, checked: it names the channel in the app and keys
 /// its toolkey, so an empty one (or one with line breaks) won't do.
 pub fn normalize_label(input: &str) -> Result<String, String> {
-    let label = input.trim();
-    if label.is_empty() {
-        return Err("give this RPlay channel a name, like \"Main\"".into());
-    }
-    if label.chars().count() > LABEL_MAX {
-        return Err(format!("the name is longer than {LABEL_MAX} characters"));
-    }
-    if label.chars().any(char::is_control) {
-        return Err("the name can't contain line breaks or tabs".into());
-    }
-    Ok(label.to_owned())
+    chat_core::normalize_source_label(input, "RPlay channel")
 }
 
 /// The toolkey from what the streamer pasted: a widget link from their
@@ -198,7 +189,7 @@ impl RplaySource {
             .filter(|url| !url.is_empty())
             .context("RPlay names no chat server for the channel")?;
         let emotes = api::emotes(http, &session.channel).await;
-        let mut socket = api::open(chat_url, &token.token).await?;
+        let socket = api::open(chat_url, &token.token).await?;
         info!(
             session_ends = ?token.session_ends(),
             can_send = ?token.can_send_message,
@@ -223,102 +214,116 @@ impl RplaySource {
             play.use_anonymous_chat.unwrap_or(false),
             emotes,
         );
-        let mut avatars = Avatars::default();
-        let renew_at = renewal_time(&token);
-        let mut pings = tokio::time::interval(PING_EVERY);
-        // An interval's first tick is immediate; the first ping is due later.
-        pings.tick().await;
-        let mut heard = Instant::now();
+        // Avatar HEAD checks and donation nickname lookups run in a single
+        // ordered worker task so chat stays in order while slow HTTP requests
+        // never block WebSocket keepalive pings or frame reads.
+        let (enrich_tx, enrich_rx) = mpsc::channel(ENRICH_BUFFER);
+        tokio::spawn(enrich_worker(http.clone(), tx.clone(), enrich_rx));
+        let (emotes_tx, mut emotes_rx) = mpsc::channel(2);
+
+        let mut ws = WsSession::new(
+            "RPlay's chat",
+            socket,
+            Keepalive::with_ping(PING_EVERY, Message::Ping(Default::default()), SILENT_FOR)
+                .renew_at(renewal_time(&token)),
+        );
         loop {
-            // Waits for whichever comes first. The losing branches' futures
-            // are dropped before the winner's code runs, so the ping branch
-            // may use `socket` although `socket.next()` borrowed it.
-            tokio::select! {
-                frame = socket.next() => {
-                    let Some(frame) = frame else {
-                        return Ok(Ended::Closed);
-                    };
-                    heard = Instant::now();
-                    let frame = frame.context("reading from RPlay's chat")?;
+            match ws.next().await? {
+                Event::Text(text) => {
                     #[cfg(feature = "capture")]
                     if let Some(capture) = &mut capture {
-                        match &frame {
-                            Message::Text(text) => capture.frame(text),
-                            Message::Close(close) => capture.note(&format!("closed: {close:?}")),
-                            _ => {}
-                        }
+                        capture.frame(&text);
                     }
-                    let text = match frame {
-                        Message::Text(text) => text,
-                        Message::Close(close) => {
-                            // How IVS ends a session (expired, kicked, ...):
-                            // for the log, to learn from.
-                            match close {
-                                Some(close) => info!(
-                                    code = u16::from(close.code),
-                                    reason = close.reason.as_str(),
-                                    "RPlay's chat server closed the connection"
-                                ),
-                                None => info!("RPlay's chat server closed the connection"),
-                            }
-                            return Ok(Ended::Closed);
-                        }
-                        // Pongs (the answers to our pings) and pings, which
-                        // tungstenite answers by itself.
-                        _ => continue,
-                    };
-                    let mut event = match room.decode(&text) {
-                        Frame::Event(event) => event,
-                        Frame::Donation(pending) => {
-                            let name = api::nickname(http, &pending.user_id).await;
-                            ChatEvent::Message(room.finish(pending, name))
-                        }
+                    while let Ok(fresh) = emotes_rx.try_recv() {
+                        room.emotes = fresh;
+                    }
+                    let item = match room.decode(&text) {
+                        Frame::Event(event) => Enrich::Event(event),
+                        Frame::Donation(pending) => Enrich::Donation(pending),
                         Frame::Live(live) => {
                             info!(live, "RPlay stream state changed");
                             activity.set(live_state(live));
                             continue;
                         }
                         Frame::ReloadEmotes => {
-                            room.emotes = api::emotes(http, &session.channel).await;
+                            let http = http.clone();
+                            let channel = session.channel.clone();
+                            let emotes_tx = emotes_tx.clone();
+                            tokio::spawn(async move {
+                                let fresh = api::emotes(&http, &channel).await;
+                                let _ = emotes_tx.send(fresh).await;
+                            });
                             continue;
                         }
-                        Frame::UserChanged(user_id) => {
-                            avatars.forget(&user_id);
-                            continue;
-                        }
+                        Frame::UserChanged(user_id) => Enrich::ForgetAvatar(user_id),
                         Frame::Error(error) => {
                             warn!("RPlay's chat server reported an error: {error}");
                             continue;
                         }
                         Frame::Ignored => continue,
                     };
-                    // Only photos that exist: a new sender's message waits
-                    // for the check, so chat stays in order.
-                    if let ChatEvent::Message(message) = &mut event {
-                        avatars.verify(http, message).await;
-                    }
-                    if tx.send(event).await.is_err() {
+                    if enrich_tx.send(item).await.is_err() {
                         return Ok(Ended::ReceiverGone);
                     }
                 }
-                _ = pings.tick() => {
-                    socket
-                        .send(Message::Ping(Default::default()))
-                        .await
-                        .context("sending a ping to RPlay's chat")?;
+                Event::Closed(close) => {
+                    #[cfg(feature = "capture")]
+                    if let Some(capture) = &mut capture {
+                        capture.note(&format!("closed: {close:?}"));
+                    }
+                    // How IVS ends a session (expired, kicked, ...): for the
+                    // log, to learn from.
+                    match close {
+                        Some(close) => info!(
+                            code = u16::from(close.code),
+                            reason = close.reason.as_str(),
+                            "RPlay's chat server closed the connection"
+                        ),
+                        None => info!("RPlay's chat server closed the connection"),
+                    }
+                    return Ok(Ended::Closed);
                 }
-                // A deadline, not a timeout around `next()`: the ping branch
-                // wins every 30 s, which would restart a timeout each time.
-                () = tokio::time::sleep_until(heard + SILENT_FOR) => {
-                    bail!("no answer from RPlay's chat for {} s", SILENT_FOR.as_secs());
-                }
-                () = tokio::time::sleep_until(renew_at) => {
+                Event::Renew => {
                     debug!("RPlay's chat session is about to end");
-                    // A polite goodbye; the connection is dropped either way.
-                    let _ = socket.close(None).await;
                     return Ok(Ended::Renewing);
                 }
             }
+        }
+    }
+}
+
+enum Enrich {
+    Event(ChatEvent),
+    Donation(Pending),
+    ForgetAvatar(String),
+}
+
+/// Enriches decoded RPlay frames in arrival order (donation nickname lookup
+/// and avatar verification) and forwards them to the hub, off the WebSocket
+/// keepalive loop.
+async fn enrich_worker(
+    http: reqwest::Client,
+    tx: mpsc::Sender<ChatEvent>,
+    mut rx: mpsc::Receiver<Enrich>,
+) {
+    let mut avatars = Avatars::default();
+    while let Some(item) = rx.recv().await {
+        let mut event = match item {
+            Enrich::Event(event) => event,
+            Enrich::Donation(pending) => {
+                let name = api::nickname(&http, &pending.user_id).await;
+                ChatEvent::Message(pending.finish(name))
+            }
+            Enrich::ForgetAvatar(user_id) => {
+                avatars.forget(&user_id);
+                continue;
+            }
+        };
+        if let ChatEvent::Message(message) = &mut event {
+            avatars.verify(&http, message).await;
+        }
+        if tx.send(event).await.is_err() {
+            break;
         }
     }
 }

@@ -29,10 +29,12 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::OBS_PASSWORD;
-use crate::output::{CONNECT_TIMEOUT, Outcome, Waiting, pause, taking_jobs};
+use crate::output::{
+    Outcome, OutputBackend, PING_EVERY, SEND_TIMEOUT, SessionEnded, Waiting, run_loop,
+};
 use crate::reactor::OutputState;
 
 /// OBS answers a request within milliseconds; much longer means the
@@ -98,6 +100,47 @@ impl Timed {
     }
 }
 
+struct ObsBackend {
+    secrets: Option<SecretStore>,
+    /// Read from the store when OBS first asks for it, and again only after
+    /// OBS refused it: a keyring may ask the user to unlock it each time.
+    password: Option<String>,
+    timed: Timed,
+}
+
+impl OutputBackend for ObsBackend {
+    type Action = Effect;
+    type Conn = Obs;
+
+    const TARGET: &'static str = "OBS";
+
+    async fn connect(&mut self, url: &str) -> Result<Self::Conn, String> {
+        match Obs::connect(url, self.secrets.as_ref(), &mut self.password).await {
+            Ok(obs) => Ok(obs),
+            Err(error) => {
+                if matches!(error, ConnectError::WrongPassword) {
+                    self.password = None; // maybe a new one is stored by the next try
+                }
+                Err(error.to_string())
+            }
+        }
+    }
+
+    async fn session(
+        &mut self,
+        mut conn: Self::Conn,
+        jobs: &mut mpsc::Receiver<Job>,
+        waiting: &mut Waiting<Effect>,
+        retry: Option<Job>,
+    ) -> SessionEnded<Effect> {
+        session(&mut conn, jobs, waiting, &mut self.timed, retry).await
+    }
+
+    fn on_give_up(&mut self) {
+        gave_up(&self.timed);
+    }
+}
+
 /// Runs until `jobs` closes (the reactor no longer needs OBS), then
 /// switches back what's still on. `secrets`: where the password is, if OBS
 /// asks for one (`None`: nowhere, e.g. tests). `wake` cuts a pause between
@@ -106,66 +149,16 @@ pub(crate) async fn run(
     url: String,
     queue_secs: Arc<std::sync::atomic::AtomicU32>,
     secrets: Option<SecretStore>,
-    mut jobs: mpsc::Receiver<Job>,
+    jobs: mpsc::Receiver<Job>,
     state: watch::Sender<OutputState>,
     wake: Arc<Notify>,
 ) {
-    let url = url.as_str();
-    let mut waiting = Waiting::new("OBS", queue_secs);
-    let mut timed = Timed::default();
-    // Read from the store when OBS first asks for it, and again only after
-    // OBS refused it: a keyring may ask the user to unlock it each time.
-    let mut password = None;
-    // A job whose request broke off with the connection: one more try on
-    // a fresh connection (see the Warudo output).
-    let mut retry: Option<Job> = None;
-    let mut failures = 0;
-    loop {
-        let connect = Obs::connect(url, secrets.as_ref(), &mut password);
-        let connect = tokio::time::timeout(CONNECT_TIMEOUT, connect);
-        let Some(connected) = taking_jobs(connect, &mut jobs, &mut waiting).await else {
-            gave_up(&timed);
-            return;
-        };
-        let mut obs = match connected {
-            Ok(Ok(obs)) => obs,
-            failed => {
-                let error = match failed {
-                    Ok(Err(e)) => e,
-                    _ => ConnectError::Unreachable("no answer".into()),
-                };
-                if matches!(error, ConnectError::WrongPassword) {
-                    password = None; // maybe a new one is stored by the next try
-                }
-                // Once per outage, not every few seconds while OBS is closed.
-                if failures == 0 {
-                    info!("can't connect to OBS at {url}: {error}");
-                }
-                failures += 1;
-                waiting.extend(retry.take());
-                state.send_replace(OutputState::Retrying {
-                    error: error.to_string(),
-                });
-                let pause = pause(failures, &wake);
-                if taking_jobs(pause, &mut jobs, &mut waiting).await.is_none() {
-                    gave_up(&timed);
-                    return;
-                }
-                continue;
-            }
-        };
-        info!("connected to OBS at {url}");
-        failures = 0;
-        state.send_replace(OutputState::Connected);
-        match session(&mut obs, &mut jobs, &mut waiting, &mut timed, retry.take()).await {
-            Ended::Unneeded => return,
-            Ended::Lost { unsent } => {
-                info!("lost the connection to OBS");
-                retry = unsent;
-                state.send_replace(OutputState::Connecting);
-            }
-        }
-    }
+    let backend = ObsBackend {
+        secrets,
+        password: None,
+        timed: Timed::default(),
+    };
+    run_loop(backend, url, queue_secs, jobs, state, wake).await;
 }
 
 /// Stopping without a connection: what's still on stays on.
@@ -173,11 +166,6 @@ fn gave_up(timed: &Timed) {
     for switch in timed.0.keys() {
         warn!("OBS isn't connected: couldn't switch {switch} back off");
     }
-}
-
-enum Ended {
-    Unneeded,
-    Lost { unsent: Option<Job> },
 }
 
 /// While connected: first what's over or waited for the connection, then
@@ -188,19 +176,20 @@ async fn session(
     waiting: &mut Waiting<Effect>,
     timed: &mut Timed,
     retry: Option<Job>,
-) -> Ended {
+) -> SessionEnded<Effect> {
     // Effects that ran out while OBS was away.
     if end(obs, timed, Instant::now()).await.is_err() {
-        return Ended::Lost { unsent: retry };
+        return SessionEnded::Lost { unsent: retry };
     }
     // Pop one job at a time: if OBS drops mid-backlog, remaining queued jobs
     // stay in `waiting` instead of being discarded.
     let mut retry = retry;
     while let Some(mut job) = retry.take().or_else(|| waiting.next_fresh(Instant::now())) {
         if apply(obs, timed, &mut job).await.is_err() {
-            return Ended::Lost { unsent: Some(job) };
+            return SessionEnded::Lost { unsent: Some(job) };
         }
     }
+    let mut next_ping = Instant::now() + PING_EVERY;
     loop {
         // (Copied out: the `select!` below mustn't borrow `timed`, which
         // the branches change.)
@@ -220,23 +209,36 @@ async fn session(
                     if end(obs, timed, all).await.is_err() {
                         gave_up(timed);
                     }
-                    let _ = obs.socket.close(None).await;
-                    return Ended::Unneeded;
+                    let _ = tokio::time::timeout(SEND_TIMEOUT, obs.socket.close(None)).await;
+                    return SessionEnded::Unneeded;
                 };
                 if apply(obs, timed, &mut job).await.is_err() {
-                    return Ended::Lost { unsent: Some(job) };
+                    return SessionEnded::Lost { unsent: Some(job) };
                 }
+                next_ping = Instant::now() + PING_EVERY;
             }
             () = effect_over => {
                 if end(obs, timed, Instant::now()).await.is_err() {
-                    return Ended::Lost { unsent: None };
+                    return SessionEnded::Lost { unsent: None };
                 }
+                next_ping = Instant::now() + PING_EVERY;
+            }
+            () = tokio::time::sleep_until(next_ping) => {
+                let sent = tokio::time::timeout(
+                    SEND_TIMEOUT,
+                    obs.socket.send(Message::Ping(Default::default())),
+                )
+                .await;
+                if !matches!(sent, Ok(Ok(()))) {
+                    return SessionEnded::Lost { unsent: None };
+                }
+                next_ping = Instant::now() + PING_EVERY;
             }
             // We asked for no events, so anything that arrives between
             // requests is only of interest if it ends the connection.
             frame = obs.socket.next() => match frame {
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
-                    return Ended::Lost { unsent: None };
+                    return SessionEnded::Lost { unsent: None };
                 }
                 Some(Ok(_)) => {}
             },
@@ -459,11 +461,11 @@ impl Obs {
             "op": 6,
             "d": { "requestType": kind, "requestId": id, "requestData": data },
         });
-        self.socket
-            .send(Message::text(request.to_string()))
-            .await
-            .map_err(Lost::new)?;
-        let wait = async {
+        let roundtrip = async {
+            self.socket
+                .send(Message::text(request.to_string()))
+                .await
+                .map_err(Lost::new)?;
             loop {
                 let mut message = next_message(&mut self.socket).await?;
                 if message["op"] == 7 && message["d"]["requestId"] == id.as_str() {
@@ -471,7 +473,7 @@ impl Obs {
                 }
             }
         };
-        let mut answer = tokio::time::timeout(REQUEST_TIMEOUT, wait)
+        let mut answer = tokio::time::timeout(REQUEST_TIMEOUT, roundtrip)
             .await
             .map_err(|_| Lost::new("OBS didn't answer"))??;
         let status = &answer["requestStatus"];

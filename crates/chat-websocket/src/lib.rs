@@ -8,7 +8,9 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use anyhow::{Context, anyhow, bail};
 use chat_core::{Activity, Reporter, SetupError};
+use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -28,6 +30,163 @@ const RETRY_FIRST: Duration = Duration::from_secs(3);
 const RETRY_MAX: Duration = Duration::from_secs(120);
 /// A connection that lasted this long worked: the wait starts over.
 const STABLE_AFTER: Duration = Duration::from_secs(60);
+/// How long writing a keepalive ping may stall on a dead socket before giving up.
+const PING_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a polite close frame may take when renewing a session.
+const RENEW_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Keepalive and liveness settings for a [`Session`].
+pub struct Keepalive {
+    /// Optional client-initiated ping: interval and frame payload.
+    /// `None` when the server pings us (e.g. StreamElements).
+    pub ping: Option<(Duration, tungstenite::Message)>,
+    /// Maximum silence (no frames at all) before the connection is assumed dead.
+    pub silent_for: Duration,
+    /// Optional deadline to close the connection politely and return
+    /// [`Event::Renew`] (e.g. RPlay's 60-minute IVS session limit).
+    pub renew_at: Option<Instant>,
+}
+
+impl Keepalive {
+    /// Keepalive when the server sends pings and the client only watches for
+    /// silence (e.g. StreamElements).
+    pub fn server_pings(silent_for: Duration) -> Self {
+        Self {
+            ping: None,
+            silent_for,
+            renew_at: None,
+        }
+    }
+
+    /// Keepalive with a periodic client ping frame and silence deadline.
+    pub fn with_ping(every: Duration, frame: tungstenite::Message, silent_for: Duration) -> Self {
+        Self {
+            ping: Some((every, frame)),
+            silent_for,
+            renew_at: None,
+        }
+    }
+
+    /// Schedules a polite session renewal at `at`.
+    pub fn renew_at(mut self, at: Instant) -> Self {
+        self.renew_at = Some(at);
+        self
+    }
+}
+
+/// What [`Session::next`] hands back to a source.
+#[derive(Debug)]
+pub enum Event {
+    /// A text frame from the server.
+    Text(tungstenite::Utf8Bytes),
+    /// The server closed the connection (with optional close frame, or EOF).
+    Closed(Option<tungstenite::protocol::CloseFrame>),
+    /// The `renew_at` deadline was reached and the socket was politely closed.
+    Renew,
+}
+
+/// Drives an open WebSocket connection with keepalive pings, silence
+/// detection, and optional session renewal.
+///
+/// Pings are scheduled relative to completion (`Instant::now() + every`, i.e.
+/// `MissedTickBehavior::Delay` semantics), so waking from laptop sleep never
+/// sends a burst of back-to-back pings.
+pub struct Session {
+    service: &'static str,
+    socket: Socket,
+    keepalive: Keepalive,
+    next_ping: Option<Instant>,
+    heard: Instant,
+}
+
+impl Session {
+    pub fn new(service: &'static str, socket: Socket, keepalive: Keepalive) -> Self {
+        let now = Instant::now();
+        let next_ping = keepalive.ping.as_ref().map(|(every, _)| now + *every);
+        Self {
+            service,
+            socket,
+            keepalive,
+            next_ping,
+            heard: now,
+        }
+    }
+
+    /// Sends a frame on the underlying socket.
+    pub async fn send(&mut self, msg: tungstenite::Message) -> Result<(), tungstenite::Error> {
+        self.socket.send(msg).await
+    }
+
+    /// Updates the ping interval and silence deadline (e.g. from Engine.IO's
+    /// `open` packet) and reschedules the next ping from now.
+    pub fn set_timing(&mut self, ping_every: Duration, silent_for: Duration) {
+        if let Some((every, _)) = &mut self.keepalive.ping {
+            *every = ping_every;
+            self.next_ping = Some(Instant::now() + ping_every);
+        }
+        self.keepalive.silent_for = silent_for;
+    }
+
+    /// Waits for the next text frame, close, or renewal deadline while
+    /// servicing keepalive pings and silence detection.
+    pub async fn next(&mut self) -> anyhow::Result<Event> {
+        loop {
+            let ping_due = async {
+                match self.next_ping {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let renew_due = async {
+                match self.keepalive.renew_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let silent_deadline = self.heard + self.keepalive.silent_for;
+            tokio::select! {
+                frame = self.socket.next() => {
+                    let Some(frame) = frame else {
+                        return Ok(Event::Closed(None));
+                    };
+                    self.heard = Instant::now();
+                    match frame.with_context(|| format!("reading from {}", self.service))? {
+                        tungstenite::Message::Text(text) => return Ok(Event::Text(text)),
+                        tungstenite::Message::Close(close) => return Ok(Event::Closed(close)),
+                        // Pongs (answers to our pings) and pings (answered by tungstenite).
+                        _ => {}
+                    }
+                }
+                () = ping_due => {
+                    if let Some((every, frame)) = self.keepalive.ping.as_ref() {
+                        let every = *every;
+                        let frame = frame.clone();
+                        tokio::time::timeout(PING_WRITE_TIMEOUT, self.socket.send(frame))
+                            .await
+                            .map_err(|_| anyhow!("timed out sending a ping to {}", self.service))?
+                            .with_context(|| format!("sending a ping to {}", self.service))?;
+                        self.next_ping = Some(Instant::now() + every);
+                    }
+                }
+                () = tokio::time::sleep_until(silent_deadline) => {
+                    bail!(
+                        "no answer from {} for {} s",
+                        self.service,
+                        self.keepalive.silent_for.as_secs()
+                    );
+                }
+                () = renew_due => {
+                    let _ = tokio::time::timeout(
+                        RENEW_CLOSE_TIMEOUT,
+                        self.socket.close(None),
+                    )
+                    .await;
+                    return Ok(Event::Renew);
+                }
+            }
+        }
+    }
+}
 
 /// Opens a WebSocket connection. `request` is the address (`wss://…`), or a
 /// request made from one when it needs headers of its own. The error is
@@ -307,5 +466,59 @@ mod tests {
             .iter()
             .any(|suite| suite.version().version == rustls::ProtocolVersion::TLSv1_2);
         assert!(tls_1_2, "rustls' `tls12` feature is off");
+    }
+
+    #[tokio::test]
+    async fn session_pings_delivers_text_and_times_out_on_silence() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            ws.send(tungstenite::Message::text("hello")).await.unwrap();
+            // Wait for one client text ping, then stay silent until client disconnects.
+            let ping = ws.next().await.unwrap().unwrap();
+            assert_eq!(ping, tungstenite::Message::text("2"));
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let (socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let mut session = Session::new(
+            "Test",
+            socket,
+            Keepalive::with_ping(
+                Duration::from_millis(50),
+                tungstenite::Message::text("2"),
+                Duration::from_millis(150),
+            ),
+        );
+        match session.next().await.unwrap() {
+            Event::Text(text) => assert_eq!(text.as_str(), "hello"),
+            other => panic!("expected text, got {other:?}"),
+        }
+        let err = session.next().await.unwrap_err();
+        assert!(err.to_string().contains("no answer from Test"), "{err}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn session_renews_at_deadline() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while ws.next().await.is_some() {}
+        });
+
+        let (socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let mut session = Session::new(
+            "Test",
+            socket,
+            Keepalive::server_pings(Duration::from_secs(5))
+                .renew_at(Instant::now() + Duration::from_millis(50)),
+        );
+        assert!(matches!(session.next().await.unwrap(), Event::Renew));
+        server.abort();
     }
 }

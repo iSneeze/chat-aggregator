@@ -8,19 +8,121 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
+
+use crate::reactor::OutputState;
 
 /// A connection attempt that takes longer than this has failed: a LAN
 /// address that doesn't answer would otherwise hang for minutes.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a single WebSocket write may stall on a dead LAN socket before
+/// we treat the connection as lost and reconnect.
+pub(crate) const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often an idle output sends a WebSocket ping so a dropped LAN link or
+/// sleeping second PC is noticed without waiting for the next reaction.
+pub(crate) const PING_EVERY: Duration = Duration::from_secs(30);
 /// The wait after a failed attempt: 1 s, doubling up to this. Short, since
 /// the program is usually on the same machine: once it's started,
 /// reactions should work within seconds.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// At most this many reactions wait for a connection; older ones go first.
 const MAX_WAITING: usize = 32;
+
+/// Why a connected output session ended.
+pub(crate) enum SessionEnded<A> {
+    /// The reactor closed the jobs channel: stop the output task.
+    Unneeded,
+    /// The connection broke; `unsent` failed on its way out and gets one retry
+    /// on the next connection.
+    Lost { unsent: Option<Job<A>> },
+}
+
+/// Output-specific connection and session logic plugged into [`run_loop`].
+pub(crate) trait OutputBackend {
+    type Action: Send;
+    type Conn;
+
+    const TARGET: &'static str;
+
+    fn connect(&mut self, url: &str) -> impl Future<Output = Result<Self::Conn, String>> + Send;
+
+    fn session(
+        &mut self,
+        conn: Self::Conn,
+        jobs: &mut mpsc::Receiver<Job<Self::Action>>,
+        waiting: &mut Waiting<Self::Action>,
+        retry: Option<Job<Self::Action>>,
+    ) -> impl Future<Output = SessionEnded<Self::Action>> + Send;
+
+    /// Called when stopping without an active connection (e.g. OBS logs any
+    /// timed effects that couldn't be switched back off).
+    fn on_give_up(&mut self) {}
+}
+
+/// Shared outer runner for every WebSocket reaction output: connects with
+/// timeout + backoff while draining incoming jobs into `Waiting`, reports
+/// `OutputState` transitions, and retries any single unsent job on reconnect.
+pub(crate) async fn run_loop<B: OutputBackend>(
+    mut backend: B,
+    url: String,
+    queue_secs: Arc<AtomicU32>,
+    mut jobs: mpsc::Receiver<Job<B::Action>>,
+    state: watch::Sender<OutputState>,
+    wake: Arc<Notify>,
+) {
+    let url = url.as_str();
+    let target = B::TARGET;
+    let mut waiting = Waiting::new(target, queue_secs);
+    // A job whose sending failed: the connection was dead without us knowing.
+    // It gets one more try on a fresh connection, whatever the queue setting.
+    let mut retry: Option<Job<B::Action>> = None;
+    let mut failures = 0;
+    loop {
+        let connect = tokio::time::timeout(CONNECT_TIMEOUT, backend.connect(url));
+        let Some(connected) = taking_jobs(connect, &mut jobs, &mut waiting).await else {
+            backend.on_give_up();
+            return;
+        };
+        let conn = match connected {
+            Ok(Ok(conn)) => conn,
+            failed => {
+                let error = match failed {
+                    Ok(Err(e)) => e,
+                    _ => "no answer".to_string(),
+                };
+                // Logged once per outage, not every few seconds while the target is closed.
+                if failures == 0 {
+                    info!("can't connect to {target} at {url}: {error}");
+                }
+                failures += 1;
+                waiting.extend(retry.take());
+                state.send_replace(OutputState::Retrying { error });
+                let wait = pause(failures, &wake);
+                if taking_jobs(wait, &mut jobs, &mut waiting).await.is_none() {
+                    backend.on_give_up();
+                    return;
+                }
+                continue;
+            }
+        };
+        info!("connected to {target} at {url}");
+        failures = 0;
+        state.send_replace(OutputState::Connected);
+        match backend
+            .session(conn, &mut jobs, &mut waiting, retry.take())
+            .await
+        {
+            SessionEnded::Unneeded => return,
+            SessionEnded::Lost { unsent } => {
+                debug!("lost the connection to {target}");
+                retry = unsent;
+                state.send_replace(OutputState::Connecting);
+            }
+        }
+    }
+}
 
 /// A fired rule's action, on its way to an output. `A` is what that output
 /// needs to know (Warudo: an action name; OBS: an effect).

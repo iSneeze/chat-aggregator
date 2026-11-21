@@ -20,10 +20,9 @@
   attributes (the overlay needs them), and never use "| safe" on chat
   values.
 -#}
-{%- set badges = author.badges -%}
-{%- set role = "owner" if ("owner" in badges or "broadcaster" in badges)
-    else "moderator" if "moderator" in badges
-    else "member" if ("member" in badges or "subscriber" in badges or "founder" in badges)
+{%- set role = "owner" if author.role == "broadcaster"
+    else "moderator" if author.role == "moderator"
+    else "member" if author.role in ["subscriber", "vip"]
     else "viewer" -%}
 {%- set youtube = platform == "youtube" -%}
 <div class="msg msg--{{ kind }} msg--{{ platform }} msg--role-{{ role }}{% if paid %} msg--paid{% endif %}{% if tier %} msg--tier-{{ tier }}{% endif %}" data-id="{{ id }}" data-platform="{{ platform }}" data-author="{{ author.id }}">
@@ -33,7 +32,7 @@
     <span class="msg__event">{{ info }}</span>
   {%- else -%}
     <span class="msg__author">{{ author.name }}</span>
-    {%- if "moderator" in badges %}<span class="msg__mod" title="moderator"></span>{% endif -%}
+    {%- if author.role == "moderator" %}<span class="msg__mod" title="moderator"></span>{% endif -%}
     {%- if kind == "gift" -%}
       <span class="msg__event">gifted <data class="msg__count" value="{{ count }}">{{ count }}</data> {{ "membership" if youtube else "sub" }}{{ "s" if count != 1 }}</span>
     {%- else -%}

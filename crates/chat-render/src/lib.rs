@@ -437,6 +437,13 @@ mod tests {
             months: Some(12),
         });
         assert!(milestone.contains(">Member for <data"), "{milestone}");
+
+        // Lead moderators get the canonical moderator role and wrench too.
+        let mut lead_mod = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
+        lead_mod.author.badges = vec!["lead_moderator".into()];
+        let rendered = theme.render(&lead_mod).unwrap();
+        assert!(rendered.contains("msg--role-moderator"), "{rendered}");
+        assert!(rendered.contains("msg__mod"), "{rendered}");
     }
 
     #[test]

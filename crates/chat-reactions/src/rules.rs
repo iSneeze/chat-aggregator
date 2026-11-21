@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+pub use chat_core::Role;
 use chat_core::tiers::{Amount, TOP_TIER};
 use chat_core::{ChatMessage, ChatPlatform, MessageKind};
 use tokio::time::Instant;
@@ -157,56 +158,6 @@ impl Guards {
     }
 }
 
-/// A chatter's standing, across platforms. Ordered from least to most, so a
-/// guard is simply `role >= min_role` (`PartialOrd`/`Ord` derived on an
-/// enum compare by declaration order).
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    #[default]
-    Everyone,
-    /// Twitch subscriber (or founder), YouTube member, Picarto subscriber.
-    #[serde(alias = "member")]
-    Subscriber,
-    /// Twitch VIP.
-    Vip,
-    Moderator,
-    /// The channel's owner.
-    Broadcaster,
-}
-
-impl Role {
-    /// The highest role among the author's badges. Platforms name them
-    /// differently (Twitch `broadcaster`, YouTube `owner`), so the badges are
-    /// translated here, in one place.
-    pub fn of(msg: &ChatMessage) -> Role {
-        msg.author
-            .badges
-            .iter()
-            .map(|badge| match badge.as_str() {
-                "broadcaster" | "owner" => Role::Broadcaster,
-                "moderator" | "lead_moderator" => Role::Moderator,
-                "vip" => Role::Vip,
-                "subscriber" | "founder" | "member" => Role::Subscriber,
-                _ => Role::Everyone,
-            })
-            .max()
-            .unwrap_or(Role::Everyone)
-    }
-}
-
 /// What a rule does when it fires. Tagged by `target`:
 /// `action = { target = "warudo", action = "throw_item" }`.
 ///
@@ -244,13 +195,16 @@ pub enum Action {
 pub const MAX_EFFECT_SECS: u32 = 3600;
 
 /// The program an action goes to: one output each.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Target {
     Warudo,
     Obs,
 }
 
 impl Target {
+    /// Every reaction output target in canonical display order.
+    pub const ALL: [Target; 2] = [Target::Warudo, Target::Obs];
+
     pub fn label(self) -> &'static str {
         match self {
             Target::Warudo => "Warudo",
@@ -402,11 +356,19 @@ fn contains_words(text: &str, phrase: &str) -> bool {
     if phrase.is_empty() {
         return false;
     }
-    let text = text.to_lowercase();
+    contains_words_lowered(&text.to_lowercase(), &phrase)
+}
+
+/// Like [`contains_words`], when both `text` and `phrase` are already trimmed
+/// and lowercased.
+fn contains_words_lowered(text: &str, phrase: &str) -> bool {
+    if phrase.is_empty() {
+        return false;
+    }
     let word_char = |c: char| c.is_alphanumeric();
     // `match_indices` finds every place it occurs; one with word
     // boundaries on both sides is enough.
-    text.match_indices(&phrase).any(|(at, _)| {
+    text.match_indices(phrase).any(|(at, _)| {
         let before = text[..at].chars().next_back();
         let after = text[at + phrase.len()..].chars().next();
         !before.is_some_and(word_char) && !after.is_some_and(word_char)
@@ -420,10 +382,29 @@ pub(crate) struct Fire {
     pub(crate) action: Action,
 }
 
+/// Pre-normalized text patterns for a rule's trigger, computed once when rules
+/// load/change instead of lowercasing every rule's pattern on every message.
+enum PreparedTrigger {
+    Command(String),
+    Keyword(String),
+    Direct,
+}
+
+impl PreparedTrigger {
+    fn from_trigger(trigger: &Trigger) -> Self {
+        match trigger {
+            Trigger::Command { command } => Self::Command(command.trim().to_lowercase()),
+            Trigger::Keyword { keyword } => Self::Keyword(keyword.trim().to_lowercase()),
+            _ => Self::Direct,
+        }
+    }
+}
+
 /// The rules plus what they remember between messages: when each one last
 /// fired, overall and per chatter.
 pub(crate) struct Rules {
     rules: Vec<Rule>,
+    prepared: Vec<PreparedTrigger>,
     paused: bool,
     /// The streamer's tip currency, for amount rules (see
     /// [`Trigger::PaidAmount`]); kept up to date by the reactor.
@@ -454,6 +435,7 @@ impl Rules {
     pub(crate) fn new(settings: &ReactionSettings) -> Self {
         let mut rules = Self {
             rules: Vec::new(),
+            prepared: Vec::new(),
             paused: false,
             tip_currency: None,
             state: HashMap::new(),
@@ -466,6 +448,11 @@ impl Rules {
     /// name) carry on, those of removed ones are forgotten.
     pub(crate) fn update(&mut self, settings: &ReactionSettings) {
         self.rules = settings.rules.clone();
+        self.prepared = self
+            .rules
+            .iter()
+            .map(|r| PreparedTrigger::from_trigger(&r.trigger))
+            .collect();
         self.paused = settings.paused;
         let rules = &self.rules;
         self.state
@@ -478,17 +465,32 @@ impl Rules {
             return Vec::new();
         }
         let role = Role::of(msg);
+        // Computed lazily once per message only if an enabled rule needs it.
+        let mut first_word_lower: Option<Option<String>> = None;
+        let mut text_lower: Option<String> = None;
         let mut fired = Vec::new();
         // `self.rules` is read while `self.state` is changed: two different
         // fields, so the borrow checker allows both at once. (Calling a
         // `&mut self` method inside this loop would not be allowed: that
         // borrows all of `self`.)
-        for rule in &self.rules {
-            // Cheap and timeless first; cooldowns last.
-            if !rule.enabled
-                || !rule.trigger.matches(msg, self.tip_currency.as_deref())
-                || !rule.guards.admit(msg.platform, role)
-            {
+        for (rule, prepared) in self.rules.iter().zip(&self.prepared) {
+            if !rule.enabled || !rule.guards.admit(msg.platform, role) {
+                continue;
+            }
+            let matched = match prepared {
+                PreparedTrigger::Command(cmd) => first_word_lower
+                    .get_or_insert_with(|| {
+                        msg.text.split_whitespace().next().map(str::to_lowercase)
+                    })
+                    .as_deref()
+                    .is_some_and(|first| first == cmd),
+                PreparedTrigger::Keyword(kw) => {
+                    let text = text_lower.get_or_insert_with(|| msg.text.to_lowercase());
+                    contains_words_lowered(text, kw)
+                }
+                PreparedTrigger::Direct => rule.trigger.matches(msg, self.tip_currency.as_deref()),
+            };
+            if !matched {
                 continue;
             }
             let state = self.state.entry(rule.name.clone()).or_default();

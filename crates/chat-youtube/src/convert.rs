@@ -1,40 +1,8 @@
 use crate::emoji::EmojiMap;
 use crate::pb;
-use chat_core::{Author, ChatEvent, ChatMessage, ChatPlatform, MessageKind};
+use chat_core::{Author, BoundedIdSet, ChatEvent, ChatMessage, ChatPlatform, MessageKind};
 use pb::live_chat_message_snippet::DisplayedContent;
 use pb::live_chat_message_snippet::type_wrapper::Type;
-
-/// Keeps first-occurrence order of seen message ids, bounded in size so a
-/// 24/7 process doesn't grow the set forever.
-pub struct BoundedIdSet {
-    seen: std::collections::HashSet<String>,
-    order: std::collections::VecDeque<String>,
-    cap: usize,
-}
-
-impl BoundedIdSet {
-    pub fn new(cap: usize) -> Self {
-        Self {
-            seen: std::collections::HashSet::new(),
-            order: std::collections::VecDeque::new(),
-            cap,
-        }
-    }
-
-    /// Returns true if this id was new.
-    pub fn insert(&mut self, id: String) -> bool {
-        if !self.seen.insert(id.clone()) {
-            return false;
-        }
-        self.order.push_back(id);
-        while self.order.len() > self.cap {
-            if let Some(old) = self.order.pop_front() {
-                self.seen.remove(&old);
-            }
-        }
-        true
-    }
-}
 
 pub fn convert(
     item: pb::LiveChatMessage,

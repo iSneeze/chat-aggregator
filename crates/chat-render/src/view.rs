@@ -5,7 +5,7 @@
 //! Every field borrows from the message (`&'a str`) instead of cloning: the
 //! view only lives for the duration of one render call.
 
-use chat_core::{ChatMessage, EmoteRef, MessageKind};
+use chat_core::{ChatMessage, EmoteRef, MessageKind, Role};
 
 #[derive(serde::Serialize)]
 pub(crate) struct MessageView<'a> {
@@ -31,6 +31,7 @@ struct AuthorView<'a> {
     name: &'a str,
     color: Option<&'a str>,
     badges: &'a [String],
+    role: &'static str,
     avatar_url: Option<&'a str>,
 }
 
@@ -55,6 +56,7 @@ impl<'a> MessageView<'a> {
                 name: &msg.author.name,
                 color: msg.author.color.as_deref().filter(|c| is_hex_color(c)),
                 badges: &msg.author.badges,
+                role: Role::of(msg).as_str(),
                 avatar_url: msg.author.avatar_url.as_deref(),
             },
             timestamp: msg.timestamp.to_string(),

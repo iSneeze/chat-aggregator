@@ -14,13 +14,10 @@ mod frames;
 
 use std::time::Duration;
 
-use anyhow::{Context, bail};
 use chat_core::{Activity, ChatEvent, ChatSource, Reporter};
-use chat_websocket::Ended;
 use chat_websocket::tungstenite::Message;
-use futures_util::{SinkExt, StreamExt};
+use chat_websocket::{Ended, Event, Keepalive, Session};
 use tokio::sync::mpsc;
-use tokio::time::Instant;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 pub use emotes::{Body, ChannelEmote, SiteEmotes};
@@ -118,7 +115,7 @@ impl PicartoSource {
         activity: &Reporter,
     ) -> anyhow::Result<Ended> {
         let channel = connection::lookup(http, &self.channel).await?;
-        let mut socket = connection::open(http, &channel.name).await?;
+        let socket = connection::open(http, &channel.name).await?;
         info!("connected to Picarto chat");
         activity.set(live_state(channel.online));
 
@@ -126,52 +123,29 @@ impl PicartoSource {
             owner_id: &channel.id,
             emotes,
         };
-        let mut pings = tokio::time::interval(PING_EVERY);
-        // An interval's first tick is immediate; the first ping is due later.
-        pings.tick().await;
-        let mut heard = Instant::now();
+        let mut session = Session::new(
+            "Picarto's chat",
+            socket,
+            Keepalive::with_ping(PING_EVERY, Message::text(PING), SILENT_FOR),
+        );
         loop {
-            // Waits for whichever comes first. The losing branches' futures
-            // are dropped before the winner's code runs, so the ping branch
-            // may use `socket` although `socket.next()` borrowed it.
-            tokio::select! {
-                frame = socket.next() => {
-                    let Some(frame) = frame else {
-                        return Ok(Ended::Closed);
-                    };
-                    heard = Instant::now();
-                    match frame.context("reading from Picarto's chat")? {
-                        Message::Text(text) => match frames::decode(&text, &cx) {
-                            Frame::Events(events) => {
-                                for event in events {
-                                    if tx.send(event).await.is_err() {
-                                        return Ok(Ended::ReceiverGone);
-                                    }
-                                }
+            match session.next().await? {
+                Event::Text(text) => match frames::decode(&text, &cx) {
+                    Frame::Events(events) => {
+                        for event in events {
+                            if tx.send(event).await.is_err() {
+                                return Ok(Ended::ReceiverGone);
                             }
-                            Frame::Stream { online } => activity.set(live_state(online)),
-                            Frame::Ignored => {}
-                        },
-                        Message::Close(close) => {
-                            debug!(?close, "Picarto's chat server said goodbye");
-                            return Ok(Ended::Closed);
                         }
-                        // WebSocket-level keep-alive: tungstenite answers
-                        // pings by itself.
-                        _ => {}
                     }
+                    Frame::Stream { online } => activity.set(live_state(online)),
+                    Frame::Ignored => {}
+                },
+                Event::Closed(close) => {
+                    debug!(?close, "Picarto's chat server said goodbye");
+                    return Ok(Ended::Closed);
                 }
-                _ = pings.tick() => {
-                    socket
-                        .send(Message::text(PING))
-                        .await
-                        .context("sending a ping to Picarto's chat")?;
-                }
-                // A deadline, not a timeout around `next()`: the ping branch
-                // wins every 30 s, which would restart a timeout each time.
-                () = tokio::time::sleep_until(heard + SILENT_FOR) => {
-                    bail!("no answer from Picarto's chat for {} s", SILENT_FOR.as_secs());
-                }
+                Event::Renew => unreachable!("Picarto sessions do not schedule renewal"),
             }
         }
     }
