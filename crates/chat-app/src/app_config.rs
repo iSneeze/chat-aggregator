@@ -15,7 +15,7 @@ use chat_engine::{ConfigFile, EngineHandle, Settings, Status};
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Entity};
 use tokio::sync::watch;
 
-use crate::app_view::report;
+use crate::ui::report;
 
 pub struct AppConfig {
     /// The engine's settings: a `watch` always holds the latest ones.

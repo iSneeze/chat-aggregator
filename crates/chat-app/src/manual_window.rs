@@ -15,7 +15,7 @@ use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::app_view::report;
+use crate::ui::{labelled, report};
 
 /// What the window sends. The fields shown below the choice depend on it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -513,27 +513,6 @@ impl Render for ManualWindow {
     }
 }
 
-/// A form row: the label in a fixed-width column, then the control.
-/// (`E` is named rather than `impl IntoElement` so the result can say it
-/// holds an `E` but borrows nothing: `use<E>`.)
-pub(crate) fn labelled<E: IntoElement>(
-    label: &'static str,
-    control: E,
-    cx: &App,
-) -> impl IntoElement + use<E> {
-    h_flex()
-        .gap_2()
-        .items_center()
-        .child(
-            div()
-                .w(px(90.))
-                .flex_none()
-                .text_color(cx.theme().muted_foreground)
-                .child(label),
-        )
-        .child(div().flex_1().child(control))
-}
-
 fn non_empty(value: String, what: &str) -> Result<String, String> {
     if value.is_empty() {
         Err(format!("enter {what}"))
@@ -826,7 +805,7 @@ mod tests {
     fn reported_errors_are_shown(cx: &mut TestAppContext) {
         let ui = open(cx);
         cx.update_window(ui.window.into(), |_, window, cx| {
-            crate::app_view::report(window, cx, "something went wrong".into());
+            crate::ui::report(window, cx, "something went wrong".into());
         })
         .unwrap();
         // The window talks to the engine (tokio) as it opens: wait with

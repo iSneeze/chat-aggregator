@@ -12,13 +12,12 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{ActiveTheme, Root, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 
-use super::{AppView, report};
-use crate::reactions_window::{ReactionsWindow, confirm};
-use crate::settings_window::SettingsWindow;
-use crate::widgets_window::WidgetsWindow;
+use super::AppView;
+use super::themes::{newest_label, theme_label};
+use crate::ui::report;
 
 /// The name field under the header, while it's open.
 pub(super) struct ProfileForm {
@@ -192,8 +191,7 @@ impl AppView {
         let live = self.status.sources.iter().any(|source| {
             source.config.is_some() && matches!(source.state, SourceState::Running(_))
         });
-        let unsaved = side_view::<ReactionsWindow>(self.reactions_window, cx)
-            .is_some_and(|view| view.read(cx).unsaved(cx));
+        let unsaved = self.has_unsaved_side_windows(cx);
         if !live && !unsaved {
             self.switch_profile(name, window, cx);
             return;
@@ -207,16 +205,13 @@ impl AppView {
         if unsaved {
             what.push("Unsaved changes in the Reactions window are lost.");
         }
-        let view = cx.entity().downgrade();
-        confirm(
+        self.open_confirm_dialog(
             window,
             cx,
             format!("Switch to \"{name}\"?"),
             what.join(" "),
             "Switch",
-            move |window, cx| {
-                let _ = view.update(cx, |this, cx| this.switch_profile(name.clone(), window, cx));
-            },
+            move |this, window, cx| this.switch_profile(name.clone(), window, cx),
         );
     }
 
@@ -225,12 +220,7 @@ impl AppView {
         // were made in the profile being left: in before the switch.
         // (`edit_settings` sends a change right away; the switch below is
         // sent once its task runs, so after them.)
-        if let Some(view) = side_view::<SettingsWindow>(self.settings_window, cx) {
-            view.update(cx, |view, cx| view.flush(cx));
-        }
-        if let Some(view) = side_view::<WidgetsWindow>(self.widgets_window, cx) {
-            view.update(cx, |view, cx| view.flush(cx));
-        }
+        self.flush_side_windows(cx);
         self.profile_form = None;
         let engine = self.engine.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -243,17 +233,14 @@ impl AppView {
     }
 
     fn ask_delete(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
-        let view = cx.entity().downgrade();
-        confirm(
+        self.open_confirm_dialog(
             window,
             cx,
             format!("Delete the profile \"{name}\"?"),
-            "Its sources and settings are gone for good, and so are tip services' tokens no \
+            "Its sources and settings are gone for good, and so are tokens and widget keys no \
              other profile uses.",
             "Delete",
-            move |window, cx| {
-                let _ = view.update(cx, |this, cx| this.delete_profile(name.clone(), window, cx));
-            },
+            move |this, window, cx| this.delete_profile(name.clone(), window, cx),
         );
     }
 
@@ -281,8 +268,8 @@ impl AppView {
     /// `AppConfig::switches`.)
     pub(super) fn profile_switched(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let overlay = self.config.read(cx).settings().profile.overlay;
-        let theme = super::theme_label(overlay.theme.as_deref());
-        let newest = super::newest_label(overlay.newest);
+        let theme = theme_label(overlay.theme.as_deref());
+        let newest = newest_label(overlay.newest);
         self.theme_select.update(cx, |select, cx| {
             select.set_selected_value(&theme, window, cx);
         });
@@ -291,6 +278,7 @@ impl AppView {
         });
         self.new_theme = None;
         self.theme_error = None;
+        self.rescan_themes(window, cx);
     }
 }
 
@@ -353,14 +341,4 @@ fn profile_menu(
         });
     }
     menu
-}
-
-/// The view of a side window (`V`: its type), if it's open.
-pub(super) fn side_view<V: 'static>(
-    window: Option<WindowHandle<Root>>,
-    cx: &App,
-) -> Option<Entity<V>> {
-    // A closed window can't be read: `None`.
-    let root = window?.read(cx).ok()?;
-    root.view().clone().downcast::<V>().ok()
 }

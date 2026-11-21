@@ -3,7 +3,9 @@
 //! every platform (see `chat_core::tiers`), so both show what a tier means
 //! on each.
 
-use chat_core::tiers::{BITS_TIER_STARTS, TOP_TIER, TipSettings, YOUTUBE_TIER_STARTS};
+use chat_core::tiers::{
+    BITS_TIER_STARTS, COINS_TIER_STARTS, TOP_TIER, TipSettings, YOUTUBE_TIER_STARTS,
+};
 
 /// The tiers, 1 to 7.
 pub(crate) fn all() -> impl Iterator<Item = u32> {
@@ -25,6 +27,12 @@ pub(crate) fn bits_start(tier: u32) -> String {
     format!("{}+ bits", thousands(bits))
 }
 
+/// Where `tier` starts in RPlay coins: "200+ coins".
+pub(crate) fn coins_start(tier: u32) -> String {
+    let coins = start_index(tier).map_or(1, |i| COINS_TIER_STARTS[i]);
+    format!("{}+ coins", thousands(coins))
+}
+
 /// Where `tier` starts on YouTube, in dollars (YouTube works out the tier
 /// in every currency): "$10+".
 pub(crate) fn youtube_start(tier: u32) -> String {
@@ -39,9 +47,10 @@ pub(crate) fn tier_label(tier: u32, tips: &TipSettings) -> String {
         return "Tier 1 or more: any amount that has a tier".into();
     }
     format!(
-        "Tier {tier} or more: tips {}, {}, YouTube {}",
+        "Tier {tier} or more: tips {}, {}, {}, YouTube {}",
         tips_start(tier, tips),
         bits_start(tier),
+        coins_start(tier),
         youtube_start(tier)
     )
 }
@@ -80,13 +89,16 @@ mod tests {
         assert_eq!(bits_start(1), "1+ bits");
         assert_eq!(bits_start(4), "1,000+ bits");
         assert_eq!(bits_start(7), "10,000+ bits");
+        assert_eq!(coins_start(1), "1+ coins");
+        assert_eq!(coins_start(4), "200+ coins");
+        assert_eq!(coins_start(7), "2,000+ coins");
         assert_eq!(youtube_start(1), "$1+");
         assert_eq!(youtube_start(7), "$100+");
         tips.currency = "EUR".into();
         tips.tiers[2] = Amount::whole(12);
         assert_eq!(
             tier_label(4, &tips),
-            "Tier 4 or more: tips €12.00+, 1,000+ bits, YouTube $10+"
+            "Tier 4 or more: tips €12.00+, 1,000+ bits, 200+ coins, YouTube $10+"
         );
     }
 

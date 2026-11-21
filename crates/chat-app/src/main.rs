@@ -33,6 +33,7 @@ mod paid;
 mod reactions_window;
 mod settings_window;
 mod startup_error;
+mod ui;
 mod widgets_window;
 mod youtube_panel;
 

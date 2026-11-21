@@ -18,8 +18,8 @@ use gpui_kit::*;
 use std::path::PathBuf;
 
 use crate::app_config::{AppConfig, edit_settings};
-use crate::app_view::{light, report};
 use crate::emoji_import;
+use crate::ui::{labelled_width, light, report};
 
 const SETUP_GUIDE: &str = "https://isneeze.github.io/chat-aggregator/youtube-setup";
 const EMOJI_GUIDE: &str = "https://isneeze.github.io/chat-aggregator/youtube-emoji";
@@ -362,13 +362,6 @@ impl YouTubePanel {
 
     fn render_client_form(&self, cx: &mut Context<Self>) -> AnyElement {
         let set_up = self.can_cancel_editing(cx);
-        let label = |text: &'static str| {
-            div()
-                .w(px(110.))
-                .flex_none()
-                .text_color(cx.theme().muted_foreground)
-                .child(text)
-        };
         v_flex()
             .gap_2()
             .when(!set_up, |this| {
@@ -387,30 +380,20 @@ impl YouTubePanel {
                     .link()
                     .on_click(|_, _, cx| cx.open_url(SETUP_GUIDE)),
             )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(label("Client ID"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(Input::new(&self.client_id).id("youtube-client-id")),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(label("Client secret"))
-                    .child(
-                        div().flex_1().child(
-                            Input::new(&self.client_secret)
-                                .id("youtube-client-secret")
-                                .mask_toggle(),
-                        ),
-                    ),
-            )
+            .child(labelled_width(
+                px(110.),
+                "Client ID",
+                Input::new(&self.client_id).id("youtube-client-id"),
+                cx,
+            ))
+            .child(labelled_width(
+                px(110.),
+                "Client secret",
+                Input::new(&self.client_secret)
+                    .id("youtube-client-secret")
+                    .mask_toggle(),
+                cx,
+            ))
             .children(
                 self.form_error
                     .clone()

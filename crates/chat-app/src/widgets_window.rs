@@ -14,19 +14,13 @@
 //! ten clicks save once.
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use chat_engine::EngineHandle;
-use chat_engine::widgets::{
-    self, Import, Kind, Manifest, Setting, Value, Values, Widget, WidgetError,
-};
+use chat_engine::widgets::{self, Import, Kind, Manifest, Value, Values, Widget, WidgetError};
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{
-    Input, InputEvent, InputState, MaskPattern, NumberInput, NumberInputEvent, NumberStep,
-    StepAction,
-};
+use gpui_kit::component::input::StepAction;
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, Sizable, StyledExt, WindowExt, h_flex,
     scroll::ScrollableElement, v_flex,
@@ -35,12 +29,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_config::{AppConfig, edit_settings};
-use crate::app_view::{card, report, segmented};
-use crate::reactions_window::{choice, confirm};
-use crate::settings_window::APPLY_AFTER;
+use crate::ui::{Debouncer, card, confirm, open_folder, report};
+use form::{Form, parse_number, set, stepped};
 
-/// The width of a setting's label: the controls line up after it.
-const LABEL_WIDTH: Pixels = px(140.);
+mod form;
 
 /// A widget in the list.
 #[derive(Debug, PartialEq)]
@@ -62,19 +54,27 @@ impl Entry {
     }
 }
 
+/// Only the built-in widgets (in memory, no disk I/O).
+fn builtin_entries() -> Vec<Entry> {
+    Widget::builtin()
+        .iter()
+        .map(|widget| Entry {
+            name: widget.name.clone(),
+            builtin: true,
+            widget: Ok(widget.clone()),
+        })
+        .collect()
+}
+
 /// The built-in widgets, then the ones in the widgets folder `dir`.
+/// Runs on a background executor so directory reads never block the UI thread.
 fn scan(dir: &Path) -> Vec<Entry> {
-    let builtin = Widget::builtin().iter().map(|widget| Entry {
-        name: widget.name.clone(),
-        builtin: true,
-        widget: Ok(widget.clone()),
-    });
     let imported = widgets::imported(dir).into_iter().map(|found| Entry {
         name: found.name,
         builtin: false,
         widget: found.widget,
     });
-    builtin.chain(imported).collect()
+    builtin_entries().into_iter().chain(imported).collect()
 }
 
 /// What the window knows about the widget `name` in `entries`: its
@@ -84,211 +84,6 @@ fn shown<'a>(entries: &'a [Entry], name: &str) -> Option<Result<&'a Manifest, &'
         .iter()
         .find(|entry| entry.name == name)
         .map(|entry| entry.widget.as_ref().map(|widget| &widget.manifest))
-}
-
-/// The form for one widget's settings.
-struct Form {
-    widget: Widget,
-    /// The values picked: only those that fit and differ from the default,
-    /// which is what `config.toml` gets and the URL carries. Typed values
-    /// join them once typing pauses.
-    values: Values,
-    /// The text field of each number and text setting, by the setting's
-    /// place in the block (`None` for switches and choices).
-    fields: Vec<Option<Entity<InputState>>>,
-    /// What's wrong with a typed value, by the setting's place.
-    errors: Vec<Option<String>>,
-    // Dropped with the form: a replaced form's fields stop reporting.
-    _subscriptions: Vec<Subscription>,
-}
-
-impl Form {
-    fn new(
-        widget: Widget,
-        saved: &Values,
-        window: &mut Window,
-        cx: &mut Context<WidgetsWindow>,
-    ) -> Self {
-        let settings = &widget.manifest.settings;
-        // Saved values that no longer fit (the widget was updated since)
-        // are left out, and so leave `config.toml` with the next change.
-        let values: Values = settings
-            .iter()
-            .filter_map(|setting| {
-                let value = saved.get(&setting.name)?;
-                let wanted = setting.accepts(value) && *value != setting.default_value();
-                wanted.then(|| (setting.name.clone(), value.clone()))
-            })
-            .collect();
-        let mut subscriptions = Vec::new();
-        let fields = settings
-            .iter()
-            .enumerate()
-            .map(|(i, setting)| {
-                let current = values
-                    .get(&setting.name)
-                    .cloned()
-                    .unwrap_or_else(|| setting.default_value());
-                let (text, placeholder) = match (&setting.kind, current) {
-                    // An empty number field means the default: it shows
-                    // greyed out.
-                    (Kind::Number { default, .. }, Value::Number(number)) => {
-                        (number.to_string(), default.to_string())
-                    }
-                    // No placeholder: an empty text is a value of its own
-                    // (no sticker, say), not the default.
-                    (Kind::Text { .. }, Value::Text(text)) => (text, String::new()),
-                    _ => return None,
-                };
-                let number = matches!(setting.kind, Kind::Number { .. });
-                let input = cx.new(|cx| {
-                    let mut input = InputState::new(window, cx)
-                        .placeholder(placeholder)
-                        .default_value(text);
-                    if number {
-                        // A number field (`NumberInput`) would only take
-                        // digits and a dot; `typed_value` takes a comma too,
-                        // and says what's wrong with anything else.
-                        input = input.mask_pattern(MaskPattern::None);
-                        // Without a step of its own, − and + only report
-                        // (`NumberInputEvent::Step`): `step` does them.
-                        input.set_step(None::<NumberStep>, window, cx);
-                    }
-                    input
-                });
-                subscriptions.push(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
-                    if let InputEvent::Change = event {
-                        this.typed(cx);
-                    }
-                }));
-                if number {
-                    subscriptions.push(cx.subscribe_in(
-                        &input,
-                        window,
-                        move |this, _, event: &NumberInputEvent, window, cx| {
-                            // Its only kind of event: `let` takes it apart
-                            // without a `match` (and stops compiling if
-                            // gpui-component adds another, to be looked at).
-                            let NumberInputEvent::Step(action) = event;
-                            this.step(i, *action, window, cx);
-                        },
-                    ));
-                }
-                Some(input)
-            })
-            .collect();
-        Self {
-            errors: vec![None; settings.len()],
-            widget,
-            values,
-            fields,
-            _subscriptions: subscriptions,
-        }
-    }
-
-    /// Takes the typed values in: those that fit replace what was picked
-    /// before; the others get a note saying what's wrong, and the last
-    /// value that fit stays in place.
-    fn read_fields(&mut self, cx: &App) {
-        let settings = &self.widget.manifest.settings;
-        for (i, setting) in settings.iter().enumerate() {
-            let Some(field) = &self.fields[i] else {
-                continue;
-            };
-            match typed_value(setting, &field.read(cx).value()) {
-                Ok(value) => {
-                    self.errors[i] = None;
-                    set(&mut self.values, setting, value);
-                }
-                Err(problem) => self.errors[i] = Some(problem),
-            }
-        }
-    }
-
-    fn has_errors(&self) -> bool {
-        self.errors.iter().any(Option::is_some)
-    }
-
-    /// The value the form shows for `setting`: picked, or the default.
-    fn current(&self, setting: &Setting) -> Value {
-        self.values
-            .get(&setting.name)
-            .cloned()
-            .unwrap_or_else(|| setting.default_value())
-    }
-}
-
-/// Picks `value` for `setting`: the default isn't kept (the URL leaves it
-/// out anyway, and a widget's new default then applies).
-fn set(values: &mut Values, setting: &Setting, value: Value) {
-    if value == setting.default_value() {
-        values.remove(&setting.name);
-    } else {
-        values.insert(setting.name.clone(), value);
-    }
-}
-
-/// A typed value for `setting`, or what's wrong with it.
-fn typed_value(setting: &Setting, text: &str) -> Result<Value, String> {
-    match &setting.kind {
-        Kind::Number {
-            default,
-            min,
-            max,
-            unit,
-            ..
-        } => {
-            if text.trim().is_empty() {
-                return Ok(Value::Number(*default));
-            }
-            match parse_number(text) {
-                // `contains` is false for "NaN", and "inf" is out of range.
-                Some(number) if (min..=max).contains(&&number) => Ok(Value::Number(number)),
-                _ => {
-                    let unit = unit.as_deref().map(|u| format!(" {u}")).unwrap_or_default();
-                    Err(format!("A number from {min} to {max}{unit}"))
-                }
-            }
-        }
-        Kind::Text { .. } => Ok(Value::Text(text.to_string())),
-        // Switches and choices have no text field: nothing typed to read.
-        Kind::Bool { .. } | Kind::Choice { .. } => Ok(setting.default_value()),
-    }
-}
-
-/// A typed number, in or out of range.
-fn parse_number(text: &str) -> Option<f64> {
-    // A comma too: "0,5" is how much of the world writes a half.
-    text.trim().replace(',', ".").parse().ok()
-}
-
-/// One step up or down from `from`, onto the grid of `min + n × step` that
-/// a browser's number field uses too (from 56, steps of 4 from 8 go to 60
-/// or 52; a typed 57 goes to 60 or 56), and kept from `min` to `max`.
-fn stepped(from: f64, action: StepAction, min: f64, max: f64, step: f64) -> f64 {
-    // How many steps above `min`. A hair of slack, so float noise
-    // (0.1 + 0.2 is 0.30000000000000004) doesn't count as off the grid.
-    let steps = (from - min) / step;
-    let steps = match action {
-        StepAction::Increment => (steps + 1e-9).floor() + 1.0,
-        StepAction::Decrement => (steps - 1e-9).ceil() - 1.0,
-    };
-    // Rounded to the decimals the step and `min` are written with, so the
-    // field shows "0.3", not that noise.
-    let scale = 10f64.powi(decimals(step).max(decimals(min)));
-    let value = ((min + steps * step) * scale).round() / scale;
-    // `max`/`min` rather than `clamp`, which panics if `min > max` (a
-    // widget's block can't say that, but nothing here has to rely on it).
-    value.max(min).min(max)
-}
-
-/// How many decimals `x` is written with (0.25: 2).
-fn decimals(x: f64) -> i32 {
-    // `f64`'s `Display` writes the shortest text that reads back as the
-    // same number ("0.1"), never with an exponent.
-    let text = x.to_string();
-    text.split_once('.')
-        .map_or(0, |(_, fraction)| fraction.len() as i32)
 }
 
 pub struct WidgetsWindow {
@@ -304,16 +99,16 @@ pub struct WidgetsWindow {
     /// (`AppConfig::switches`).
     loaded_for: u64,
     entries: Vec<Entry>,
+    /// Monotonic counter so stale background scans are ignored.
+    scan_gen: u64,
+    /// Whether a background directory scan is currently in flight.
+    scanning: bool,
     /// The widget shown on the right, by name.
     selected: String,
     /// Its settings, if it's a widget that can be used.
     form: Option<Form>,
-    /// The pending "apply what's typed" timer. Storing a new one drops the
-    /// old one, and dropping a GPUI `Task` cancels it (the debounce, as in
-    /// the settings window).
-    pending: Option<Task<()>>,
-    /// Typed values not taken in yet.
-    dirty: bool,
+    /// Debounces typed edits and number stepping.
+    debounce: Debouncer,
     /// Why the last file picked couldn't be imported.
     import_error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -326,7 +121,7 @@ impl WidgetsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let entries = scan(&config.read(cx).widgets_dir());
+        let entries = builtin_entries();
         let server = engine.status().borrow().overlay_url.clone();
         let loaded_for = config.read(cx).switches();
         let subscriptions = vec![
@@ -353,7 +148,7 @@ impl WidgetsWindow {
             // Closing the window within the typing pause mustn't lose the
             // last edit: apply it now.
             cx.on_release(|this, cx| {
-                if this.dirty {
+                if this.debounce.take_dirty() {
                     this.apply(cx);
                 }
             }),
@@ -370,14 +165,17 @@ impl WidgetsWindow {
             server,
             loaded_for,
             entries,
+            scan_gen: 0,
+            scanning: false,
             selected: String::new(),
             form: None,
-            pending: None,
-            dirty: false,
+            debounce: Debouncer::default(),
             import_error: None,
             _subscriptions: subscriptions,
         };
         view.select(first, window, cx);
+        // Load imported widgets from disk off the UI thread.
+        view.rescan(window, cx);
         view
     }
 
@@ -413,7 +211,7 @@ impl WidgetsWindow {
     /// Shows the widget `name` on the right, with the values saved for it.
     fn select(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         // What's typed for the widget being left is kept, not dropped.
-        if self.dirty {
+        if self.debounce.take_dirty() {
             self.apply(cx);
         }
         let saved = self
@@ -430,8 +228,7 @@ impl WidgetsWindow {
 
     /// A fresh form for the selected widget, showing `values`.
     fn open_form(&mut self, values: Values, window: &mut Window, cx: &mut Context<Self>) {
-        self.pending = None;
-        self.dirty = false;
+        self.debounce.cancel();
         let widget = self
             .entries
             .iter()
@@ -442,11 +239,31 @@ impl WidgetsWindow {
         cx.notify();
     }
 
-    /// Reads the widgets folder again. The form is only rebuilt if the
+    /// Reads the widgets folder on a background executor so directory I/O
+    /// never blocks the UI thread.
+    fn rescan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.scan_gen += 1;
+        let scan_gen = self.scan_gen;
+        self.scanning = true;
+        let dir = self.widgets_dir(cx);
+        let scanning = cx.background_executor().spawn(async move { scan(&dir) });
+        cx.spawn_in(window, async move |this, cx| {
+            let entries = scanning.await;
+            let _ = this.update_in(cx, |view, window, cx| {
+                if view.scan_gen != scan_gen {
+                    return;
+                }
+                view.scanning = false;
+                view.apply_scanned(entries, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Applies freshly scanned entries. The form is only rebuilt if the
     /// widget it shows changed its settings (or broke, or got fixed): an
     /// edit to its look keeps what's being typed.
-    fn rescan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entries = scan(&self.widgets_dir(cx));
+    fn apply_scanned(&mut self, entries: Vec<Entry>, window: &mut Window, cx: &mut Context<Self>) {
         if entries == self.entries {
             return;
         }
@@ -459,7 +276,7 @@ impl WidgetsWindow {
             let first = self.entries.first().map(|e| e.name.clone());
             self.select(first.unwrap_or_default(), window, cx);
         } else if changed {
-            if self.dirty {
+            if self.debounce.take_dirty() {
                 self.apply(cx);
             }
             // The form's own values: newer than the settings' while the
@@ -537,8 +354,9 @@ impl WidgetsWindow {
                 Ok(import) if import.replaces => {
                     let title = import.widget.manifest.title.clone();
                     // The question's answer may come back more than once
-                    // (an `Fn`): it shares the import rather than moving it.
-                    let import = Rc::new(import);
+                    // (an `Fn`): share via `Arc` so it can move to the
+                    // background executor when saving.
+                    let import = Arc::new(import);
                     let weak = cx.entity().downgrade();
                     confirm(
                         window,
@@ -550,45 +368,56 @@ impl WidgetsWindow {
                         "Replace",
                         move |window, cx| {
                             if let Some(view) = weak.upgrade() {
-                                view.update(cx, |view, cx| view.save_import(&import, window, cx));
+                                let import = import.clone();
+                                view.update(cx, |view, cx| view.save_import(import, window, cx));
                             }
                         },
                     );
                 }
-                Ok(import) => view.save_import(&import, window, cx),
+                Ok(import) => view.save_import(Arc::new(import), window, cx),
             });
         })
         .detach();
     }
 
-    fn save_import(&mut self, import: &Import, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(e) = import.save(&self.widgets_dir(cx)) {
-            self.import_error = Some(format!("Couldn't save the widget: {e}"));
-            cx.notify();
-            return;
-        }
-        // If it replaced the widget shown, the rescan updates the form.
-        self.rescan(window, cx);
-        if self.selected != import.widget.name {
-            self.select(import.widget.name.clone(), window, cx);
-        }
-        let title = &import.widget.manifest.title;
-        window.push_notification(Notification::success(format!("Imported \"{title}\"")), cx);
+    fn save_import(&mut self, import: Arc<Import>, window: &mut Window, cx: &mut Context<Self>) {
+        self.scan_gen += 1;
+        let scan_gen = self.scan_gen;
+        let dir = self.widgets_dir(cx);
+        let import_for_io = import.clone();
+        let saving = cx.background_executor().spawn(async move {
+            import_for_io.save(&dir)?;
+            Ok::<_, std::io::Error>(scan(&dir))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = saving.await;
+            let _ = this.update_in(cx, |view, window, cx| match result {
+                Err(e) => {
+                    view.import_error = Some(format!("Couldn't save the widget: {e}"));
+                    cx.notify();
+                }
+                Ok(entries) => {
+                    if view.scan_gen == scan_gen {
+                        view.scanning = false;
+                        // If it replaced the widget shown, apply_scanned updates the form.
+                        view.apply_scanned(entries, window, cx);
+                    }
+                    if view.selected != import.widget.name {
+                        view.select(import.widget.name.clone(), window, cx);
+                    }
+                    let title = &import.widget.manifest.title;
+                    window.push_notification(
+                        Notification::success(format!("Imported \"{title}\"")),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
     }
 
     fn open_folder(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let dir = self.widgets_dir(cx);
-        // It only exists once a widget was imported; create it so there's
-        // something to open (and to put widgets into).
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            report(
-                window,
-                cx,
-                format!("Couldn't create {}: {e}", dir.display()),
-            );
-            return;
-        }
-        cx.open_with_system(&dir);
+        open_folder(&self.widgets_dir(cx), window, cx);
     }
 
     /// Asks, then deletes the selected imported widget's file and forgets
@@ -623,28 +452,42 @@ impl WidgetsWindow {
         // save its values again.
         if self.selected == name {
             self.form = None;
-            self.pending = None;
-            self.dirty = false;
+            self.debounce.cancel();
         }
-        match widgets::remove(&self.widgets_dir(cx), &name) {
-            Ok(()) => {}
-            // Already gone (deleted in the file manager): only the values
-            // are left to forget.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                report(window, cx, format!("Couldn't remove the widget: {e}"));
-                return;
+        self.scan_gen += 1;
+        let scan_gen = self.scan_gen;
+        let dir = self.widgets_dir(cx);
+        let removed_name = name.clone();
+        let removing = cx.background_executor().spawn(async move {
+            match widgets::remove(&dir, &removed_name) {
+                Ok(()) => Ok(scan(&dir)),
+                // Already gone (deleted in the file manager): only the values
+                // are left to forget.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(scan(&dir)),
+                Err(e) => Err(e),
             }
-        }
-        edit_settings(
-            &self.engine,
-            window.window_handle(),
-            move |s| {
-                s.profile.widgets.remove(&name);
-            },
-            cx,
-        );
-        self.rescan(window, cx);
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = removing.await;
+            let _ = this.update_in(cx, |view, window, cx| match result {
+                Err(e) => report(window, cx, format!("Couldn't remove the widget: {e}")),
+                Ok(entries) => {
+                    edit_settings(
+                        &view.engine,
+                        window.window_handle(),
+                        move |s| {
+                            s.profile.widgets.remove(&name);
+                        },
+                        cx,
+                    );
+                    if view.scan_gen == scan_gen {
+                        view.scanning = false;
+                        view.apply_scanned(entries, window, cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     // ---- the form ----
@@ -652,9 +495,9 @@ impl WidgetsWindow {
     /// Whether Reset has anything to do: a value that isn't the default,
     /// something typed and not taken in yet, or a typed value with a note.
     fn can_reset(&self) -> bool {
-        self.form
-            .as_ref()
-            .is_some_and(|form| !form.values.is_empty() || self.dirty || form.has_errors())
+        self.form.as_ref().is_some_and(|form| {
+            !form.values.is_empty() || self.debounce.is_dirty() || form.has_errors()
+        })
     }
 
     /// Reset: asks, then puts every setting of the selected widget back to
@@ -698,21 +541,23 @@ impl WidgetsWindow {
     }
 
     /// A field was typed in: (re)starts the timer that takes it in.
-    fn typed(&mut self, cx: &mut Context<Self>) {
-        self.dirty = true;
+    pub(super) fn typed(&mut self, cx: &mut Context<Self>) {
+        self.debounce.schedule(cx, |this, cx| {
+            this.apply(cx);
+            cx.notify();
+        });
         cx.notify(); // Reset may have something to do now
-        self.pending = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(APPLY_AFTER).await;
-            let _ = this.update(cx, |this, cx| {
-                this.apply(cx);
-                cx.notify();
-            });
-        }));
     }
 
     /// − or + (or ↑ ↓) on the number field of setting `i`: one step from
     /// what it shows, taken in like typing.
-    fn step(&mut self, i: usize, action: StepAction, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn step(
+        &mut self,
+        i: usize,
+        action: StepAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(form) = &self.form else {
             return;
         };
@@ -760,14 +605,13 @@ impl WidgetsWindow {
     /// Applies what's typed right away, without waiting for the pause:
     /// before a profile switch, so it reaches the profile it was typed in.
     pub(crate) fn flush(&mut self, cx: &mut App) {
-        if self.dirty {
-            self.pending = None;
+        if self.debounce.take_dirty() {
             self.apply(cx);
         }
     }
 
     /// A switch or choice: applies at once, along with what's typed.
-    fn pick(&mut self, setting: usize, value: Value, cx: &mut Context<Self>) {
+    pub(super) fn pick(&mut self, setting: usize, value: Value, cx: &mut Context<Self>) {
         let Some(form) = &mut self.form else {
             return;
         };
@@ -775,8 +619,7 @@ impl WidgetsWindow {
             return;
         };
         set(&mut form.values, setting, value);
-        // Dropping the pending timer cancels it; `apply` does its work now.
-        self.pending = None;
+        self.debounce.cancel();
         self.apply(cx);
         cx.notify();
     }
@@ -786,7 +629,7 @@ impl WidgetsWindow {
     /// `Context<Self>`: it's also called while the window is being
     /// released, when only `App` is available.
     fn apply(&mut self, cx: &mut App) {
-        self.dirty = false;
+        self.debounce.cancel();
         let Some(form) = &mut self.form else {
             return;
         };
@@ -810,8 +653,7 @@ impl WidgetsWindow {
     /// The URL with the values picked, for the clipboard.
     fn copy_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // What's typed counts, even within the pause.
-        if self.dirty {
-            self.pending = None;
+        if self.debounce.take_dirty() {
             self.apply(cx);
             cx.notify();
         }
@@ -1052,90 +894,6 @@ impl WidgetsWindow {
         .child(address)
         .child(settings)
     }
-
-    fn render_setting(
-        &self,
-        i: usize,
-        setting: &Setting,
-        form: &Form,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let field = form.fields.get(i).cloned().flatten();
-        let control = match (&setting.kind, form.current(setting), field) {
-            // − value unit +: the buttons and ↑ ↓ report to `step`.
-            (Kind::Number { unit, .. }, _, Some(field)) => div()
-                .id(("widget-field", i))
-                .w(px(200.))
-                .child(
-                    NumberInput::new(&field)
-                        .accessibility_label(setting.label.clone())
-                        .when_some(unit.clone(), |input, unit| {
-                            input.suffix(div().text_sm().text_color(muted).child(unit))
-                        }),
-                )
-                // Findable in the UI tests, to click − or + within it.
-                .test_support()
-                .into_any_element(),
-            (Kind::Text { .. }, _, Some(field)) => Input::new(&field)
-                .id(("widget-field", i))
-                .into_any_element(),
-            (Kind::Bool { .. }, Value::Bool(on), _) => Switch::new(("widget-switch", i))
-                .checked(on)
-                .on_click(cx.listener(move |this, on: &bool, _, cx| {
-                    this.pick(i, Value::Bool(*on), cx);
-                }))
-                .into_any_element(),
-            (Kind::Choice { options, .. }, Value::Text(picked), _) => {
-                // One id per setting, each option numbered within it.
-                let id = SharedString::from(format!("widget-choice-{i}"));
-                segmented(
-                    cx,
-                    options.iter().enumerate().map(|(n, option)| {
-                        let value = Value::Text(option.clone());
-                        choice((id.clone(), n), option.clone(), *option == picked).on_click(
-                            cx.listener(move |this, _, _, cx| this.pick(i, value.clone(), cx)),
-                        )
-                    }),
-                )
-                .into_any_element()
-            }
-            // A value of the wrong type can't be current (`Form::new` and
-            // `set` only keep fitting ones), nor a typed setting without
-            // its field.
-            _ => div().into_any_element(),
-        };
-        // Help and problems line up under the control.
-        let note = |text: String| div().pl(LABEL_WIDTH + px(12.)).text_sm().child(text);
-        v_flex()
-            .gap_1()
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(
-                        div()
-                            .w(LABEL_WIDTH)
-                            .flex_none()
-                            .text_color(muted)
-                            .child(setting.label.clone()),
-                    )
-                    .child(div().flex_1().min_w_0().child(control)),
-            )
-            .children(
-                setting
-                    .help
-                    .clone()
-                    .map(|help| note(help).text_color(muted)),
-            )
-            .children(
-                form.errors
-                    .get(i)
-                    .cloned()
-                    .flatten()
-                    .map(|problem| note(problem).text_color(cx.theme().danger)),
-            )
-    }
 }
 
 impl Render for WidgetsWindow {
@@ -1189,7 +947,7 @@ mod tests {
 
     use super::WidgetsWindow;
     use crate::app_config::AppConfig;
-    use crate::settings_window::APPLY_AFTER;
+    use crate::ui::APPLY_AFTER;
 
     struct Ui {
         window: WindowHandle<Root>,
@@ -1260,13 +1018,17 @@ mod tests {
             view = Some(widgets.clone());
             Root::new(widgets, window, cx)
         });
-        Ui {
+        let ui = Ui {
             window,
             view,
             engine,
             dir,
             _runtime: runtime,
-        }
+        };
+        // Wait for the initial background folder scan to finish so tests see
+        // any pre-populated widgets immediately.
+        run_until(cx, |cx| !ui.view().read_with(cx, |v, _| v.scanning));
+        ui
     }
 
     /// A small widget with one setting, a size defaulting to `size`.
@@ -1694,8 +1456,12 @@ mod tests {
 
         import(cx);
         click_in_dialog(cx, &ui, "ok"); // "Replace"
-        run_until(cx, |_| {
-            std::fs::read_to_string(&imported).is_ok_and(|page| page.contains("\"default\": 64"))
+        run_until(cx, |cx| {
+            ui.view().read_with(cx, |view, _| {
+                view.form.as_ref().is_some_and(|form| {
+                    form.widget.manifest.settings[0].default_value() == Value::Number(64.)
+                })
+            })
         });
         assert_eq!(names(cx, &ui), listed(&["test-widget"]));
         let (default, size) = ui.view().read_with(cx, |view, _| {
@@ -1803,7 +1569,7 @@ mod tests {
 
     #[test]
     fn a_step_lands_on_the_grid_from_min_within_the_range() {
-        use super::stepped;
+        use super::form::stepped;
         use gpui_kit::component::input::StepAction::{Decrement as Down, Increment as Up};
 
         // Live Emoji's size: 8 to 512, steps of 4.

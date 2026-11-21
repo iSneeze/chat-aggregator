@@ -10,8 +10,7 @@
 //! and `config.toml`) once typing has paused for a moment: a "debounce".
 //! The look is the exception: it applies on the spot.
 
-use std::time::Duration;
-
+use chat_core::ChatPlatform;
 use chat_core::tiers::{Amount, TipSettings};
 use chat_engine::{Appearance, DEFAULT_HISTORY, DEFAULT_PORT, EngineHandle, Hide, ServerSettings};
 use gpui_kit::component::button::Button;
@@ -24,13 +23,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_config::{AppConfig, edit_settings};
-use crate::app_view::report;
 use crate::appearance;
 use crate::paid;
-
-/// How long typing must pause before edits apply (here and in the
-/// widgets window).
-pub(crate) const APPLY_AFTER: Duration = Duration::from_millis(800);
+use crate::ui::{Debouncer, open_folder};
 
 /// The dropdown's entries: the value saved in `config.toml`, and its label.
 const APPEARANCES: [(Appearance, &str, &str); 4] = [
@@ -40,15 +35,26 @@ const APPEARANCES: [(Appearance, &str, &str); 4] = [
     (Appearance::HighContrast, "high-contrast", "High contrast"),
 ];
 
-/// The overlay's platform switches: label, and what switching it off hides.
-const SHOWN_PLATFORMS: [(&str, &[Hide]); 6] = [
-    ("Twitch", &[Hide::Twitch]),
-    ("YouTube", &[Hide::YouTube]),
-    ("Picarto", &[Hide::Picarto]),
-    ("RPlay", &[Hide::Rplay]),
-    ("StreamElements tips", &[Hide::StreamElements]),
-    ("Streamlabs tips", &[Hide::Streamlabs]),
-];
+/// Label for a platform's overlay visibility switch.
+fn platform_switch_label(platform: ChatPlatform) -> &'static str {
+    match platform {
+        ChatPlatform::StreamElements => "StreamElements tips",
+        ChatPlatform::Streamlabs => "Streamlabs tips",
+        other => other.label(),
+    }
+}
+
+/// The `Hide` flag toggled by switching a platform off in the overlay.
+fn platform_hide(platform: ChatPlatform) -> &'static [Hide] {
+    match platform {
+        ChatPlatform::Twitch => &[Hide::Twitch],
+        ChatPlatform::YouTube => &[Hide::YouTube],
+        ChatPlatform::Picarto => &[Hide::Picarto],
+        ChatPlatform::Rplay => &[Hide::Rplay],
+        ChatPlatform::StreamElements => &[Hide::StreamElements],
+        ChatPlatform::Streamlabs => &[Hide::Streamlabs],
+    }
+}
 
 /// The overlay's message switches: label, description, and what switching
 /// it off hides. "Chat" covers emote-only messages too: hiding chat but
@@ -180,11 +186,8 @@ pub struct SettingsWindow {
     /// (`AppConfig::switches`).
     loaded_for: u64,
     draft: Draft,
-    /// The pending "apply the draft" timer. Storing a new one drops the old
-    /// one, and dropping a GPUI `Task` cancels it: that's the whole debounce.
-    pending: Option<Task<()>>,
-    /// The draft has changes that aren't applied yet.
-    dirty: bool,
+    /// Debounces rapid typing / stepping before sending edits to the engine.
+    debounce: Debouncer,
     api_key: Entity<InputState>,
     tip_currency: Entity<InputState>,
     /// Where tip tiers 2–7 start (tier 1 is everything below tier 2).
@@ -245,7 +248,7 @@ impl SettingsWindow {
             // edit: apply it now. (Problems then only go to the log: there's
             // no window left to show them in.)
             cx.on_release(|this, cx| {
-                if this.dirty {
+                if this.debounce.take_dirty() {
                     this.apply(cx);
                 }
             }),
@@ -265,8 +268,7 @@ impl SettingsWindow {
             window: window.window_handle(),
             loaded_for,
             draft,
-            pending: None,
-            dirty: false,
+            debounce: Debouncer::default(),
             api_key,
             tip_currency,
             tip_tiers,
@@ -281,11 +283,7 @@ impl SettingsWindow {
         if self.draft == before {
             return;
         }
-        self.dirty = true;
-        self.pending = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(APPLY_AFTER).await;
-            let _ = this.update(cx, |this, cx| this.apply(cx));
-        }));
+        self.debounce.schedule(cx, |this, cx| this.apply(cx));
         cx.notify();
     }
 
@@ -295,7 +293,7 @@ impl SettingsWindow {
     /// released, when only `App` is available. (A `Context` works too: it
     /// derefs to `App`.)
     fn apply(&mut self, cx: &mut App) {
-        self.dirty = false;
+        self.debounce.cancel();
         let draft = self.draft.clone();
         edit_settings(
             &self.engine,
@@ -308,8 +306,7 @@ impl SettingsWindow {
     /// Applies edits still waiting for the typing pause right away: before
     /// a profile switch, so they reach the profile they were made in.
     pub(crate) fn flush(&mut self, cx: &mut App) {
-        if self.dirty {
-            self.pending = None;
+        if self.debounce.take_dirty() {
             self.apply(cx);
         }
     }
@@ -335,8 +332,7 @@ impl SettingsWindow {
     /// still pending was flushed before the switch (`flush`).
     fn load_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let fresh = Draft::new(&self.config.read(cx).settings());
-        self.pending = None;
-        self.dirty = false;
+        self.debounce.cancel();
         self.draft.hide = fresh.hide;
         self.draft.tip_currency = fresh.tip_currency.clone();
         self.draft.tip_tiers = fresh.tip_tiers.clone();
@@ -376,8 +372,8 @@ impl SettingsWindow {
     /// to wait out). Edits still waiting for the pause go along with it.
     fn apply_now(&mut self, edit: impl FnOnce(&mut Draft), cx: &mut Context<Self>) {
         edit(&mut self.draft);
-        // Dropping the pending timer cancels it; `apply` does its work now.
-        self.pending = None;
+        // Cancels any pending timer; `apply` sends the whole draft now.
+        self.debounce.cancel();
         self.apply(cx);
         cx.notify();
     }
@@ -458,7 +454,7 @@ impl SettingsWindow {
                 },
             )
         };
-        let open_folder = {
+        let open_folder_field = {
             let dir = settings_dir.clone();
             SettingField::render(move |_, _, _| {
                 let dir = dir.clone();
@@ -466,19 +462,7 @@ impl SettingsWindow {
                     .icon(IconName::FolderOpen)
                     .label("Open folder")
                     .small()
-                    .on_click(move |_, window, cx| {
-                        // It exists once anything was saved; create it so
-                        // there's something to open.
-                        if let Err(e) = std::fs::create_dir_all(&dir) {
-                            report(
-                                window,
-                                cx,
-                                format!("Couldn't create {}: {e}", dir.display()),
-                            );
-                            return;
-                        }
-                        cx.open_with_system(&dir);
-                    })
+                    .on_click(move |_, window, cx| open_folder(&dir, window, cx))
             })
         };
         let json_api = {
@@ -592,7 +576,7 @@ impl SettingsWindow {
                     .description("High contrast: black, white and bright colours."),
                 ),
                 SettingGroup::new().title("Files").item(
-                    SettingItem::new("Settings folder", open_folder).description(format!(
+                    SettingItem::new("Settings folder", open_folder_field).description(format!(
                         "config.toml, themes and emoji live in {}",
                         settings_dir.display()
                     )),
@@ -636,8 +620,11 @@ impl SettingsWindow {
                          itself. Saved with the profile \"{profile}\", as is everything \
                          below."
                     ))
-                    .items(SHOWN_PLATFORMS.iter().map(|(label, items)| {
-                        SettingItem::new(*label, shown_switch(&view, items).default_value(true))
+                    .items(ChatPlatform::ALL.into_iter().map(|platform| {
+                        SettingItem::new(
+                            platform_switch_label(platform),
+                            shown_switch(&view, platform_hide(platform)).default_value(true),
+                        )
                     })),
                 SettingGroup::new()
                     .title("Messages shown")
@@ -665,9 +652,9 @@ impl SettingsWindow {
                     .description(
                         "Every paid message gets a tier from 1 to 7, on one scale for all \
                          platforms: YouTube's Super Chat tiers. Twitch counts 100 bits as a \
-                         dollar; tips start where you say, in your tip currency. Tiers \
-                         colour donations in the overlay, and are what a reaction's \
-                         \"tier 4 or more\" means.",
+                         dollar, RPlay 20 coins as a dollar; tips start where you say, in \
+                         your tip currency. Tiers colour donations in the overlay, and are \
+                         what a reaction's \"tier 4 or more\" means.",
                     )
                     .item(tier_table),
             ]),
@@ -731,13 +718,14 @@ fn tier_table(
         .gap_3()
         .text_sm()
         .text_color(muted)
-        .child(cell(40.).child("Tier"))
-        .child(cell(150.).child(match &currency {
+        .child(cell(36.).child("Tier"))
+        .child(cell(140.).child(match &currency {
             Some(code) => format!("Tips ({code})"),
             None => "Tips".into(),
         }))
-        .child(cell(120.).child("Twitch"))
-        .child(cell(80.).child("YouTube"));
+        .child(cell(105.).child("Twitch"))
+        .child(cell(105.).child("RPlay"))
+        .child(cell(75.).child("YouTube"));
     let rows = paid::all().map(|tier| {
         let tips_cell = match tier.checked_sub(2) {
             // Tier 1 follows from tier 2.
@@ -752,7 +740,7 @@ fn tier_table(
                 .gap_1()
                 .items_center()
                 .child(
-                    div().w(px(100.)).child(
+                    div().w(px(95.)).child(
                         Input::new(&inputs[i as usize])
                             .id(("settings-tip-tier", tier as usize))
                             .small(),
@@ -763,10 +751,11 @@ fn tier_table(
         h_flex()
             .gap_3()
             .items_center()
-            .child(cell(40.).child(tier.to_string()))
-            .child(cell(150.).child(tips_cell))
-            .child(cell(120.).text_sm().child(paid::bits_start(tier)))
-            .child(cell(80.).text_sm().child(paid::youtube_start(tier)))
+            .child(cell(36.).child(tier.to_string()))
+            .child(cell(140.).child(tips_cell))
+            .child(cell(105.).text_sm().child(paid::bits_start(tier)))
+            .child(cell(105.).text_sm().child(paid::coins_start(tier)))
+            .child(cell(75.).text_sm().child(paid::youtube_start(tier)))
     });
     let problem = match &tips {
         Some(Err(problem)) => Some(format!("Not applied yet: {problem}.")),
@@ -898,8 +887,9 @@ mod tests {
 
     use chat_core::tiers::{Amount, TipSettings};
 
-    use super::{APPLY_AFTER, SettingsWindow};
+    use super::SettingsWindow;
     use crate::app_config::AppConfig;
+    use crate::ui::APPLY_AFTER;
 
     struct Ui {
         window: WindowHandle<Root>,
@@ -1235,7 +1225,7 @@ mod tests {
         use gpui_kit::test::TestWindowExt;
         let ui = open(cx, "report");
         cx.update_window(ui.window.into(), |_, window, cx| {
-            crate::app_view::report(window, cx, "something went wrong".into());
+            crate::ui::report(window, cx, "something went wrong".into());
         })
         .unwrap();
         cx.run_until_parked();
