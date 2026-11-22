@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "chat-app"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "chat-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "directories",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "chat-engine"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "chat-picarto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "chat-reactions"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.22.1",
  "chat-core",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "chat-render"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "chat-rplay"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "chat-server"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "chat-streamelements"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "chat-streamlabs"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "chat-twitch"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "chat-websocket"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chat-core",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "chat-youtube"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "axum",

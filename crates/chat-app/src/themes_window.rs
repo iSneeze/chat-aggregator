@@ -886,19 +886,6 @@ impl ThemesWindow {
                         })),
                 )
             })
-            .when_some(entry.builtin, |row, builtin| {
-                row.child(
-                    Button::new("theme-copy-builtin")
-                        .label("Copy as custom…")
-                        .small()
-                        .tooltip(
-                            "Copy this built-in theme into your themes folder to edit its CSS or HTML",
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_new_theme_form(builtin, window, cx);
-                        })),
-                )
-            })
             .child(
                 Button::new("theme-preview")
                     .icon(IconName::ExternalLink)
