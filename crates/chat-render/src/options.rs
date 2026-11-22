@@ -143,6 +143,23 @@ pub struct ResolvedStyle {
     pub classes: Vec<String>,
 }
 
+/// Theme options parsed from an overlay URL's query string (`?preset=…` and/or
+/// individual option names).
+///
+/// When present on a request, these start from the theme's defaults rather than
+/// the profile's saved options, so each OBS browser source keeps its own pinned
+/// configuration even if the theme is edited later for another scene.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UrlThemeOptions {
+    /// Effective non-default option values resolved from the query parameters.
+    pub values: ThemeValues,
+    /// Canonical encoded query string (without leading `?`) to append to the
+    /// `<link href="…/overlay.css">` tag so the stylesheet receives the same
+    /// pinned options (even when all resolved values equal defaults, e.g.
+    /// `?preset=Classic`).
+    pub css_query: String,
+}
+
 impl ResolvedStyle {
     pub fn is_empty(&self) -> bool {
         self.vars.is_empty() && self.classes.is_empty()
@@ -202,6 +219,52 @@ impl ThemeOption {
                 normalize_hex_color(s).map(ThemeValue::Text)
             }
             _ => Some(value.clone()),
+        }
+    }
+
+    /// Parses a single URL query parameter value according to this option's
+    /// type and bounds. Accepts bare hex colors (`ff85b3`) in addition to
+    /// `#ff85b3`, `1`/`0`/`true`/`false` for booleans, and case-insensitive
+    /// choice labels.
+    pub fn parse_query_value(&self, raw: &str) -> Option<ThemeValue> {
+        let trimmed = raw.trim();
+        match &self.kind {
+            OptionKind::Color { .. } => {
+                let candidate = if trimmed.starts_with('#') {
+                    trimmed.to_string()
+                } else {
+                    format!("#{trimmed}")
+                };
+                normalize_hex_color(&candidate).map(ThemeValue::Text)
+            }
+            OptionKind::Number { min, max, .. } => {
+                let n: f64 = trimmed.parse().ok()?;
+                (n.is_finite() && (*min..=*max).contains(&n)).then_some(ThemeValue::Number(n))
+            }
+            OptionKind::Bool { .. } => match trimmed.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Some(ThemeValue::Bool(true)),
+                "false" | "0" | "no" | "off" => Some(ThemeValue::Bool(false)),
+                _ => None,
+            },
+            OptionKind::Choice { options, .. } => options
+                .iter()
+                .find(|o| o.as_str() == trimmed)
+                .or_else(|| options.iter().find(|o| o.eq_ignore_ascii_case(trimmed)))
+                .cloned()
+                .map(ThemeValue::Text),
+        }
+    }
+
+    /// Formats a normalized value compactly for a URL query parameter (hex
+    /// colors drop the leading `#` to avoid `%23`).
+    fn format_query_value(&self, value: &ThemeValue) -> String {
+        match (&self.kind, value) {
+            (OptionKind::Color { .. }, ThemeValue::Text(hex)) => {
+                hex.strip_prefix('#').unwrap_or(hex).to_string()
+            }
+            (_, ThemeValue::Bool(b)) => b.to_string(),
+            (_, ThemeValue::Number(n)) => format_number(*n),
+            (_, ThemeValue::Text(s)) => s.clone(),
         }
     }
 
@@ -342,6 +405,147 @@ impl ThemeManifest {
             }
         }
         swatches
+    }
+
+    /// Parses URL query parameters into pinned theme options.
+    ///
+    /// Returns `None` when no valid `preset` or manifest option parameter is
+    /// present (so the overlay falls back to the profile's live saved options).
+    /// When `Some`, values start from the theme's defaults, apply `preset` (if
+    /// matched case-insensitively), and then apply individual option overrides
+    /// in order.
+    pub fn parse_query_options(&self, params: &[(String, String)]) -> Option<UrlThemeOptions> {
+        let mut matched_any = false;
+        let mut values = ThemeValues::new();
+        let mut matched_preset: Option<String> = None;
+        let mut first_matched_pair: Option<(String, String)> = None;
+
+        // Apply preset first (last `preset=` wins if repeated).
+        if let Some((_, preset_name)) = params.iter().rev().find(|(k, _)| k == "preset") {
+            let trimmed = preset_name.trim();
+            if let Some(preset) = self
+                .presets
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(trimmed))
+            {
+                matched_any = true;
+                matched_preset = Some(preset.name.clone());
+                for (name, val) in &preset.values {
+                    if let Some(opt) = self.options.iter().find(|o| o.name == *name) {
+                        if *val == opt.default_value() {
+                            values.remove(name);
+                        } else {
+                            values.insert(name.clone(), val.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply individual option overrides on top of any preset.
+        for (key, raw) in params {
+            if matches!(
+                key.as_str(),
+                "theme" | "hide" | "newest" | "demo" | "preset"
+            ) {
+                continue;
+            }
+            let Some(opt) = self.options.iter().find(|o| o.name == *key) else {
+                continue;
+            };
+            let Some(parsed) = opt.parse_query_value(raw) else {
+                continue;
+            };
+            matched_any = true;
+            if first_matched_pair.is_none() {
+                first_matched_pair = Some((opt.name.clone(), opt.format_query_value(&parsed)));
+            }
+            if parsed == opt.default_value() {
+                values.remove(&opt.name);
+            } else {
+                values.insert(opt.name.clone(), parsed);
+            }
+        }
+
+        if !matched_any {
+            return None;
+        }
+
+        let mut encoded_pairs = self.encode_query_options(&values);
+        // If the URL explicitly pinned everything back to defaults (e.g.
+        // `?preset=Classic` or `?max_messages=20`), keep a marker pair so
+        // `/overlay.css?...` also knows to serve defaults rather than profile
+        // overrides.
+        if encoded_pairs.is_empty() {
+            if let Some(name) = matched_preset {
+                encoded_pairs.push(("preset".into(), name));
+            } else if let Some(pair) = first_matched_pair {
+                encoded_pairs.push(pair);
+            }
+        }
+
+        Some(UrlThemeOptions {
+            values,
+            css_query: encode_query_string(&encoded_pairs),
+        })
+    }
+
+    /// Encodes `values` into the shortest list of URL query `(key, value)`
+    /// pairs that round-trips back to the exact same options via
+    /// [`Self::parse_query_options`].
+    ///
+    /// Returns an empty vector when all options are at their defaults.
+    /// Automatically uses `preset=<Name>` plus only the differing options when
+    /// that produces a shorter URL than listing every non-default option.
+    pub fn encode_query_options(&self, values: &ThemeValues) -> Vec<(String, String)> {
+        let mut target = ThemeValues::new();
+        for opt in &self.options {
+            if let Some(norm) = values.get(&opt.name).and_then(|v| opt.normalize(v))
+                && norm != opt.default_value()
+            {
+                target.insert(opt.name.clone(), norm);
+            }
+        }
+        if target.is_empty() {
+            return Vec::new();
+        }
+
+        // Candidate 0: direct list of non-default options.
+        let mut best: Vec<(String, String)> = self
+            .options
+            .iter()
+            .filter_map(|opt| {
+                let val = target.get(&opt.name)?;
+                Some((opt.name.clone(), opt.format_query_value(val)))
+            })
+            .collect();
+        let mut best_len = encode_query_string(&best).len();
+
+        // Candidates 1..N: each preset plus only the delta from that preset.
+        for preset in &self.presets {
+            let mut candidate = vec![("preset".to_string(), preset.name.clone())];
+            for opt in &self.options {
+                let want = target
+                    .get(&opt.name)
+                    .cloned()
+                    .unwrap_or_else(|| opt.default_value());
+                let have = preset
+                    .values
+                    .get(&opt.name)
+                    .cloned()
+                    .unwrap_or_else(|| opt.default_value());
+                if want != have {
+                    candidate.push((opt.name.clone(), opt.format_query_value(&want)));
+                }
+            }
+            let len = encode_query_string(&candidate).len();
+            if len < best_len {
+                best = candidate;
+                best_len = len;
+            }
+        }
+
+        best
     }
 
     fn validate(&mut self) -> anyhow::Result<()> {
@@ -551,6 +755,83 @@ impl ThemeManifest {
             preset.values = normalized;
         }
         Ok(())
+    }
+}
+
+/// Percent-encodes one URL query key or value (UTF-8, keeping unreserved
+/// ASCII characters `A-Za-z0-9-_.~` unescaped).
+pub fn encode_query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+/// Encodes `(key, value)` pairs into a `k1=v1&k2=v2` query string.
+pub fn encode_query_string(pairs: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        if i > 0 {
+            out.push('&');
+        }
+        out.push_str(&encode_query_value(k));
+        out.push('=');
+        out.push_str(&encode_query_value(v));
+    }
+    out
+}
+
+/// Parses a raw URL query string (`k1=v1&k2=v2`, without leading `?`) into
+/// decoded `(key, value)` pairs.
+pub fn parse_raw_query(raw: &str) -> Vec<(String, String)> {
+    raw.split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| match part.split_once('=') {
+            Some((k, v)) => (decode_query_component(k), decode_query_component(v)),
+            None => (decode_query_component(part), String::new()),
+        })
+        .collect()
+}
+
+fn decode_query_component(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                if let (Some(hi), Some(lo)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                    out.push((hi << 4) | lo);
+                    i += 3;
+                } else {
+                    out.push(b'%');
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -834,5 +1115,102 @@ Two = "2px"
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn url_query_options_parse_and_encode_compactly() {
+        let manifest = ThemeManifest::parse(Builtin::Default.manifest_toml()).unwrap();
+
+        // Reserved and unknown parameters alone return None (use live profile options).
+        let plain = parse_raw_query("theme=default&newest=top&hide=notice&bogus=123");
+        assert!(manifest.parse_query_options(&plain).is_none());
+
+        // Preset alone resolves all preset options cleanly.
+        let sakura_params = parse_raw_query("theme=default&preset=Sakura");
+        let parsed = manifest
+            .parse_query_options(&sakura_params)
+            .expect("Sakura preset should parse");
+        assert_eq!(
+            parsed.values.get("accent_color"),
+            Some(&ThemeValue::Text("#ff85b3".into()))
+        );
+        assert_eq!(
+            parsed.values.get("accent_mode"),
+            Some(&ThemeValue::Text("Custom".into()))
+        );
+        assert_eq!(parsed.css_query, "preset=Sakura");
+
+        // Preset + override (including overriding a preset option back to default
+        // and bare hex colors without `#`).
+        let tweaked = parse_raw_query(
+            "preset=sakura&accent_color=00ccff&accent_mode=Platform&max_messages=10&show_avatars=0",
+        );
+        let parsed = manifest
+            .parse_query_options(&tweaked)
+            .expect("preset + overrides should parse");
+        assert_eq!(
+            parsed.values.get("accent_color"),
+            Some(&ThemeValue::Text("#00ccff".into()))
+        );
+        assert!(
+            !parsed.values.contains_key("accent_mode"),
+            "overriding back to default removes the override"
+        );
+        assert_eq!(
+            parsed.values.get("max_messages"),
+            Some(&ThemeValue::Number(10.0))
+        );
+        assert_eq!(
+            parsed.values.get("show_avatars"),
+            Some(&ThemeValue::Bool(false))
+        );
+
+        // Encoding chooses `preset=` + delta when shorter than listing all options.
+        let sakura = manifest
+            .presets
+            .iter()
+            .find(|p| p.name == "Sakura")
+            .unwrap();
+        let mut with_tweak = sakura.values.clone();
+        with_tweak.insert("max_messages".into(), ThemeValue::Number(10.0));
+        let encoded = manifest.encode_query_options(&with_tweak);
+        assert_eq!(
+            encoded,
+            vec![
+                ("preset".into(), "Sakura".into()),
+                ("max_messages".into(), "10".into()),
+            ]
+        );
+
+        // Round-trip every built-in preset through encode -> query -> parse.
+        for builtin in Builtin::ALL {
+            let m = builtin.manifest();
+            for preset in &m.presets {
+                let pairs = m.encode_query_options(&preset.values);
+                let query = encode_query_string(&pairs);
+                if pairs.is_empty() {
+                    // Preset equals all defaults: explicit `?preset=<name>` still pins defaults.
+                    let explicit = parse_raw_query(&encode_query_string(&[(
+                        "preset".into(),
+                        preset.name.clone(),
+                    )]));
+                    let got = m.parse_query_options(&explicit).expect("explicit preset");
+                    assert_eq!(m.resolve(Some(&got.values)), m.resolve(Some(&preset.values)));
+                    assert!(
+                        !got.css_query.is_empty(),
+                        "default-matching preset must still forward css_query"
+                    );
+                } else {
+                    let reparsed = parse_raw_query(&query);
+                    let got = m.parse_query_options(&reparsed).expect("round-trip");
+                    assert_eq!(
+                        m.resolve(Some(&got.values)),
+                        m.resolve(Some(&preset.values)),
+                        "{builtin:?} preset {:?}",
+                        preset.name
+                    );
+                }
+            }
+        }
     }
 }

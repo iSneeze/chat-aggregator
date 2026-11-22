@@ -214,13 +214,20 @@ scene its own theme, add `?theme=` and the theme's name to its overlay URL:
 http://127.0.0.1:7878/?theme=my-theme
 http://127.0.0.1:7878/?theme=my-theme&newest=top
 http://127.0.0.1:7878/?theme=cozy        a built-in theme (default, minimal, bubbles, cozy, retro, neon)
+http://127.0.0.1:7878/?theme=cozy&preset=Matcha%20Cream&max_messages=10
 ```
 
-That overlay keeps its theme whatever the app is set to. **Reload
-overlays** in the app still reloads it (with its own theme), so editing
-its files works as usual. A name with a space goes into the URL as `%20`
-(`?theme=my%20theme`). If the name doesn't match a theme folder, the
-overlay shows the app's theme instead, and the log says why.
+That overlay keeps its theme whatever the app is set to. You can also pin
+specific `theme.toml` options or a preset directly in the URL (clicking
+**Copy URL** in the **Themes** window builds the shortest `?theme=…&preset=…`
+URL for your current settings automatically). A URL with option or preset
+parameters stays locked to those values even if you later change the theme's
+settings in the app for another OBS scene; a plain `?theme=<name>` URL without
+option parameters continues to update live with the app. **Reload overlays** in
+the app still reloads it (with its own theme and parameters), so editing its
+files works as usual. A name with a space goes into the URL as `%20`
+(`?theme=my%20theme`). If the name doesn't match a theme folder, the overlay
+shows the app's theme instead, and the log says why.
 
 ## Images and fonts
 

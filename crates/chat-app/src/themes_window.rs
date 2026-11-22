@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chat_engine::theme_options::{
-    OptionKind, ThemeManifest, ThemeValue, ThemeValues, lookup_theme_values,
+    OptionKind, ThemeManifest, ThemeValue, ThemeValues, encode_query_string, encode_query_value,
+    lookup_theme_values,
 };
 use chat_engine::{Builtin, EngineHandle, ThemeSource};
 use chat_render::themes;
@@ -79,20 +80,6 @@ fn scan(themes_dir: &Path) -> Vec<Entry> {
         }
     });
     builtin_entries().into_iter().chain(custom).collect()
-}
-
-/// Percent-encodes a theme name for `?theme=<name>` query parameters.
-fn encode_query_value(value: &str) -> String {
-    value
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-                char::from(b).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
 }
 
 /// State for the inline "New theme…" / "Copy…" form in the left pane.
@@ -346,13 +333,52 @@ impl ThemesWindow {
         cx.notify();
     }
 
-    fn copy_url(&self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
-        let url = format!("{}?theme={}", self.server, encode_query_value(&entry.key));
+    /// Builds the pinned overlay URL for `entry`, encoding any non-default
+    /// options using the shortest `preset=…` + delta representation. Returns
+    /// `(url, has_pinned_options)`.
+    fn pinned_url(&self, entry: &Entry) -> (String, bool) {
+        let mut params = vec![("theme".to_string(), entry.key.clone())];
+        let mut has_options = false;
+        if let Some(form) = &self.form
+            && form.theme_key == entry.key
+        {
+            let opt_params = form.manifest.encode_query_options(&form.values);
+            if !opt_params.is_empty() {
+                has_options = true;
+                params.extend(opt_params);
+            }
+        }
+        (
+            format!("{}?{}", self.server, encode_query_string(&params)),
+            has_options,
+        )
+    }
+
+    fn copy_url(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
+        // Flush any pending debounced edits so typed numbers go into the URL.
+        if self.debounce.take_dirty() {
+            self.apply(cx);
+            cx.notify();
+        }
+        if let Some(form) = &self.form
+            && form.theme_key == entry.key
+            && form.has_errors()
+        {
+            report(
+                window,
+                cx,
+                "Some options need fixing first: they're marked in red.".into(),
+            );
+            return;
+        }
+        let (url, has_options) = self.pinned_url(entry);
         cx.write_to_clipboard(ClipboardItem::new_string(url));
-        window.push_notification(
-            Notification::success(format!("Copied URL for \"{}\"", entry.label)),
-            cx,
-        );
+        let notice = if has_options {
+            format!("Copied URL for \"{}\" with current options", entry.label)
+        } else {
+            format!("Copied URL for \"{}\"", entry.label)
+        };
+        window.push_notification(Notification::success(notice), cx);
     }
 
     fn open_preview(&self, entry: &Entry, cx: &mut Context<Self>) {
@@ -888,7 +914,7 @@ impl ThemesWindow {
                     .icon(IconName::Copy)
                     .label("Copy URL")
                     .small()
-                    .tooltip("Copy a pinned overlay URL (?theme=…) for OBS")
+                    .tooltip("Copy a pinned overlay URL (?theme=…) with the current options for OBS")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.copy_url(&entry_for_copy, window, cx);
                     })),
@@ -1133,6 +1159,53 @@ mod tests {
                 .and_then(|v| v.get("accent_color"))
                 == Some(&ThemeValue::Text("#ff85b3".into()))
         });
+
+        // Copy URL encodes the Sakura preset compactly (`?theme=default&preset=Sakura`),
+        // and any extra tweak adds only that delta.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("theme-copy-url", cx);
+        })
+        .unwrap();
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("URL copied to clipboard");
+        assert!(
+            copied.ends_with("/?theme=default&preset=Sakura"),
+            "expected compact preset URL, got: {copied}"
+        );
+
+        // Tweak accent_mode (at the top of the form) to "By role": URL becomes
+        // `preset=Sakura&accent_mode=By%20role`.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click(("theme-choice-0", 1usize), cx);
+            window.click("theme-copy-url", cx);
+        })
+        .unwrap();
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("URL copied to clipboard");
+        assert!(
+            copied.ends_with("/?theme=default&preset=Sakura&accent_mode=By%20role"),
+            "expected preset + delta URL, got: {copied}"
+        );
+
+        // Picking the default-matching preset (Midnight, index 0) returns
+        // Copy URL to the plain live URL without option params.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click(("theme-preset", 0usize), cx);
+            window.click("theme-copy-url", cx);
+        })
+        .unwrap();
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("URL copied to clipboard");
+        assert!(
+            copied.ends_with("/?theme=default"),
+            "expected plain URL after resetting to defaults, got: {copied}"
+        );
     }
 
     #[gpui_kit::test]

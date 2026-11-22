@@ -19,7 +19,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Path as UrlPath, Query, State};
+use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -28,7 +28,9 @@ use axum::routing::get;
 use base64::Engine as _;
 use chat_core::{ChatEvent, Hub};
 use chat_render::Theme;
-use chat_render::options::{ResolvedStyle, ThemeManifest, ThemeValues, lookup_theme_values};
+use chat_render::options::{
+    ResolvedStyle, ThemeManifest, ThemeValues, lookup_theme_values, parse_raw_query,
+};
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, stream};
 use hide::OverlayFilter;
@@ -190,14 +192,12 @@ pub struct ServerState {
     pub avatars: Arc<Avatars>,
 }
 
-/// The query of an overlay URL (`/?theme=cozy`), passed on to `/events` by
-/// the page. Other parameters (`newest`) are the page script's business.
-#[derive(Default, serde::Deserialize)]
-struct OverlayQuery {
-    theme: Option<String>,
-    /// What this overlay leaves out, instead of the app's setting: names
-    /// separated by commas (`?hide=streamelements,notice`), see [`Hide`].
-    hide: Option<String>,
+/// Extracts the first value for `key` from parsed URL query parameters.
+fn query_param<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    params
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
 }
 
 /// Which theme an overlay uses.
@@ -341,14 +341,19 @@ const NO_CACHE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-cache")
 
 async fn overlay_page(
     State(state): State<ServerState>,
-    Query(query): Query<OverlayQuery>,
+    RawQuery(raw_query): RawQuery,
 ) -> impl IntoResponse {
-    let choice = state.choose_theme(query.theme.as_deref()).await;
+    let params = parse_raw_query(raw_query.as_deref().unwrap_or_default());
+    let choice = state.choose_theme(query_param(&params, "theme")).await;
     let source = state.source_for(&choice);
     let manifest = state.load_manifest(source.clone()).await;
+    let url_options = manifest.parse_query_options(&params);
     let (newest, resolved) = {
         let overlay = state.overlay.borrow();
-        let values = lookup_theme_values(&overlay.theme_options, &source.key());
+        let values = url_options
+            .as_ref()
+            .map(|o| &o.values)
+            .or_else(|| lookup_theme_values(&overlay.theme_options, &source.key()));
         (overlay.newest.as_str(), manifest.resolve(values))
     };
     // The default direction and active style classes go into attributes of the
@@ -372,13 +377,23 @@ async fn overlay_page(
             1,
         );
     }
-    // A pinned theme's stylesheet, written into the page rather than
-    // swapped by the script: the script reads `--max-messages` from the
-    // stylesheet, which must be loaded by then.
-    if let ThemeChoice::Pinned { name, .. } = choice {
+    // A pinned theme's stylesheet (and any URL-pinned theme options), written
+    // into the page rather than swapped by the script: the script reads
+    // `--max-messages` from the stylesheet, which must be loaded by then.
+    let css_base = match &choice {
+        ThemeChoice::Pinned { name, .. } => format!("themes/{}/overlay.css", url_segment(name)),
+        ThemeChoice::App => "theme/overlay.css".to_string(),
+    };
+    let css_href = match &url_options {
+        Some(opts) if !opts.css_query.is_empty() => {
+            format!("{css_base}?{}", opts.css_query.replace('&', "&amp;"))
+        }
+        _ => css_base,
+    };
+    if css_href != "theme/overlay.css" {
         page = page.replacen(
             r#"href="theme/overlay.css""#,
-            &format!(r#"href="themes/{}/overlay.css""#, url_segment(&name)),
+            &format!(r#"href="{css_href}""#),
             1,
         );
     }
@@ -410,8 +425,12 @@ fn url_segment(name: &str) -> String {
 /// The app's theme's files. The CSS lives under `/theme/` too, so a
 /// relative URL in it (`url(bg.png)`) resolves to `/theme/bg.png`: a file
 /// in the same theme folder.
-async fn theme_file(State(state): State<ServerState>, UrlPath(path): UrlPath<String>) -> Response {
-    serve_theme_file(&state, state.current_theme(), &path).await
+async fn theme_file(
+    State(state): State<ServerState>,
+    UrlPath(path): UrlPath<String>,
+    RawQuery(raw_query): RawQuery,
+) -> Response {
+    serve_theme_file(&state, state.current_theme(), &path, raw_query.as_deref()).await
 }
 
 /// A pinned theme's files (`/?theme=<name>`), the same way: its CSS's
@@ -421,18 +440,26 @@ async fn theme_file(State(state): State<ServerState>, UrlPath(path): UrlPath<Str
 async fn named_theme_file(
     State(state): State<ServerState>,
     UrlPath((name, path)): UrlPath<(String, String)>,
+    RawQuery(raw_query): RawQuery,
 ) -> Response {
     match state.choose_theme(Some(&name)).await {
-        ThemeChoice::Pinned { source, .. } => serve_theme_file(&state, source, &path).await,
+        ThemeChoice::Pinned { source, .. } => {
+            serve_theme_file(&state, source, &path, raw_query.as_deref()).await
+        }
         ThemeChoice::App => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
 /// `path` from the theme `source`: its CSS, falling back to the built-in
 /// one, or one of its folder's files.
-async fn serve_theme_file(state: &ServerState, source: ThemeSource, path: &str) -> Response {
+async fn serve_theme_file(
+    state: &ServerState,
+    source: ThemeSource,
+    path: &str,
+    raw_query: Option<&str>,
+) -> Response {
     if path == chat_render::CSS_FILE {
-        return overlay_css(state, source).await.into_response();
+        return overlay_css(state, source, raw_query).await.into_response();
     }
     let Some(dir) = source.folder() else {
         return StatusCode::NOT_FOUND.into_response(); // built-in themes have no files
@@ -469,7 +496,11 @@ async fn serve_theme_file(state: &ServerState, source: ThemeSource, path: &str) 
     }
 }
 
-async fn overlay_css(state: &ServerState, source: ThemeSource) -> impl IntoResponse {
+async fn overlay_css(
+    state: &ServerState,
+    source: ThemeSource,
+    raw_query: Option<&str>,
+) -> impl IntoResponse {
     let key = source.key();
     let (mut css, manifest) = match source {
         ThemeSource::Builtin(builtin) => (builtin.css().to_string(), builtin.manifest().clone()),
@@ -494,9 +525,14 @@ async fn overlay_css(state: &ServerState, source: ThemeSource) -> impl IntoRespo
             (css, manifest)
         }
     };
+    let params = parse_raw_query(raw_query.unwrap_or_default());
+    let url_options = manifest.parse_query_options(&params);
     let overrides: ResolvedStyle = {
         let overlay = state.overlay.borrow();
-        let values = lookup_theme_values(&overlay.theme_options, &key);
+        let values = url_options
+            .as_ref()
+            .map(|o| &o.values)
+            .or_else(|| lookup_theme_values(&overlay.theme_options, &key));
         manifest.resolve_overrides(values)
     };
     if !overrides.vars.is_empty() {
@@ -545,7 +581,7 @@ fn content_type(file: &Path) -> &'static str {
     }
 }
 
-async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQuery>) -> Response {
+async fn events(State(state): State<ServerState>, RawQuery(raw_query): RawQuery) -> Response {
     // Counted as connected for as long as this response stream exists.
     let Some(connected) = state.connections.try_overlay() else {
         return (
@@ -554,12 +590,14 @@ async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQue
         )
             .into_response();
     };
-    let choice = state.choose_theme(query.theme.as_deref()).await;
+    let params = parse_raw_query(raw_query.as_deref().unwrap_or_default());
+    let choice = state.choose_theme(query_param(&params, "theme")).await;
     let source = state.source_for(&choice);
     let style_key = source.key();
     let theme = state.load_theme(source.clone()).await;
     let manifest = state.load_manifest(source).await;
-    let filter = OverlayFilter::new(&state.overlay, query.hide.as_deref());
+    let url_options = manifest.parse_query_options(&params);
+    let filter = OverlayFilter::new(&state.overlay, query_param(&params, "hide"));
     let (history, rx) = state.hub.subscribe();
 
     // Hidden messages are left out before anything else: they take no
@@ -611,29 +649,38 @@ async fn events(State(state): State<ServerState>, Query(query): Query<OverlayQue
         .map(|_| Event::default().event("reload").data("theme changed"));
 
     // Push live theme option changes (`event: style`) whenever this overlay's
-    // resolved style changes, without reloading the page.
-    let mut style_rx = state.overlay.clone();
-    let initial_style = {
-        let overlay = style_rx.borrow_and_update();
-        let values = lookup_theme_values(&overlay.theme_options, &style_key);
-        manifest.resolve(values)
-    };
-    let style_events = WatchStream::from_changes(style_rx).filter_map({
-        let mut last = initial_style;
-        move |overlay| {
+    // resolved style changes, without reloading the page. Overlays whose URL
+    // explicitly pins theme options (`?preset=…` or option overrides) stay
+    // locked to their URL parameters so editing another scene doesn't overwrite
+    // them.
+    let style_events: BoxStream<'static, Event> = if url_options.is_some() {
+        stream::pending().boxed()
+    } else {
+        let mut style_rx = state.overlay.clone();
+        let initial_style = {
+            let overlay = style_rx.borrow_and_update();
             let values = lookup_theme_values(&overlay.theme_options, &style_key);
-            let next = manifest.resolve(values);
-            let event = if next != last {
-                last = next.clone();
-                serde_json::to_string(&next)
-                    .ok()
-                    .map(|json| Event::default().event("style").data(json))
-            } else {
-                None
-            };
-            std::future::ready(event)
-        }
-    });
+            manifest.resolve(values)
+        };
+        WatchStream::from_changes(style_rx)
+            .filter_map({
+                let mut last = initial_style;
+                move |overlay| {
+                    let values = lookup_theme_values(&overlay.theme_options, &style_key);
+                    let next = manifest.resolve(values);
+                    let event = if next != last {
+                        last = next.clone();
+                        serde_json::to_string(&next)
+                            .ok()
+                            .map(|json| Event::default().event("style").data(json))
+                    } else {
+                        None
+                    };
+                    std::future::ready(event)
+                }
+            })
+            .boxed()
+    };
 
     let avatars = state.avatars.clone();
     let events = replay
@@ -1381,5 +1428,71 @@ mod tests {
         read_until(&mut resp, &mut seen, "event: style").await;
         assert!(seen.contains(r#""--chat-font-size":"28px""#), "{seen}");
         assert!(seen.contains("chat--hide-platform"), "{seen}");
+    }
+
+    #[tokio::test]
+    async fn url_pinned_theme_options_override_profile_and_stay_locked() {
+        use chat_render::options::{ThemeValue, ThemeValues};
+
+        let server = start(None).await;
+        let base = format!("http://{}", server.addr);
+
+        // Save non-default profile options for Default (Warm Latte colors + timestamps).
+        let mut profile_opts = ThemeValues::new();
+        profile_opts.insert("text_color".into(), ThemeValue::Text("#111111".into()));
+        profile_opts.insert("show_timestamps".into(), ThemeValue::Bool(true));
+        server.overlay.send_modify(|o| {
+            o.theme_options.insert("default".into(), profile_opts);
+        });
+
+        // A URL with `?preset=Sakura&max_messages=7` uses Sakura + max_messages=7
+        // from theme defaults (so timestamps stay off despite the profile).
+        let (_, page) =
+            get_text(format!("{base}/?theme=default&preset=Sakura&max_messages=7")).await;
+        assert!(page.contains("chat--custom-accent"), "{page}");
+        assert!(!page.contains("chat--show-time"), "{page}");
+        assert!(
+            page.contains(r#"href="themes/default/overlay.css?preset=Sakura&amp;max_messages=7""#),
+            "{page}"
+        );
+
+        let (_, css) = get_text(format!(
+            "{base}/themes/default/overlay.css?preset=Sakura&max_messages=7"
+        ))
+        .await;
+        assert!(css.contains("--chat-accent: #ff85b3;"), "{css}");
+        assert!(css.contains("--max-messages: 7;"), "{css}");
+        assert!(!css.contains("#111111"), "profile text_color must not leak: {css}");
+
+        // A preset matching all defaults (`Midnight`) still overrides the profile
+        // back to defaults instead of falling back to profile options.
+        let (_, page) = get_text(format!("{base}/?theme=default&preset=Midnight")).await;
+        assert!(!page.contains("chat--show-time"), "{page}");
+        assert!(
+            page.contains(r#"href="themes/default/overlay.css?preset=Midnight""#),
+            "{page}"
+        );
+        let (_, css) = get_text(format!("{base}/themes/default/overlay.css?preset=Midnight")).await;
+        assert_eq!(css, chat_render::DEFAULT_CSS);
+
+        // Connected overlay with URL-pinned options ignores live profile edits
+        // (no `event: style` sent when another scene's options change).
+        let mut resp = reqwest::get(format!("{base}/events?theme=default&preset=Sakura"))
+            .await
+            .unwrap();
+        eventually(|| server.connections.overlays() == 1).await;
+
+        server.overlay.send_modify(|o| {
+            let mut next = ThemeValues::new();
+            next.insert("text_color".into(), ThemeValue::Text("#00ff00".into()));
+            o.theme_options.insert("default".into(), next);
+        });
+        server.hub.publish(message("after-edit"));
+        let mut seen = String::new();
+        read_until(&mut resp, &mut seen, r#"data-id="after-edit""#).await;
+        assert!(
+            !seen.contains("event: style"),
+            "URL-pinned overlay must not receive profile style updates: {seen}"
+        );
     }
 }
