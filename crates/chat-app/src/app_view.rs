@@ -631,10 +631,12 @@ impl AppView {
         if problems > 0 {
             counts += &format!(" · {problems} with a problem");
         }
-        let outputs = status
-            .outputs
-            .iter()
-            .map(|output| render_output(output, cx));
+        let outputs = (!settings.paused).then(|| {
+            status
+                .outputs
+                .iter()
+                .map(|output| render_output(output, cx))
+        });
 
         card(cx)
             .child(
@@ -652,11 +654,24 @@ impl AppView {
                     )
                     .child(edit("Edit reactions…")),
             )
+            // While reactions are switched off, hide output errors behind a
+            // quiet grey light so disconnected programs don't look alarming.
+            .when(settings.paused, |card| {
+                card.child(
+                    h_flex()
+                        .id("reactions-disabled")
+                        .gap_2()
+                        .items_center()
+                        .child(light(Health::Off, cx))
+                        .child(div().text_color(muted).child("Reactions disabled"))
+                        .test_support(),
+                )
+            })
             // No output while every rule is off: nothing to connect to.
-            .when(status.outputs.is_empty(), |card| {
+            .when(!settings.paused && status.outputs.is_empty(), |card| {
                 card.child(div().text_color(muted).child("Every rule is switched off."))
             })
-            .children(outputs)
+            .children(outputs.into_iter().flatten())
             .child(div().text_sm().text_color(muted).child(counts))
     }
 
@@ -794,8 +809,10 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let settings_dir =
-            std::env::temp_dir().join(format!("chat-app-ui-test-{}", std::process::id()));
+        static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let settings_dir = std::env::temp_dir()
+            .join(format!("chat-app-ui-test-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings_dir);
         engine.settings.server.port = 0; // the OS picks a free one
         engine.themes_dir = Some(ConfigFile::themes_dir(&settings_dir));
@@ -987,10 +1004,18 @@ mod tests {
     #[gpui_kit::test]
     fn builtin_themes_are_picked_by_label_and_saved_by_name(cx: &mut TestAppContext) {
         let ui = open(cx);
-        let items = super::theme_items(&["cozy".into()]);
+        let items = super::theme_items(&["studio".into()]);
         assert_eq!(
             items,
-            ["Default", "Minimal", "cozy"],
+            [
+                "Default",
+                "Minimal",
+                "Bubbles",
+                "Cozy",
+                "Retro",
+                "Neon",
+                "studio",
+            ],
             "built-in themes first"
         );
 
@@ -1067,6 +1092,8 @@ mod tests {
         drop(ui);
 
         let mut config = EngineConfig::default();
+        // Port 1, where nothing listens: avoids touching a real local Warudo.
+        config.settings.profile.reactions.warudo.url = "ws://127.0.0.1:1".into();
         config
             .settings
             .profile
@@ -1093,15 +1120,36 @@ mod tests {
                 .reactions
                 .paused
         };
+        // While enabled, the output status is shown (and not the disabled note).
+        run_until_window(cx, &ui, |window| {
+            window.try_find("reaction-output-warudo").is_some()
+                && window.try_find("reactions-disabled").is_none()
+        });
         cx.update_window(ui.window.into(), |_, window, cx| {
             window.render_frame(cx);
             window.click("reactions-on", cx);
         })
         .unwrap();
         run_until(cx, paused);
+        // Once disabled, output errors are replaced by the quiet disabled row.
+        run_until_window(cx, &ui, |window| {
+            window.try_find("reactions-disabled").is_some()
+                && window.try_find("reaction-output-warudo").is_none()
+        });
         let path = ui.settings_dir.join("config.toml");
         run_until(cx, || {
             ConfigFile::load(&path, None).is_ok_and(|file| file.profile.reactions.paused)
+        });
+        // Switching back on restores the output row.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("reactions-on", cx);
+        })
+        .unwrap();
+        run_until(cx, || !paused());
+        run_until_window(cx, &ui, |window| {
+            window.try_find("reaction-output-warudo").is_some()
+                && window.try_find("reactions-disabled").is_none()
         });
     }
 
@@ -1119,8 +1167,12 @@ mod tests {
                 name: (*name).into(),
             });
         }
+        static NEXT_SECRETS_DIR: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_SECRETS_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         config.secrets = Some(chat_engine::SecretStore::Dir(
-            std::env::temp_dir().join(format!("chat-app-ui-test-secrets-{}", std::process::id())),
+            std::env::temp_dir()
+                .join(format!("chat-app-ui-test-secrets-{}-{id}", std::process::id())),
         ));
         config
     }

@@ -1024,8 +1024,10 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let settings_dir =
-            std::env::temp_dir().join(format!("chat-app-themes-test-{}", std::process::id()));
+        static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let settings_dir = std::env::temp_dir()
+            .join(format!("chat-app-themes-test-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings_dir);
         let mut engine_cfg = EngineConfig::default();
         engine_cfg.settings.server.port = 0;

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
-use chat_engine::{Health, OutputStatus};
+use chat_engine::{Health, OutputStatus, Target};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::StepAction;
 use gpui_kit::component::notification::Notification;
@@ -242,7 +242,12 @@ pub(crate) fn labelled_width<L: Into<SharedString>, E: IntoElement>(
 
 /// One program the reactions send to: its light, name, and connection summary.
 pub(crate) fn render_output(output: &OutputStatus, cx: &App) -> impl IntoElement + use<> {
+    let id = match output.target {
+        Target::Warudo => "reaction-output-warudo",
+        Target::Obs => "reaction-output-obs",
+    };
     h_flex()
+        .id(id)
         .gap_2()
         .items_center()
         .child(light(Health::from(&output.state), cx))
@@ -255,6 +260,7 @@ pub(crate) fn render_output(output: &OutputStatus, cx: &App) -> impl IntoElement
                 .text_color(cx.theme().muted_foreground)
                 .child(output.summary()),
         )
+        .test_support()
 }
 
 /// Shows an error toast notification in `window`.

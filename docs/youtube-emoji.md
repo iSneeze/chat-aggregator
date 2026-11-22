@@ -8,11 +8,12 @@ channel emoji.)
 
 While chat-aggregator reads a YouTube chat, it also looks at YouTube's own
 chat page for that stream, the way a logged-out visitor sees it, and
-remembers the picture of every channel emoji someone uses. You don't have
-to do anything.
+remembers the picture of every channel emoji and custom member badge
+someone uses. You don't have to do anything.
 
-- Learned emoji are kept per channel (in the `youtube-emojis` folder in
-  the settings folder), so next stream they work from the first message.
+- Learned emoji and custom member badges are kept per channel (in the
+  `youtube-emojis` folder in the settings folder), so next stream they work
+  from the first message.
 - The very first time an emoji is used, that one message usually shows it
   as text: chat-aggregator learns the picture a few seconds after the
   message arrives. From then on it's a picture.

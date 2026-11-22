@@ -999,7 +999,10 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let dir = std::env::temp_dir().join(format!("chat-app-widgets-{}", std::process::id()));
+        static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir()
+            .join(format!("chat-app-widgets-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut config = EngineConfig::default();

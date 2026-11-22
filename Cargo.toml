@@ -21,7 +21,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 
@@ -63,7 +63,7 @@ sha2 = "0.10"
 base64 = "0.22"
 # Pinned exactly: the app is written against this version's API (GPUI
 # changes a lot between releases).
-gpui-kit = "=0.8.1"
+gpui-kit = { version = "=0.10.0", features = ["gpui-fast"] }
 
 [profile.release]
 # Optimise across crate boundaries ("thin" is most of fat LTO's gain at a

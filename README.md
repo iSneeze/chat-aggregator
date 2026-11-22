@@ -3,8 +3,8 @@
 *A working title: the final name is still being decided.*
 
 **All your stream chats in one place.** chat-aggregator is a free desktop
-app for streamers. It collects the live chat from Twitch, YouTube and
-Picarto, plus tips from StreamElements and Streamlabs, and shows them as
+app for streamers. It collects the live chat from Twitch, YouTube, Picarto
+and RPlay, plus tips from StreamElements and Streamlabs, and shows them as
 one chat on your stream.
 
 If you stream to several platforms at once, your viewers sit in several
@@ -18,8 +18,9 @@ Website and guides: <https://isneeze.github.io/chat-aggregator/>
 - **One chat on your stream.** Messages from every platform appear in one
   chat box in OBS (or any streaming software that can show a web page),
   with emotes, badges, donations, subs and memberships.
-- **Your look.** Two built-in themes, or style the chat yourself with HTML
-  and CSS.
+- **Your look.** Six built-in themes with presets, live color and layout
+  customization, and palette matching from an image — or style the chat
+  yourself with HTML and CSS.
 - **Moderation carries over.** A message deleted on a platform disappears
   from your stream too.
 - **Chat makes things happen.** `!bonk` throws an item at your model in
@@ -65,7 +66,7 @@ file), where your settings are kept, and how to report a problem.
 | Picarto | chat and emotes | the channel name |
 | StreamElements | tips | your Overlay Token |
 | Streamlabs | tips, from several accounts if you have them | your Socket API Token |
-| Rplay | planned | |
+| RPlay | chat, emotes, coins, missions, raids | your studio's Stream Chat widget link |
 
 ## Guides
 
@@ -112,4 +113,4 @@ chat-aggregator is written in Rust and open source.
 [MIT](LICENSE) © 2026 iSneeze
 
 chat-aggregator is an independent project, not affiliated with or endorsed
-by Twitch, YouTube, Google, Picarto, StreamElements or Streamlabs.
+by Twitch, YouTube, Google, Picarto, RPlay, StreamElements or Streamlabs.

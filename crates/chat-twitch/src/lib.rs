@@ -314,16 +314,13 @@ fn convert_user_notice(un: UserNoticeMessage, badges: &BadgeMap) -> Option<ChatM
         // Everything else Twitch announces: watch streaks (`viewermilestone`),
         // Shared Chat notices (`sharedchatnotice`), new chatters, gift-sub
         // upgrades, and newer event types (`Unknown`).
-        _ => match classify_raw_user_notice(
+        _ => classify_raw_user_notice(
             &un.source,
             effective_event_id,
             &un.sender.name,
             un.system_message,
             &text,
-        ) {
-            Some(kind) => kind,
-            None => return None,
-        },
+        )?,
     };
 
     let badge_urls = badges.resolve(&un.badges);

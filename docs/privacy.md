@@ -5,7 +5,7 @@ permalink: /privacy/
 
 # Privacy policy
 
-_Effective 2026-11-14._
+_Effective 2026-11-22._
 
 chat-aggregator is a program that runs **on your own computer**. It has no
 servers, no user accounts and no analytics. The developers never receive
@@ -40,12 +40,16 @@ From YouTube, with your permission:
 
 From YouTube's own chat page, the one anyone can open in a browser, without
 logging in and without cookies (only while **Learn YouTube emoji** is on, as
-it is unless you switch it off): the codes and picture links of the
-channel emoji used in a chat you read. The page also contains that chat's
-recent messages; chat-aggregator reads past them and keeps only the emoji.
+it is unless you switch it off): the codes and picture links of the channel
+emoji and custom member badges used in a chat you read (keyed by each
+member's public channel id so their badge picture can be matched to their
+messages). The page also contains that chat's recent messages;
+chat-aggregator reads past them and keeps only the emoji and member badge
+picture links.
 
 From Twitch: the public chat of the channels you enter, read anonymously
-without any login.
+without any login, plus the public global and channel chat badge artwork for
+those channels (fetched anonymously from Twitch's public web endpoint).
 
 From Picarto, without any login, the way Picarto's website does for a
 logged-out visitor: the public info of the channels you enter (whether
@@ -134,10 +138,10 @@ keeps only the tips: each tipper's name, amount, currency and message.
   carries on after a reload. It stays in your streaming software's
   browser data until that's deleted. Switch off "Keep running through
   reloads" and it stores nothing.
-- **Learned emoji** (codes like `:_hypeWave:` and their picture links) are
-  stored per channel in the `youtube-emojis` folder in the settings folder,
-  so they work right away next time. They stay until you delete that
-  folder.
+- **Learned emoji and member badges** (codes like `:_hypeWave:`, member
+  channel ids, and their picture links) are stored per channel in the
+  `youtube-emojis` folder in the settings folder, so they work right away
+  next time. They stay until you delete that folder.
 - **A log file** (`chat-aggregator.log`, and the one from the previous
   start as `chat-aggregator.old.log`) in the settings folder records what
   the program did: which sources started, connection problems, errors. It
@@ -158,9 +162,9 @@ keeps only the tips: each tipper's name, amount, currency and message.
 - **Chat messages are not saved.** They're kept in memory while the program
   runs (the most recent ones, 20 by default, so a reloaded overlay isn't
   empty) and are gone when you close it.
-- **Profile pictures** of YouTube chatters shown in the overlay are kept in
-  memory only: for at most 24 hours, and never written to disk. They're
-  gone when you close the program.
+- **Profile pictures and custom member badge images** of YouTube chatters
+  shown in the overlay are kept in memory only: for at most 24 hours, and
+  never written to disk. They're gone when you close the program.
 
 ## What is shared, and with whom
 
@@ -176,20 +180,21 @@ keeps only the tips: each tipper's name, amount, currency and message.
   YouTube broadcasts, if you read those, and a site you allow can tell from
   it which channel is yours.
 - Apart from chat reactions (below), the program connects only to the
-  platforms themselves: Google/YouTube (for
-  login, chat, chatters' profile pictures and, through YouTube's chat page,
-  channel emoji), Twitch (for chat), Picarto (for chat, channel info and
-  the emote lists in its website's script), RPlay (for chat, your
-  channel's state, the emote lists, donors' names and whether a chatter has
-  a profile picture, with your widget key; the chat itself runs on Amazon's
-  IVS chat service, at the address RPlay names), StreamElements (for tips, with your Overlay Token) and
-  Streamlabs (for tips, with your Socket API Token). It
-  downloads each YouTube profile picture shown in the overlay once from
-  YouTube's image server and hands it to your streaming software itself.
-  Emote and gift images in the overlay are loaded from Twitch's,
-  YouTube's, Picarto's and RPlay's image servers by your streaming
-  software, and so are Picarto's and RPlay's chatters' and StreamElements
-  tippers' profile pictures (from StreamElements' image server).
+  platforms themselves: Google/YouTube (for login, chat, chatters' profile
+  pictures and, through YouTube's chat page, channel emoji and custom member
+  badges), Twitch (for chat and public badge artwork), Picarto (for chat,
+  channel info and the emote lists in its website's script), RPlay (for chat,
+  your channel's state, the emote lists, donors' names and whether a chatter
+  has a profile picture, with your widget key; the chat itself runs on
+  Amazon's IVS chat service, at the address RPlay names), StreamElements (for
+  tips, with your Overlay Token) and Streamlabs (for tips, with your Socket
+  API Token). It downloads each YouTube profile picture and custom member
+  badge shown in the overlay once from YouTube's image server and hands it to
+  your streaming software itself. Emote, badge and gift images in the overlay
+  are loaded from Twitch's, YouTube's, Picarto's and RPlay's image servers by
+  your streaming software, and so are Picarto's and RPlay's chatters' and
+  StreamElements tippers' profile pictures (from StreamElements' image
+  server).
 - **Widgets** get the chat through the same local API (switched on for
   them), like any page served from your own computer. Your streaming
   software loads the pictures and fonts a widget asks for from the web: the
