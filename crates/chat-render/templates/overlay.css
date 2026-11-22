@@ -49,6 +49,11 @@
   --membership: #2cb67d;
   --notice: #3da9fc;
 
+  /* role accent colours (used in "By role" accent style) */
+  --role-member: #2cb67d;
+  --role-moderator: #5c8aff;
+  --role-owner: #e53170;
+
   /* sizes */
   --emote-size: 1.6em;
   --emote-only-size: 3em;
@@ -108,6 +113,19 @@ body {
 
 .chat--custom-accent .msg {
   --accent: var(--chat-accent);
+}
+
+.chat--accent-role .msg {
+  --accent: var(--chat-accent);
+}
+.chat--accent-role .msg--role-member    { --accent: var(--role-member); }
+.chat--accent-role .msg--role-moderator { --accent: var(--role-moderator); }
+.chat--accent-role .msg--role-owner     { --accent: var(--role-owner); }
+
+.chat--accent-role .msg--role-member .msg__author,
+.chat--accent-role .msg--role-moderator .msg__author,
+.chat--accent-role .msg--role-owner .msg__author {
+  color: var(--accent);
 }
 
 .chat--hide-accent .msg {
@@ -202,6 +220,19 @@ body {
 .badge--subscriber,
 .badge--member    { background: var(--membership); color: #ffffff; }
 
+.badge.badge--icon {
+  flex-shrink: 0;
+  width: 1.05em;
+  height: 1.05em;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  font-size: 1em;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
 .msg__author {
   font-weight: 700;
   color: var(--author-color, var(--chat-text));
@@ -256,22 +287,22 @@ body {
   margin: 0.1em 0.05em;
 }
 
-.msg--paid {
+.chat .msg--paid {
   --accent: var(--paid);
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--paid) 22%, transparent), transparent 72%),
     var(--chat-bg);
 }
 
-.msg--membership,
-.msg--gift {
+.chat .msg--membership,
+.chat .msg--gift {
   --accent: var(--membership);
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--membership) 16%, transparent), transparent 68%),
     var(--chat-bg);
 }
 
-.msg--notice {
+.chat .msg--notice {
   --accent: var(--notice);
   font-style: italic;
   background:

@@ -30,7 +30,11 @@
     <header class="msg__meta">
       <span class="msg__platform" title="{{ platform }}"></span>
       {%- for badge in author.badges %}
+      {%- if author.badge_urls[badge] %}
+      <img class="badge badge--icon badge--{{ badge }}" src="{{ author.badge_urls[badge] }}" alt="{{ badge }}" title="{{ badge }}">
+      {%- else %}
       <span class="badge badge--{{ badge }}">{{ badge }}</span>
+      {%- endif %}
       {%- endfor %}
       <span class="msg__author">{{ author.name }}</span>
       <time class="msg__time" datetime="{{ timestamp }}">{{ time }}</time>

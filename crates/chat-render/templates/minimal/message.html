@@ -25,7 +25,7 @@
     else "member" if author.role in ["subscriber", "vip"]
     else "viewer" -%}
 {%- set youtube = platform == "youtube" -%}
-<div class="msg msg--{{ kind }} msg--{{ platform }} msg--role-{{ role }}{% if paid %} msg--paid{% endif %}{% if tier %} msg--tier-{{ tier }}{% endif %}" data-id="{{ id }}" data-platform="{{ platform }}" data-author="{{ author.id }}">
+<div class="msg msg--{{ kind }} msg--{{ platform }} msg--role-{{ role }}{% if paid %} msg--paid{% endif %}{% if tier %} msg--tier-{{ tier }}{% endif %}" data-id="{{ id }}" data-platform="{{ platform }}" data-author="{{ author.id }}" style="--chatter-hue: {{ author.id | seed(360, 'hue') }}{% if author.color %}; --author-color: {{ author.color }}{% endif %}">
   {#- The platform mark; its title is for people hovering in a browser. -#}
   <span class="msg__platform" title="{{ platform }}"></span>
   {%- if kind == "notice" and info -%}

@@ -1075,9 +1075,9 @@ mod tests {
         let ui = open(cx);
         let handle = ui.engine.handle();
 
-        // Pick "Custom" accent style (option 0, choice 1).
+        // Pick "Custom" accent style (option 0, choice 2: Platform / By role / Custom).
         cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click(("theme-choice-0", 1usize), cx);
+            window.click(("theme-choice-0", 2usize), cx);
         })
         .unwrap();
 

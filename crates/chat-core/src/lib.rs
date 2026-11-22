@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::future::Future;
 use tokio::sync::mpsc;
 
@@ -325,6 +325,11 @@ pub struct Author {
     pub color: Option<String>,
     /// Badge names, e.g. `moderator`, `subscriber`, `member`, `vip`.
     pub badges: Vec<String>,
+    /// Image URLs for badges that have one (e.g. Twitch global and channel
+    /// badges), keyed by badge name from `badges`. Omitted from JSON when
+    /// empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub badge_urls: BTreeMap<String, String>,
     /// Profile picture URL (YouTube, Picarto, and RPlay for chatters who
     /// have one).
     pub avatar_url: Option<String>,
@@ -439,6 +444,7 @@ mod tests {
                         name: format!("MockUser{i}"),
                         color: Some("#7f5af0".to_string()),
                         badges: vec![],
+                        badge_urls: BTreeMap::new(),
                         avatar_url: None,
                     },
                     text: format!("mock message number {i}"),
@@ -580,6 +586,7 @@ mod json_contract {
                 name: "Ann".into(),
                 color: None,
                 badges: vec!["member".into()],
+                badge_urls: BTreeMap::new(),
                 avatar_url: Some("https://img/ann".into()),
             },
             text: "hi :yt:".into(),

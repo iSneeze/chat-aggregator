@@ -115,6 +115,7 @@ fn tip(activity: &Value) -> Option<Tip> {
             name,
             color: None,
             badges: Vec::new(),
+            badge_urls: std::collections::BTreeMap::new(),
             avatar_url: text(&data["avatar"]).filter(|url| url.starts_with("https://")),
         },
         text: text(&data["message"]).unwrap_or_default(),

@@ -10,6 +10,13 @@
             "null"
           ]
         },
+        "badge_urls": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Image URLs for badges that have one (e.g. Twitch global and channel\nbadges), keyed by badge name from `badges`. Omitted from JSON when\nempty.",
+          "type": "object"
+        },
         "badges": {
           "description": "Badge names, e.g. `moderator`, `subscriber`, `member`, `vip`.",
           "items": {

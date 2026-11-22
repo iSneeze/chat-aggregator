@@ -72,7 +72,7 @@ A chat message or a platform event (donation, sub, raid, ...).
 |-------------|---------|
 | `id`        | platform message id; `delete` events refer to it |
 | `platform`  | `"twitch"`, `"youtube"`, `"picarto"`, `"rplay"`, `"streamelements"`, `"streamlabs"` (tips: every message is a `donation`) |
-| `author`    | `id` (platform user id), `name`, `color` (`#rrggbb`, Twitch, Picarto and RPlay, else `null`), `badges` (e.g. `broadcaster`, `moderator`, `subscriber`, `member`, `vip`), `avatar_url` (YouTube, Picarto, and RPlay for chatters who have a photo, else `null`) |
+| `author`    | `id` (platform user id), `name`, `color` (`#rrggbb`, Twitch, Picarto and RPlay, else `null`), `badges` (e.g. `broadcaster`, `moderator`, `subscriber`, `member`, `vip`), `badge_urls` (optional map of badge name → image URL, e.g. Twitch global/channel badges and learned YouTube custom member badges; omitted when empty), `avatar_url` (YouTube, Picarto, and RPlay for chatters who have a photo, else `null`) |
 | `text`      | what the user typed; **may be empty** (e.g. a raid). Event descriptions are in `kind` |
 | `emotes`    | emotes used in `text`, each listed once; in `text` they appear exactly as `code` |
 | `timestamp` | when it was sent, RFC 3339 in UTC; fractional seconds only as precise as needed (`18:41:02Z`, `18:40:44.5Z`, `18:40:44.516Z`), so parse it rather than slicing it |

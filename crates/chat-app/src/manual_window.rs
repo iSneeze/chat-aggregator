@@ -287,6 +287,7 @@ impl ManualWindow {
                 name,
                 color: None,
                 badges: self.role.badges(self.platform),
+                badge_urls: std::collections::BTreeMap::new(),
                 avatar_url: None,
             },
             // Donations and memberships can come with a message too.

@@ -1166,7 +1166,11 @@ dependencies = [
  "anyhow",
  "chat-core",
  "jiff",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
+ "tracing",
  "twitch-irc",
 ]
 

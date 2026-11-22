@@ -9,9 +9,22 @@ default = "#ffffff"
 css_var = "--chat-text"
 
 [[options]]
+name = "name_colors"
+label = "Name colors"
+group = "Colors"
+help = "Chatter mode uses each chatter's platform color if available, or a steady random color per chatter."
+type = "choice"
+default = "By role"
+options = ["By role", "Chatter"]
+[options.class_values]
+"By role" = ""
+Chatter = "chat--name-chatter"
+
+[[options]]
 name = "viewer_name_color"
 label = "Viewer name"
 group = "Colors"
+help = "Used for viewers when Name colors is set to By role."
 type = "color"
 default = "#ffffff"
 css_var = "--name-viewer"
@@ -29,6 +42,31 @@ Standard = "-1px -1px 0 rgb(0 0 0 / 0.88), 1px -1px 0 rgb(0 0 0 / 0.88), -1px 1p
 Strong = "-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 0 5px #000"
 "Soft shadow" = "0 1px 3px rgb(0 0 0 / 0.9), 0 2px 8px rgb(0 0 0 / 0.6)"
 None = "none"
+
+[[options]]
+name = "member_color"
+label = "Member / sub"
+group = "Role colors"
+help = "Subscribers, members, and VIPs when Name colors is set to By role."
+type = "color"
+default = "#3ddc84"
+css_var = "--name-member"
+
+[[options]]
+name = "moderator_color"
+label = "Moderator"
+group = "Role colors"
+type = "color"
+default = "#7aa2ff"
+css_var = "--name-moderator"
+
+[[options]]
+name = "owner_color"
+label = "Broadcaster"
+group = "Role colors"
+type = "color"
+default = "#ffd644"
+css_var = "--name-owner"
 
 [[options]]
 name = "font"

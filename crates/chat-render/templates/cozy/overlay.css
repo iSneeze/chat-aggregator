@@ -46,6 +46,11 @@
   --membership: #3b996b;
   --notice: #4a8cd6;
 
+  /* role accent colours (used in "By role" accent style) */
+  --role-member: #3b996b;
+  --role-moderator: #5a74d6;
+  --role-owner: #d46a2e;
+
   /* donation tier colours (warm-tuned YouTube scale; Twitch cheer below) */
   --paid-youtube-1: #2f80d6;
   --paid-youtube-2: #199ab0;
@@ -188,6 +193,10 @@ body {
   --accent: var(--author-color, hsl(var(--chatter-hue, 340) 58% 48%));
 }
 
+.chat--accent-role .msg--role-member    { --accent: var(--role-member); }
+.chat--accent-role .msg--role-moderator { --accent: var(--role-moderator); }
+.chat--accent-role .msg--role-owner     { --accent: var(--role-owner); }
+
 .msg--twitch         { --platform-color: var(--twitch); }
 .msg--youtube        { --platform-color: var(--youtube); }
 .msg--picarto        { --platform-color: var(--picarto); }
@@ -329,6 +338,19 @@ body {
 .badge--verified  { --badge-color: #64748b; }
 .badge--subscriber,
 .badge--member    { --badge-color: var(--membership); }
+
+.badge.badge--icon {
+  flex-shrink: 0;
+  width: 1.02em;
+  height: 1.02em;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 1em;
+  object-fit: contain;
+  vertical-align: middle;
+}
 
 .msg__time {
   display: none;

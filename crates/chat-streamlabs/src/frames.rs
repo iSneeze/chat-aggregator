@@ -140,6 +140,7 @@ fn donation(entry: &Value) -> Option<Tip> {
             name,
             color: None,
             badges: Vec::new(),
+            badge_urls: std::collections::BTreeMap::new(),
             avatar_url: None,
         },
         text: text(&entry["message"]).unwrap_or_default(),

@@ -131,6 +131,12 @@ body {
 .msg--role-moderator { --name-color: var(--name-moderator); }
 .msg--role-owner     { --name-color: var(--name-owner); }
 
+/* "Chatter" name color mode: use the chatter's platform colour when available,
+   or a consistent bright per-chatter colour seeded from author.id. */
+.chat--name-chatter .msg {
+  --name-color: var(--author-color, hsl(var(--chatter-hue, 210) 78% 72%));
+}
+
 /* the platform mark: a sleek pill bar at the start of the line */
 .msg__platform {
   display: inline-block;

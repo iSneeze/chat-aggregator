@@ -2,6 +2,7 @@
 //! previews and demo mode: lets you style an overlay without waiting for
 //! someone to actually donate.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -26,12 +27,28 @@ fn emote(code: &str, url: &str) -> EmoteRef {
     }
 }
 
+fn twitch_badge_url(name: &str) -> Option<&'static str> {
+    match name {
+        "broadcaster" => Some("https://static-cdn.jtvnw.net/badges/v1/5527c58c-fb7d-422d-b71b-f309dcb85cc1/2"),
+        "moderator" => Some("https://static-cdn.jtvnw.net/badges/v1/3267646d-33f0-4b17-b3df-f923a41db1d0/2"),
+        "vip" => Some("https://static-cdn.jtvnw.net/badges/v1/b817aba4-fad8-49e2-b88a-7cc744dfa6ec/2"),
+        "subscriber" => Some("https://static-cdn.jtvnw.net/badges/v1/5d9f2208-5dd8-11e7-8513-2ff4adfae661/2"),
+        "sub-gifter" => Some("https://static-cdn.jtvnw.net/badges/v1/a5ef6c17-2e5b-4d8f-9b80-2779fd722414/2"),
+        _ => None,
+    }
+}
+
 fn twitch(name: &str, color: &str, badges: &[&str]) -> Author {
+    let badge_urls = badges
+        .iter()
+        .filter_map(|&b| twitch_badge_url(b).map(|u| (b.to_string(), u.to_string())))
+        .collect();
     Author {
         id: format!("tw-{}", name.to_lowercase()),
         name: name.into(),
         color: Some(color.into()),
         badges: badges.iter().map(|b| b.to_string()).collect(),
+        badge_urls,
         avatar_url: None,
     }
 }
@@ -42,6 +59,7 @@ fn youtube(name: &str, badges: &[&str]) -> Author {
         name: name.into(),
         color: None,
         badges: badges.iter().map(|b| b.to_string()).collect(),
+        badge_urls: BTreeMap::new(),
         avatar_url: Some(AVATAR.into()),
     }
 }

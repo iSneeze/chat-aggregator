@@ -386,6 +386,7 @@ impl Room {
             name,
             color: Some(name_color(user_id)),
             badges,
+            badge_urls: std::collections::BTreeMap::new(),
             // Where their photo would be: most users have none, so the
             // source checks before the message goes out
             // (`Avatars::verify`).

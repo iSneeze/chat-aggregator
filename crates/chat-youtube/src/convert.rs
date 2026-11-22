@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, HashMap};
+
 use crate::emoji::EmojiMap;
 use crate::pb;
 use chat_core::{Author, BoundedIdSet, ChatEvent, ChatMessage, ChatPlatform, MessageKind};
@@ -8,6 +10,7 @@ pub fn convert(
     item: pb::LiveChatMessage,
     dedupe: &mut BoundedIdSet,
     emojis: &EmojiMap,
+    member_badges: &HashMap<String, String>,
 ) -> Option<ChatEvent> {
     let snippet = item.snippet?;
 
@@ -137,7 +140,13 @@ pub fn convert(
         other => other,
     };
 
+    let author_id = author
+        .channel_id
+        .or(snippet.author_channel_id)
+        .unwrap_or_default();
+
     let mut badges: Vec<String> = Vec::new();
+    let mut badge_urls: BTreeMap<String, String> = BTreeMap::new();
     if author.is_chat_owner.unwrap_or(false) {
         badges.push("owner".into());
     }
@@ -146,6 +155,9 @@ pub fn convert(
     }
     if author.is_chat_sponsor.unwrap_or(false) {
         badges.push("member".into());
+        if let Some(url) = member_badges.get(&author_id) {
+            badge_urls.insert("member".into(), url.clone());
+        }
     }
     if author.is_verified.unwrap_or(false) {
         badges.push("verified".into());
@@ -155,16 +167,14 @@ pub fn convert(
         id: item.id.unwrap_or_default(),
         platform: ChatPlatform::YouTube,
         author: Author {
-            id: author
-                .channel_id
-                .or(snippet.author_channel_id)
-                .unwrap_or_default(),
+            id: author_id,
             name: author
                 .display_name
                 .map(|n| n.trim_start_matches('@').to_string())
                 .unwrap_or_default(),
             color: None, // YouTube doesn't assign name colors
             badges,
+            badge_urls,
             avatar_url: author.profile_image_url,
         },
         text,
@@ -216,7 +226,7 @@ mod tests {
 
     /// Runs `convert` and unwraps a `ChatEvent::Message`.
     fn convert_msg(item: pb::LiveChatMessage, emojis: &EmojiMap) -> ChatMessage {
-        match convert(item, &mut BoundedIdSet::new(16), emojis) {
+        match convert(item, &mut BoundedIdSet::new(16), emojis, &HashMap::new()) {
             Some(ChatEvent::Message(m)) => m,
             other => panic!("expected a message, got {other:?}"),
         }
@@ -326,15 +336,17 @@ mod tests {
     fn duplicate_id_is_dropped() {
         let mut dedupe = BoundedIdSet::new(16);
         let emojis = EmojiMap::default();
-        assert!(convert(text_item("m1", "hi"), &mut dedupe, &emojis).is_some());
-        assert!(convert(text_item("m1", "hi"), &mut dedupe, &emojis).is_none());
+        let badges = HashMap::new();
+        assert!(convert(text_item("m1", "hi"), &mut dedupe, &emojis, &badges).is_some());
+        assert!(convert(text_item("m1", "hi"), &mut dedupe, &emojis, &badges).is_none());
     }
 
     #[test]
     fn tombstone_deletes_already_seen_message() {
         let mut dedupe = BoundedIdSet::new(16);
         let emojis = EmojiMap::default();
-        convert(text_item("m1", "oops"), &mut dedupe, &emojis);
+        let badges = HashMap::new();
+        convert(text_item("m1", "oops"), &mut dedupe, &emojis, &badges);
 
         let tombstone = pb::LiveChatMessage {
             id: Some("m1".into()),
@@ -344,7 +356,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        match convert(tombstone, &mut dedupe, &emojis) {
+        match convert(tombstone, &mut dedupe, &emojis, &badges) {
             Some(ChatEvent::Delete { message_id, .. }) => assert_eq!(message_id, "m1"),
             other => panic!("expected Delete, got {other:?}"),
         }
@@ -370,7 +382,12 @@ mod tests {
             }),
             ..Default::default()
         };
-        match convert(item, &mut BoundedIdSet::new(16), &EmojiMap::default()) {
+        match convert(
+            item,
+            &mut BoundedIdSet::new(16),
+            &EmojiMap::default(),
+            &HashMap::new(),
+        ) {
             Some(ChatEvent::ClearUser { user_id, .. }) => assert_eq!(user_id, "UC_TROLL"),
             other => panic!("expected ClearUser, got {other:?}"),
         }
@@ -387,7 +404,12 @@ mod tests {
                 }),
                 ..Default::default()
             };
-            let out = convert(item, &mut BoundedIdSet::new(16), &EmojiMap::default());
+            let out = convert(
+                item,
+                &mut BoundedIdSet::new(16),
+                &EmojiMap::default(),
+                &HashMap::new(),
+            );
             assert!(out.is_none(), "{ty:?} should be skipped, got {out:?}");
         }
     }
@@ -406,5 +428,42 @@ mod tests {
 
         let msg = convert_msg(text_item("m2", ":yt: :yt:"), &emojis);
         assert!(matches!(msg.kind, MessageKind::EmoteOnly));
+    }
+
+    #[test]
+    fn learned_member_badge_attaches_only_to_current_members() {
+        let badges = HashMap::from([(
+            "UC1".to_string(),
+            "https://yt3.ggpht.com/member-badge=s32".to_string(),
+        )]);
+
+        // Active member gets the learned custom badge URL.
+        let mut member_item = text_item("m1", "hello");
+        member_item.author_details.as_mut().unwrap().is_chat_sponsor = Some(true);
+        let Some(ChatEvent::Message(msg)) = convert(
+            member_item,
+            &mut BoundedIdSet::new(16),
+            &EmojiMap::default(),
+            &badges,
+        ) else {
+            panic!("expected message");
+        };
+        assert!(msg.author.badges.contains(&"member".to_string()));
+        assert_eq!(
+            msg.author.badge_urls.get("member").map(String::as_str),
+            Some("https://yt3.ggpht.com/member-badge=s32")
+        );
+
+        // Non-member (e.g. expired membership) does not get the cached badge.
+        let Some(ChatEvent::Message(non_member)) = convert(
+            text_item("m2", "hello"),
+            &mut BoundedIdSet::new(16),
+            &EmojiMap::default(),
+            &badges,
+        ) else {
+            panic!("expected message");
+        };
+        assert!(!non_member.author.badges.contains(&"member".to_string()));
+        assert!(non_member.author.badge_urls.is_empty());
     }
 }

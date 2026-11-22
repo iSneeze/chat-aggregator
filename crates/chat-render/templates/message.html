@@ -9,8 +9,10 @@
                  | "membership" | "gift" | "notice"
     paid         true for donation and special
     author       .id  .name  .color (e.g. "#7f5af0", or none)
-                 .badges (list of names)  .role ("everyone" | "subscriber" |
-                 "vip" | "moderator" | "broadcaster")  .avatar_url (or none)
+                 .badges (list of names)  .badge_urls (map of badge name to
+                 HTTPS image URL, e.g. Twitch icons)  .role ("everyone" |
+                 "subscriber" | "vip" | "moderator" | "broadcaster")
+                 .avatar_url (or none)
     timestamp    ISO 8601, for machines;  time: "18:40", for humans
     body         list of parts, each either
                    { type: "text",  text }  or
@@ -47,14 +49,22 @@
   The overlay script relies on the root element keeping the class "msg"
   and the data-id / data-platform / data-author attributes.
 -#}
-<article class="msg msg--{{ kind }} msg--{{ platform }}{% if paid %} msg--paid{% endif %}{% if tier %} msg--tier-{{ tier }}{% endif %}" data-id="{{ id }}" data-platform="{{ platform }}" data-author="{{ author.id }}">
+{%- set role = "owner" if author.role == "broadcaster"
+    else "moderator" if author.role == "moderator"
+    else "member" if author.role in ["subscriber", "vip"]
+    else "viewer" -%}
+<article class="msg msg--{{ kind }} msg--{{ platform }} msg--role-{{ role }}{% if paid %} msg--paid{% endif %}{% if tier %} msg--tier-{{ tier }}{% endif %}" data-id="{{ id }}" data-platform="{{ platform }}" data-author="{{ author.id }}">
   <header class="msg__meta">
     <span class="msg__platform" title="{{ platform }}"></span>
     {% if author.avatar_url %}
     <img class="msg__avatar" src="{{ author.avatar_url }}" alt="">
     {% endif %}
     {% for badge in author.badges %}
+    {% if author.badge_urls[badge] %}
+    <img class="badge badge--icon badge--{{ badge }}" src="{{ author.badge_urls[badge] }}" alt="{{ badge }}" title="{{ badge }}">
+    {% else %}
     <span class="badge badge--{{ badge }}">{{ badge }}</span>
+    {% endif %}
     {% endfor %}
     <span class="msg__author"{% if author.color %} style="--author-color: {{ author.color }}"{% endif %}>{{ author.name }}</span>
     <time class="msg__time" datetime="{{ timestamp }}">{{ time }}</time>

@@ -792,6 +792,7 @@ mod tests {
                 name: "Ann".into(),
                 color: None,
                 badges: vec![],
+                badge_urls: std::collections::BTreeMap::new(),
                 avatar_url: None,
             },
             text: format!("text of {id}"),

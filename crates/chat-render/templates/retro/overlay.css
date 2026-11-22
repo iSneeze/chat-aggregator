@@ -36,30 +36,37 @@
   --msg-enter: msg-in-snap 0.22s steps(4, end);
   --msg-fade-delay: 0s;
 
-  /* platform & event colours */
-  --twitch: #a970ff;
-  --youtube: #ff455b;
-  --picarto: #45d18f;
-  --rplay: #38c4ff;
-  --streamelements: #7492ff;
-  --streamlabs: #42dbb7;
-  --paid: #ffd43b;
-  --membership: #4be096;
-  --notice: #66c2ff;
+  /* platform & event colours (rich mid-tones so adaptive ink mixing stays
+     high-contrast on both dark JRPG/CRT windows and light Handheld/Parchment
+     windows) */
+  --twitch: #8b4ce6;
+  --youtube: #e0354b;
+  --picarto: #1d9e64;
+  --rplay: #1893d6;
+  --streamelements: #4e6ee0;
+  --streamlabs: #1aa388;
+  --paid: #d99600;
+  --membership: #1a9e60;
+  --notice: #1c85d6;
+
+  /* role accent colours (used in "By role" accent style) */
+  --role-member: #2eb872;
+  --role-moderator: #5588ff;
+  --role-owner: #ff6b8b;
 
   /* donation tier colours */
-  --paid-youtube-1: #4da3ff;
-  --paid-youtube-2: #33e6ff;
-  --paid-youtube-3: #3df2c2;
-  --paid-youtube-4: #ffd43b;
-  --paid-youtube-5: #ff922b;
-  --paid-youtube-6: #ff5c93;
-  --paid-youtube-7: #ff4d4d;
-  --paid-twitch-1: #b0b8c9;
-  --paid-twitch-2: #b975ff;
-  --paid-twitch-3: #3de0cf;
-  --paid-twitch-4: #4db8ff;
-  --paid-twitch-5: #ff5a4d;
+  --paid-youtube-1: #227be0;
+  --paid-youtube-2: #0c9eb5;
+  --paid-youtube-3: #10a37a;
+  --paid-youtube-4: #d99600;
+  --paid-youtube-5: #db6614;
+  --paid-youtube-6: #d6336c;
+  --paid-youtube-7: #d93838;
+  --paid-twitch-1: #7a8499;
+  --paid-twitch-2: #9244e0;
+  --paid-twitch-3: #12a094;
+  --paid-twitch-4: #1e82db;
+  --paid-twitch-5: #d94336;
 
   /* sizes */
   --emote-size: 1.5em;
@@ -128,12 +135,20 @@ body {
 }
 
 .chat--accent-platform .msg {
-  --accent: var(--platform-color);
+  --accent: color-mix(in srgb, var(--platform-color) 52%, var(--chat-text));
 }
 
 .chat--accent-chatter .msg {
-  --accent: var(--author-color, hsl(var(--chatter-hue, 50) 82% 66%));
+  --accent: color-mix(
+    in srgb,
+    var(--author-color, hsl(var(--chatter-hue, 50) 76% 50%)) 58%,
+    var(--chat-text)
+  );
 }
+
+.chat--accent-role .msg--role-member    { --accent: var(--role-member); }
+.chat--accent-role .msg--role-moderator { --accent: var(--role-moderator); }
+.chat--accent-role .msg--role-owner     { --accent: var(--role-owner); }
 
 .msg--twitch         { --platform-color: var(--twitch); }
 .msg--youtube        { --platform-color: var(--youtube); }
@@ -187,7 +202,7 @@ body {
   padding: 0.14em 0.6em;
   border: 2px solid var(--frame-color);
   border-radius: 2px;
-  background: color-mix(in srgb, var(--panel-surface) 88%, #000000);
+  background: color-mix(in srgb, var(--panel-surface) 95%, #000000);
   box-shadow:
     0 0 0 2px var(--outer-outline),
     2px 2px 0 var(--window-shadow);
@@ -215,10 +230,11 @@ body {
 
 .badge {
   --badge-color: var(--accent);
+  --badge-ink: color-mix(in srgb, var(--badge-color) 46%, var(--chat-text));
   padding: 0.04em 0.36em;
-  border: 1px solid color-mix(in srgb, var(--badge-color) 65%, transparent);
-  background: color-mix(in srgb, var(--badge-color) 18%, transparent);
-  color: var(--badge-color);
+  border: 1px solid color-mix(in srgb, var(--badge-ink) 60%, transparent);
+  background: color-mix(in srgb, var(--badge-color) 16%, transparent);
+  color: var(--badge-ink);
   font-size: 0.55em;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -231,12 +247,26 @@ body {
 }
 
 .badge--broadcaster,
-.badge--owner     { --badge-color: #ff6b9d; }
-.badge--moderator { --badge-color: #4be096; }
-.badge--vip       { --badge-color: #e580ff; }
-.badge--verified  { --badge-color: #94a3b8; }
+.badge--owner     { --badge-color: #e03e74; }
+.badge--moderator { --badge-color: #1d9e64; }
+.badge--vip       { --badge-color: #b048d9; }
+.badge--verified  { --badge-color: #64748b; }
 .badge--subscriber,
 .badge--member    { --badge-color: var(--membership); }
+
+.chat .badge.badge--icon {
+  flex-shrink: 0;
+  width: 0.96em;
+  height: 0.96em;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 1em;
+  object-fit: contain;
+  image-rendering: pixelated;
+  vertical-align: middle;
+}
 
 .msg__time {
   display: none;
@@ -342,19 +372,42 @@ body {
   );
 }
 
-/* Handheld: flat crisp Game Boy LCD bezel with zero gradient. */
+/* Handheld: flat crisp Game Boy LCD bezel with inverted dark-ink nameplate
+   tabs so speaker names and badges stay razor-sharp on pale LCD palettes. */
 .chat--frame-handheld .msg__meta {
   border-radius: 0;
-  background: var(--panel-surface);
-  box-shadow: 2px 2px 0 color-mix(in srgb, var(--frame-color) 45%, transparent);
+  background: color-mix(in srgb, var(--frame-color) var(--chat-bg-opacity), transparent);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--frame-color) 42%, transparent);
+}
+
+.chat--frame-handheld .msg__platform {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--chat-bg-color) 75%, transparent);
+}
+
+.chat--frame-handheld .msg__author {
+  color: var(--chat-bg-color);
+}
+
+.chat--frame-handheld .msg__time {
+  color: color-mix(in srgb, var(--chat-bg-color) 78%, transparent);
+}
+
+.chat--frame-handheld .badge {
+  border-color: color-mix(in srgb, var(--chat-bg-color) 65%, transparent);
+  background: color-mix(in srgb, var(--chat-bg-color) 16%, transparent);
+  color: var(--chat-bg-color);
 }
 
 .chat--frame-handheld .msg__box {
   border-radius: 0;
   background: var(--panel-surface);
   box-shadow:
-    inset 0 0 0 2px color-mix(in srgb, var(--frame-color) 35%, transparent),
-    3px 3px 0 color-mix(in srgb, var(--frame-color) 45%, transparent);
+    inset 0 0 0 2px color-mix(in srgb, var(--frame-color) 32%, transparent),
+    3px 3px 0 color-mix(in srgb, var(--frame-color) 42%, transparent);
+}
+
+.chat--frame-handheld .msg__event {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
 }
 
 /* CRT: phosphor-rimmed retro arcade bezel. */
@@ -377,16 +430,16 @@ body {
 /* Win95/98: classic 3D raised desktop dialog window with gradient titlebar
    and miniature _, square, and x control buttons. */
 .chat--frame-win95 .msg {
-  padding: 3px;
+  padding: 4px;
   background: var(--panel-surface);
-  border-top: 2px solid color-mix(in srgb, var(--chat-bg-color) 18%, #ffffff);
-  border-left: 2px solid color-mix(in srgb, var(--chat-bg-color) 18%, #ffffff);
-  border-right: 2px solid #0a0a0a;
-  border-bottom: 2px solid #0a0a0a;
+  border-top: 1px solid color-mix(in srgb, var(--chat-bg-color) 42%, #ffffff);
+  border-left: 1px solid color-mix(in srgb, var(--chat-bg-color) 42%, #ffffff);
+  border-right: 1px solid #0a0a0a;
+  border-bottom: 1px solid #0a0a0a;
   box-shadow:
-    inset 1px 1px 0 color-mix(in srgb, var(--chat-bg-color) 55%, #ffffff),
-    inset -1px -1px 0 color-mix(in srgb, var(--chat-bg-color) 50%, #000000),
-    3px 3px 0 rgb(0 0 0 / 0.35);
+    inset 1px 1px 0 color-mix(in srgb, var(--chat-bg-color) 12%, #ffffff),
+    inset -1px -1px 0 color-mix(in srgb, var(--chat-bg-color) 48%, #000000),
+    0 2px 6px rgb(0 0 0 / 0.22);
 }
 
 .chat--frame-win95 .msg__meta {
@@ -442,11 +495,13 @@ body {
 
 .chat--frame-win95 .msg__avatar {
   border-radius: 0;
-  border-top: 2px solid color-mix(in srgb, var(--chat-bg-color) 48%, #000000);
-  border-left: 2px solid color-mix(in srgb, var(--chat-bg-color) 48%, #000000);
-  border-right: 2px solid #ffffff;
-  border-bottom: 2px solid #ffffff;
-  box-shadow: none;
+  border-top: 1px solid color-mix(in srgb, var(--chat-bg-color) 48%, #000000);
+  border-left: 1px solid color-mix(in srgb, var(--chat-bg-color) 48%, #000000);
+  border-right: 1px solid #ffffff;
+  border-bottom: 1px solid #ffffff;
+  box-shadow:
+    inset 1px 1px 0 #0a0a0a,
+    inset -1px -1px 0 color-mix(in srgb, var(--chat-bg-color) 42%, #ffffff);
 }
 
 .chat--frame-win95 .msg__event {
@@ -527,24 +582,26 @@ body {
   margin: 0.08em 0.05em;
 }
 
-/* Special events highlight the frame & nameplate cleanly in every accent mode. */
+/* Special events highlight the frame & nameplate cleanly in every accent mode,
+   mixing toward --chat-text so event ink stays high-contrast on both dark
+   JRPG/CRT boxes and light Handheld/Parchment/Win95 boxes. */
 .chat .msg--paid {
-  --accent: var(--paid-color);
-  --frame-color: var(--paid-color);
-  --panel-surface: color-mix(in srgb, var(--paid-color) 14%, var(--chat-bg));
+  --accent: color-mix(in srgb, var(--paid-color) 42%, var(--chat-text));
+  --frame-color: color-mix(in srgb, var(--paid-color) 58%, var(--chat-text));
+  --panel-surface: color-mix(in srgb, var(--paid-color) 10%, var(--chat-bg));
 }
 
 .chat .msg--membership,
 .chat .msg--gift {
-  --accent: var(--membership);
-  --frame-color: var(--membership);
-  --panel-surface: color-mix(in srgb, var(--membership) 12%, var(--chat-bg));
+  --accent: color-mix(in srgb, var(--membership) 42%, var(--chat-text));
+  --frame-color: color-mix(in srgb, var(--membership) 58%, var(--chat-text));
+  --panel-surface: color-mix(in srgb, var(--membership) 10%, var(--chat-bg));
 }
 
 .chat .msg--notice {
-  --accent: var(--notice);
-  --frame-color: var(--notice);
-  --panel-surface: color-mix(in srgb, var(--notice) 14%, var(--chat-bg));
+  --accent: color-mix(in srgb, var(--notice) 42%, var(--chat-text));
+  --frame-color: color-mix(in srgb, var(--notice) 58%, var(--chat-text));
+  --panel-surface: color-mix(in srgb, var(--notice) 10%, var(--chat-bg));
 }
 
 .msg--notice .msg__box {

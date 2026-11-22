@@ -13,3 +13,8 @@ tokio.workspace = true
 anyhow.workspace = true
 # twitch-irc hands out chrono timestamps; chat-core's are jiff's.
 jiff.workspace = true
+# Public GQL lookup for global + channel-specific Twitch badge icons.
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

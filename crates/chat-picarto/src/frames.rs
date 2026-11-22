@@ -159,6 +159,7 @@ fn message(m: &Value, cx: &Context) -> Option<ChatMessage> {
             name: str_field(m, "n").unwrap_or_default().to_owned(),
             color: str_field(m, "k").and_then(color),
             badges,
+            badge_urls: std::collections::BTreeMap::new(),
             avatar_url: str_field(m, "i")
                 .filter(|path| !path.is_empty())
                 .map(image_url),

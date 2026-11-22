@@ -385,6 +385,7 @@ mod tests {
                 name: "Ann".into(),
                 color: Some("#7f5af0".into()),
                 badges: vec!["moderator".into()],
+                badge_urls: std::collections::BTreeMap::new(),
                 avatar_url: None,
             },
             text: text.into(),
@@ -442,6 +443,7 @@ mod tests {
                 name: value.into(),
                 color: Some(value.into()),
                 badges: vec![value.into()],
+                badge_urls: std::collections::BTreeMap::new(),
                 avatar_url: Some(value.into()),
             },
             text: value.into(),
@@ -580,6 +582,16 @@ mod tests {
         let rendered = theme.render(&lead_mod).unwrap();
         assert!(rendered.contains("msg--role-moderator"), "{rendered}");
         assert!(rendered.contains("msg__mod"), "{rendered}");
+        assert!(rendered.contains("--chatter-hue:"), "{rendered}");
+        assert!(rendered.contains("--author-color: #7f5af0"), "{rendered}");
+
+        // Chatters without a platform color still get a seeded --chatter-hue
+        // and omit --author-color so CSS falls back to their steady random hue.
+        let mut no_color = message(ChatPlatform::YouTube, "hi", MessageKind::Text);
+        no_color.author.color = None;
+        let rendered_no_color = theme.render(&no_color).unwrap();
+        assert!(rendered_no_color.contains("--chatter-hue:"), "{rendered_no_color}");
+        assert!(!rendered_no_color.contains("--author-color:"), "{rendered_no_color}");
     }
 
     #[test]
@@ -743,7 +755,7 @@ mod tests {
     fn root_carries_classes_and_data_attributes() {
         let html = render(&message(ChatPlatform::YouTube, "hi", MessageKind::Text));
         assert!(
-            html.contains(r#"class="msg msg--text msg--youtube""#),
+            html.contains(r#"class="msg msg--text msg--youtube msg--role-moderator""#),
             "{html}"
         );
         assert!(html.contains(r#"data-platform="youtube""#), "{html}");
@@ -949,5 +961,124 @@ mod tests {
         let manifest = ThemeSource::Folder(dir.clone()).manifest().unwrap();
         assert!(manifest.options.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn badge_icons_render_when_https_and_fall_back_otherwise() {
+        let mut msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
+        msg.author.badges = vec![
+            "moderator".into(),
+            "member".into(),
+            "proxied".into(),
+            "unsafe".into(),
+            "traversal".into(),
+        ];
+        msg.author.badge_urls.insert(
+            "moderator".into(),
+            "https://static-cdn.jtvnw.net/badges/v1/3267646d-33f0-4b17-b3df-f923a41db1d0/2".into(),
+        );
+        // Server's own local hex-keyed avatar/badge proxy path is accepted.
+        msg.author
+            .badge_urls
+            .insert("proxied".into(), "avatar/0123456789abcdef".into());
+        // Non-HTTPS or non-hex proxy URLs must be dropped and rendered as text pills.
+        msg.author
+            .badge_urls
+            .insert("unsafe".into(), "javascript:alert(1)".into());
+        msg.author
+            .badge_urls
+            .insert("traversal".into(), "avatar/../secret".into());
+
+        for builtin in [
+            Builtin::Default,
+            Builtin::Bubbles,
+            Builtin::Cozy,
+            Builtin::Retro,
+            Builtin::Neon,
+        ] {
+            let html = Theme::from_builtin(builtin).render(&msg).unwrap();
+            assert!(
+                html.contains(
+                    r#"<img class="badge badge--icon badge--moderator" src="https:&#x2f;&#x2f;static-cdn.jtvnw.net&#x2f;badges&#x2f;v1&#x2f;3267646d-33f0-4b17-b3df-f923a41db1d0&#x2f;2" alt="moderator" title="moderator">"#
+                ),
+                "{builtin:?}: expected badge icon img:\n{html}"
+            );
+            assert!(
+                html.contains(
+                    r#"<img class="badge badge--icon badge--proxied" src="avatar&#x2f;0123456789abcdef" alt="proxied" title="proxied">"#
+                ),
+                "{builtin:?}: expected proxied badge icon img:\n{html}"
+            );
+            assert!(
+                html.contains(r#"<span class="badge badge--member">member</span>"#),
+                "{builtin:?}: expected text pill fallback for member:\n{html}"
+            );
+            assert!(
+                html.contains(r#"<span class="badge badge--unsafe">unsafe</span>"#)
+                    && !html.contains("javascript:alert(1)"),
+                "{builtin:?}: unsafe badge URL must fall back to text pill:\n{html}"
+            );
+            assert!(
+                html.contains(r#"<span class="badge badge--traversal">traversal</span>"#)
+                    && !html.contains(".."),
+                "{builtin:?}: path-traversal badge URL must fall back to text pill:\n{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_badge_urls_never_become_markup() {
+        for builtin in Builtin::ALL {
+            let theme = Theme::from_builtin(builtin);
+            let mut safe = filled_with("x", MessageKind::Text);
+            safe.author
+                .badge_urls
+                .insert("x".into(), "https://static-cdn.jtvnw.net/badges/v1/x/2".into());
+            let expected = theme.render(&safe).unwrap();
+
+            for hostile in HOSTILE {
+                let mut msg = filled_with(hostile, MessageKind::Text);
+                msg.author.badge_urls.insert(
+                    (*hostile).into(),
+                    format!("https://static-cdn.jtvnw.net/badges/v1/{hostile}/2"),
+                );
+                let html = theme.render(&msg).unwrap();
+                assert_eq!(
+                    markup(&html),
+                    markup(&expected),
+                    "{builtin:?}: hostile badge URL {hostile:?} changed markup:\n{html}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_builtin_theme_exposes_role_classes_and_role_color_options() {
+        for builtin in Builtin::ALL {
+            let manifest = builtin.manifest();
+            for opt_name in ["member_color", "moderator_color", "owner_color"] {
+                assert!(
+                    manifest.options.iter().any(|o| o.name == opt_name),
+                    "{builtin:?} missing {opt_name} option"
+                );
+            }
+            let theme = Theme::from_builtin(builtin);
+            for (badges, expected_class) in [
+                (vec![], "msg--role-viewer"),
+                (vec!["subscriber".into()], "msg--role-member"),
+                (vec!["vip".into()], "msg--role-member"),
+                (vec!["member".into()], "msg--role-member"),
+                (vec!["moderator".into()], "msg--role-moderator"),
+                (vec!["broadcaster".into()], "msg--role-owner"),
+            ] {
+                let mut msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
+                msg.author.badges = badges;
+                let html = theme.render(&msg).unwrap();
+                assert!(
+                    html.contains(expected_class),
+                    "{builtin:?}: expected {expected_class} in:\n{html}"
+                );
+            }
+        }
     }
 }

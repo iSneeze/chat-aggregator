@@ -195,6 +195,7 @@ mod tests {
                 name: "Viewer42".into(),
                 color: None,
                 badges: Vec::new(),
+                badge_urls: std::collections::BTreeMap::new(),
                 avatar_url,
             },
             text: "hi".into(),

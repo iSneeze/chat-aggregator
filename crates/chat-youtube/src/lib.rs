@@ -42,7 +42,7 @@ mod quota;
 mod resolver;
 pub mod web_chat;
 
-use emoji_cache::{BroadcastEmojis, EmojiCache};
+use emoji_cache::{BroadcastEmojis, EmojiCache, MemberBadgeCache};
 use oauth::TokenProvider;
 use pb::LiveChatMessageListRequest;
 use pb::v3_data_live_chat_message_service_client::V3DataLiveChatMessageServiceClient;
@@ -381,11 +381,16 @@ impl YouTubeSource {
             .as_deref()
             .zip(channel_id)
             .and_then(|(folder, channel)| EmojiCache::open(folder, channel));
+        let badge_cache = self
+            .emoji_cache
+            .as_deref()
+            .zip(channel_id)
+            .and_then(|(folder, channel)| MemberBadgeCache::open(folder, channel));
         let map = match &cache {
             Some(cache) => self.emojis.merged(cache.emojis()),
             None => self.emojis.clone(),
         };
-        BroadcastEmojis::new(map, cache, reader)
+        BroadcastEmojis::new(map, cache, badge_cache, reader)
     }
 }
 
@@ -527,7 +532,9 @@ async fn consume_stream(
         }
         emojis.take_learned();
         for item in response.items {
-            let Some(event) = convert::convert(item, dedupe, emojis.map()) else {
+            let Some(event) =
+                convert::convert(item, dedupe, emojis.map(), emojis.member_badges())
+            else {
                 continue;
             };
             count += 1;

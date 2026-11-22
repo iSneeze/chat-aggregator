@@ -27,8 +27,11 @@ async fn main() -> anyhow::Result<()> {
         tx,
     ));
     while let Some(batch) = rx.recv().await {
-        for (code, url) in batch {
+        for (code, url) in batch.emojis {
             println!("{code}  {url}");
+        }
+        for (author_id, url) in batch.member_badges {
+            println!("member-badge {author_id}  {url}");
         }
     }
     Ok(())

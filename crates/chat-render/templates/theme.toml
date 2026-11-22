@@ -6,18 +6,20 @@
 name = "accent_mode"
 label = "Accent style"
 group = "Colors"
+help = "By role colors the accent bar and role names for members/subs, mods, and broadcaster."
 type = "choice"
 default = "Platform"
-options = ["Platform", "Custom"]
+options = ["Platform", "By role", "Custom"]
 [options.class_values]
 Platform = ""
+"By role" = "chat--accent-role"
 Custom = "chat--custom-accent"
 
 [[options]]
 name = "accent_color"
 label = "Custom accent"
 group = "Colors"
-help = "Used when Accent style is set to Custom."
+help = "Used in Custom mode, and for regular viewers in By role mode."
 type = "color"
 default = "#9146ff"
 css_var = "--chat-accent"
@@ -50,6 +52,31 @@ max = 100
 step = 5
 unit = "%"
 css_var = "--chat-bg-opacity"
+
+[[options]]
+name = "member_color"
+label = "Member / sub"
+group = "Role colors"
+help = "Subscribers, members, and VIPs when Accent style is By role."
+type = "color"
+default = "#2cb67d"
+css_var = "--role-member"
+
+[[options]]
+name = "moderator_color"
+label = "Moderator"
+group = "Role colors"
+type = "color"
+default = "#5c8aff"
+css_var = "--role-moderator"
+
+[[options]]
+name = "owner_color"
+label = "Broadcaster"
+group = "Role colors"
+type = "color"
+default = "#e53170"
+css_var = "--role-owner"
 
 [[options]]
 name = "font"

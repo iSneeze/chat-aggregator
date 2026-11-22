@@ -5,6 +5,8 @@
 //! Every field borrows from the message (`&'a str`) instead of cloning: the
 //! view only lives for the duration of one render call.
 
+use std::collections::BTreeMap;
+
 use chat_core::{ChatMessage, EmoteRef, MessageKind, Role};
 
 #[derive(serde::Serialize)]
@@ -31,6 +33,7 @@ struct AuthorView<'a> {
     name: &'a str,
     color: Option<&'a str>,
     badges: &'a [String],
+    badge_urls: BTreeMap<&'a str, &'a str>,
     role: &'static str,
     avatar_url: Option<&'a str>,
 }
@@ -56,6 +59,13 @@ impl<'a> MessageView<'a> {
                 name: &msg.author.name,
                 color: msg.author.color.as_deref().filter(|c| is_hex_color(c)),
                 badges: &msg.author.badges,
+                badge_urls: msg
+                    .author
+                    .badge_urls
+                    .iter()
+                    .filter(|(_, url)| is_safe_badge_url(url))
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect(),
                 role: Role::of(msg).as_str(),
                 avatar_url: msg.author.avatar_url.as_deref(),
             },
@@ -122,6 +132,15 @@ fn is_hex_color(c: &str) -> bool {
     c.strip_prefix('#').is_some_and(|hex| {
         matches!(hex.len(), 3 | 6) && hex.chars().all(|ch| ch.is_ascii_hexdigit())
     })
+}
+
+/// Only HTTPS URLs or the server's own hex-keyed `/avatar/<key>` proxy paths
+/// may appear in badge `<img>` `src` attributes.
+fn is_safe_badge_url(url: &str) -> bool {
+    url.starts_with("https://")
+        || url
+            .strip_prefix("avatar/")
+            .is_some_and(|key| !key.is_empty() && key.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Splits `text` into plain-text and emote parts. The template writes the

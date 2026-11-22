@@ -170,20 +170,32 @@ impl Avatars {
         }
     }
 
-    /// `msg` as the overlay should render it: a Google avatar replaced by
-    /// its local URL. Messages without one aren't copied (`Cow::Borrowed`).
+    /// `msg` as the overlay should render it: Google-hosted avatars and badge
+    /// icons replaced by their local `avatar/<key>` URLs. Messages without any
+    /// aren't copied (`Cow::Borrowed`).
     pub(crate) fn for_overlay<'a>(&self, msg: &'a ChatMessage) -> Cow<'a, ChatMessage> {
-        let Some(key) = msg
+        let avatar_key = msg
             .author
             .avatar_url
             .as_deref()
-            .and_then(|url| self.register(url))
-        else {
+            .and_then(|url| self.register(url));
+        let badge_keys: Vec<(String, String)> = msg
+            .author
+            .badge_urls
+            .iter()
+            .filter_map(|(name, url)| self.register(url).map(|key| (name.clone(), key)))
+            .collect();
+        if avatar_key.is_none() && badge_keys.is_empty() {
             return Cow::Borrowed(msg);
-        };
+        }
         let mut msg = msg.clone();
         // Relative, like the page's other URLs (`events`, `theme/…`).
-        msg.author.avatar_url = Some(format!("avatar/{key}"));
+        if let Some(key) = avatar_key {
+            msg.author.avatar_url = Some(format!("avatar/{key}"));
+        }
+        for (name, key) in badge_keys {
+            msg.author.badge_urls.insert(name, format!("avatar/{key}"));
+        }
         Cow::Owned(msg)
     }
 
@@ -476,6 +488,7 @@ mod tests {
                 name: "Viewer42".into(),
                 color: None,
                 badges: vec![],
+                badge_urls: std::collections::BTreeMap::new(),
                 avatar_url: Some(avatar_url.into()),
             },
             text: "hi".into(),
@@ -683,6 +696,34 @@ mod tests {
         assert!(avatars.entry(&keys[0]).is_none(), "oldest dropped");
         assert!(avatars.entry(&keys[1]).is_some());
         assert!(avatars.entry(&keys[2]).is_some());
+    }
+
+    #[test]
+    fn google_badge_urls_are_rewritten_while_other_hosts_stay_intact() {
+        let avatars = Avatars::new();
+        let mut msg = message_with_avatar("m1", "https://static-cdn.jtvnw.net/avatar.png");
+        msg.author.badge_urls.insert(
+            "member".into(),
+            "https://yt3.ggpht.com/ExampleMemberBadge=s32-c-k".into(),
+        );
+        msg.author.badge_urls.insert(
+            "moderator".into(),
+            "https://static-cdn.jtvnw.net/badges/v1/mod/2".into(),
+        );
+        let rewritten = avatars.for_overlay(&msg);
+        assert!(
+            rewritten
+                .author
+                .badge_urls
+                .get("member")
+                .is_some_and(|u| u.starts_with("avatar/")),
+            "Google badge URL should be proxied: {:?}",
+            rewritten.author.badge_urls
+        );
+        assert_eq!(
+            rewritten.author.badge_urls.get("moderator").map(String::as_str),
+            Some("https://static-cdn.jtvnw.net/badges/v1/mod/2")
+        );
     }
 
     #[tokio::test(start_paused = true)]
