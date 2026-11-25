@@ -101,6 +101,7 @@ body {
   --accent: var(--platform-color);     /* changes with the kind or custom accent */
   flex-shrink: 0;
   padding: var(--chat-padding);
+  overflow: hidden;
   border-left: var(--chat-accent-width) solid var(--accent);
   border-radius: var(--chat-radius);
   background: var(--chat-bg);
@@ -167,12 +168,14 @@ body {
 
 .msg__meta {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.38em;
+  min-width: 0;
 }
 
 .msg__platform {
+  flex-shrink: 0;
   width: 0.5em;
   height: 0.5em;
   border-radius: 50%;
@@ -185,6 +188,7 @@ body {
 }
 
 .msg__avatar {
+  flex-shrink: 0;
   width: var(--avatar-size);
   height: var(--avatar-size);
   border-radius: 50%;
@@ -197,6 +201,8 @@ body {
 }
 
 .badge {
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 0.08em 0.48em;
   border-radius: 999px;
   background: color-mix(in srgb, var(--chat-text) 14%, transparent);
@@ -234,12 +240,21 @@ body {
 }
 
 .msg__author {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0.1em 2px 0.1em 0;
+  margin: -0.1em -2px -0.1em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 700;
   color: var(--author-color, var(--chat-text));
 }
 
 .msg__time {
   display: none;
+  flex-shrink: 0;
+  white-space: nowrap;
   margin-left: auto;
   color: var(--chat-muted);
   font-size: 0.68em;

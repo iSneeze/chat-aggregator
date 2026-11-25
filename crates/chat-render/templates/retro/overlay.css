@@ -192,14 +192,17 @@ body {
 .msg__meta {
   position: relative;
   z-index: 2;
+  box-sizing: border-box;
   align-self: flex-start;
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.42em;
-  max-width: calc(100% - 1.2em);
+  min-width: 0;
+  max-width: calc(100% - 1.3em);
   margin: 0 0 -0.62em 0.65em;
   padding: 0.14em 0.6em;
+  overflow: hidden;
   border: 2px solid var(--frame-color);
   border-radius: 2px;
   background: color-mix(in srgb, var(--panel-surface) 95%, #000000);
@@ -222,6 +225,16 @@ body {
 }
 
 .msg__author {
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Extra padding box (compensated by negative margin) so overflow: hidden
+     truncates horizontally with an ellipsis without clipping descenders or
+     the 2px pixel drop shadow. */
+  padding: 0.12em 2px 0.12em 0;
+  margin: -0.12em -2px -0.12em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.84em;
   font-weight: 800;
   color: var(--accent);
@@ -229,6 +242,8 @@ body {
 }
 
 .badge {
+  flex-shrink: 0;
+  white-space: nowrap;
   --badge-color: var(--accent);
   --badge-ink: color-mix(in srgb, var(--badge-color) 46%, var(--chat-text));
   padding: 0.04em 0.36em;
@@ -270,6 +285,8 @@ body {
 
 .msg__time {
   display: none;
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: 0.66em;
   color: var(--chat-muted);
   font-variant-numeric: tabular-nums;
@@ -443,6 +460,7 @@ body {
 }
 
 .chat--frame-win95 .msg__meta {
+  display: flex;
   align-self: stretch;
   max-width: none;
   margin: 0 0 3px 0;

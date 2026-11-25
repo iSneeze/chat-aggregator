@@ -131,6 +131,7 @@ body {
   position: relative;
   flex-shrink: 0;
   padding: var(--chat-padding);
+  overflow: hidden;
   border-radius: var(--chat-radius);
   background: var(--card-surface);
   box-shadow:
@@ -238,9 +239,10 @@ body {
 
 .msg__meta {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.38em;
+  min-width: 0;
 }
 
 .msg__meta:not(:last-child) {
@@ -310,11 +312,20 @@ body {
 }
 
 .msg__author {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0.1em 0;
+  margin: -0.1em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 800;
   color: var(--accent);
 }
 
 .badge {
+  flex-shrink: 0;
+  white-space: nowrap;
   --badge-color: var(--accent);
   padding: 0.08em 0.5em;
   border-radius: 999px;
@@ -354,6 +365,8 @@ body {
 
 .msg__time {
   display: none;
+  flex-shrink: 0;
+  white-space: nowrap;
   margin-left: auto;
   color: var(--chat-muted);
   font-size: 0.68em;

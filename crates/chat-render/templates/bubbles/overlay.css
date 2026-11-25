@@ -224,6 +224,7 @@ body {
 
 .msg__bubble {
   position: relative;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   width: fit-content;
@@ -346,14 +347,17 @@ body {
 /* ---- floating nameplate pill ---- */
 
 .msg__meta {
+  box-sizing: border-box;
   align-self: flex-start;
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.34em;
+  min-width: 0;
   max-width: 100%;
   margin: calc(-1 * var(--bubble-pad-top) - 0.65em) 0 var(--bubble-pill-gap) -0.18em;
   padding: 0.14em 0.62em;
+  overflow: hidden;
   border-radius: 999px;
   background: var(--accent);
   color: var(--pill-text);
@@ -378,6 +382,8 @@ body {
 }
 
 .badge {
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 0.08em 0.46em;
   border-radius: 999px;
   background: rgb(255 255 255 / 0.24);
@@ -394,6 +400,13 @@ body {
 }
 
 .msg__author {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0.1em 1px 0.1em 0;
+  margin: -0.1em -1px -0.1em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.82em;
   font-weight: 800;
   letter-spacing: 0.01em;
@@ -401,6 +414,8 @@ body {
 
 .msg__time {
   display: none;
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: 0.66em;
   opacity: 0.85;
   font-variant-numeric: tabular-nums;
@@ -419,8 +434,8 @@ body {
 
 .chat--name-inside .msg__meta {
   align-self: stretch;
-  margin: 0 0 0.24em 0;
-  padding: 0;
+  margin: -2px -2px calc(0.24em - 2px) -2px;
+  padding: 2px;
   border-radius: 0;
   background: transparent;
   color: var(--accent);

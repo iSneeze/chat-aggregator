@@ -202,6 +202,7 @@ body {
 .msg__panel {
   position: relative;
   padding: var(--chat-padding);
+  overflow: hidden;
   border-left: 3px solid var(--accent);
   /* 45-degree diagonal cuts on top-right and bottom-left; the two corner
      gradients draw crisp 1.5px neon lines along both cut edges at any opacity. */
@@ -307,9 +308,10 @@ body {
 
 .msg__meta {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.42em;
+  min-width: 0;
 }
 
 .msg__meta:not(:last-child) {
@@ -326,6 +328,7 @@ body {
 
 .msg__platform {
   flex-shrink: 0;
+  white-space: nowrap;
   padding: 0.08em 0.42em;
   border: 1px solid color-mix(in srgb, var(--platform-color) 72%, transparent);
   background: color-mix(in srgb, var(--platform-color) 18%, transparent);
@@ -355,6 +358,16 @@ body {
 }
 
 .msg__author {
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Extra padding box (compensated by negative margin) so overflow: hidden
+     truncates horizontally with an ellipsis without clipping descenders or
+     the 8px neon text glow. */
+  padding: 0.25em 6px;
+  margin: -0.25em -6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 800;
   color: var(--accent);
   letter-spacing: 0.02em;
@@ -362,6 +375,8 @@ body {
 }
 
 .badge {
+  flex-shrink: 0;
+  white-space: nowrap;
   --badge-color: var(--secondary);
   padding: 0.08em 0.42em;
   border: 1px solid color-mix(in srgb, var(--badge-color) 65%, transparent);
@@ -402,6 +417,8 @@ body {
 
 .msg__time {
   display: none;
+  flex-shrink: 0;
+  white-space: nowrap;
   margin-left: auto;
   color: var(--chat-muted);
   font-family: var(--chat-mono);

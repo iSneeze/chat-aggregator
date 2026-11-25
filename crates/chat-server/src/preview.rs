@@ -14,7 +14,7 @@ use axum::http::header;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use chat_core::ChatEvent;
-use chat_core::demo::sample_messages;
+use chat_core::demo::{sample_messages, showcase_messages};
 use chat_render::options::lookup_theme_values;
 use futures_util::{StreamExt, stream};
 use tokio_stream::wrappers::WatchStream;
@@ -154,26 +154,28 @@ pub(crate) async fn events(
     let avatars = state.avatars.clone();
     let demo_drip = query.demo.as_deref() == Some("1");
 
-    // Pick a balanced showcase slice (chat, YouTube avatar, emote-only,
-    // Super Chat, bits, 12-month sub, gifted subs, raid notice).
     let showcase = |round: usize| {
+        showcase_messages(round)
+            .into_iter()
+            .map(ChatEvent::Message)
+            .collect::<Vec<_>>()
+    };
+    let all_samples = |round: usize| {
         sample_messages(round)
             .into_iter()
-            .enumerate()
-            .filter(|(i, _)| matches!(i, 0 | 1 | 2 | 3 | 4 | 6 | 8 | 10))
-            .map(|(_, msg)| ChatEvent::Message(msg))
+            .map(ChatEvent::Message)
             .collect::<Vec<_>>()
     };
 
     let sample_stream = if demo_drip {
-        let initial = stream::iter(showcase(0).into_iter().take(2));
+        let initial = stream::iter(all_samples(0).into_iter().take(2));
         let dripping = stream::unfold((0usize, 2usize), move |(mut round, mut idx)| async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let mut batch = showcase(round);
+            let mut batch = all_samples(round);
             if idx >= batch.len() {
                 round += 1;
                 idx = 0;
-                batch = showcase(round);
+                batch = all_samples(round);
             }
             let event = batch.swap_remove(idx);
             Some((event, (round, idx + 1)))
