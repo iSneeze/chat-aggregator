@@ -274,16 +274,13 @@ mod tests {
     }
 
     #[test]
-    fn url_lists_skip_what_they_dont_know() {
+    fn the_url_wins_over_the_app() {
         assert_eq!(
             Hide::parse_list("streamelements, notice,,typo,donation"),
             [Hide::StreamElements, Hide::Notice, Hide::Donation]
         );
         assert!(Hide::parse_list("").is_empty());
-    }
 
-    #[test]
-    fn the_url_wins_over_the_app() {
         let (app_tx, app) = watch::channel(OverlayConfig {
             hide: vec![Hide::StreamElements],
             ..OverlayConfig::default()
@@ -295,20 +292,5 @@ mod tests {
         // The app's setting changes: the next message follows it.
         app_tx.send_modify(|overlay| overlay.hide.clear());
         assert!(from_app.shows_message(&tip()));
-    }
-
-    #[test]
-    fn moderation_always_gets_through() {
-        let (_tx, app) = watch::channel(OverlayConfig {
-            hide: Hide::ALL.to_vec(),
-            ..OverlayConfig::default()
-        });
-        let filter = OverlayFilter::new(&app, None);
-        let delete = ChatEvent::Delete {
-            platform: ChatPlatform::StreamElements,
-            message_id: "m1".into(),
-        };
-        assert!(filter.shows(&delete));
-        assert!(!filter.shows(&ChatEvent::Message(tip())));
     }
 }

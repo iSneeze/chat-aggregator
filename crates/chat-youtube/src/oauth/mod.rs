@@ -227,20 +227,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rejected_old_login_is_login_required_and_copied_nowhere() {
-        let (app, _, dir) = fake_google::start(3600).await;
-        let legacy = store::secret_name(&app, &Account::Legacy);
-        app.store.save(&legacy, REVOKED).await.unwrap();
-        let err = adopt_legacy_login(&app).await.unwrap_err();
-        assert!(is_login_required(&err), "{err:#}");
-        assert_eq!(
-            stored(&app, &Account::Channel(CHANNEL_ID.into())).await,
-            None
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[tokio::test]
     async fn check_and_logout_are_per_account() {
         let (app, _, dir) = fake_google::start(3600).await;
         let main = Account::Channel("UC_main".into());

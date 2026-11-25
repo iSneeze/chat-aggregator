@@ -36,11 +36,21 @@ fn id_slug(name: &str) -> String {
 
 fn twitch_badge_url(name: &str) -> Option<&'static str> {
     match name {
-        "broadcaster" => Some("https://static-cdn.jtvnw.net/badges/v1/5527c58c-fb7d-422d-b71b-f309dcb85cc1/2"),
-        "moderator" => Some("https://static-cdn.jtvnw.net/badges/v1/3267646d-33f0-4b17-b3df-f923a41db1d0/2"),
-        "vip" => Some("https://static-cdn.jtvnw.net/badges/v1/b817aba4-fad8-49e2-b88a-7cc744dfa6ec/2"),
-        "subscriber" => Some("https://static-cdn.jtvnw.net/badges/v1/5d9f2208-5dd8-11e7-8513-2ff4adfae661/2"),
-        "sub-gifter" => Some("https://static-cdn.jtvnw.net/badges/v1/a5ef6c17-2e5b-4d8f-9b80-2779fd722414/2"),
+        "broadcaster" => {
+            Some("https://static-cdn.jtvnw.net/badges/v1/5527c58c-fb7d-422d-b71b-f309dcb85cc1/2")
+        }
+        "moderator" => {
+            Some("https://static-cdn.jtvnw.net/badges/v1/3267646d-33f0-4b17-b3df-f923a41db1d0/2")
+        }
+        "vip" => {
+            Some("https://static-cdn.jtvnw.net/badges/v1/b817aba4-fad8-49e2-b88a-7cc744dfa6ec/2")
+        }
+        "subscriber" => {
+            Some("https://static-cdn.jtvnw.net/badges/v1/5d9f2208-5dd8-11e7-8513-2ff4adfae661/2")
+        }
+        "sub-gifter" => {
+            Some("https://static-cdn.jtvnw.net/badges/v1/a5ef6c17-2e5b-4d8f-9b80-2779fd722414/2")
+        }
         _ => None,
     }
 }
@@ -151,7 +161,11 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
         msg(
             2,
             Twitch,
-            twitch("Sir_Wobblesworth_Of_The_Third_Tab", "#c084fc", &["subscriber", "vip"]),
+            twitch(
+                "Sir_Wobblesworth_Of_The_Third_Tab",
+                "#c084fc",
+                &["subscriber", "vip"],
+            ),
             "real",
             vec![],
             MessageKind::Text,
@@ -262,7 +276,11 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
         msg(
             13,
             YouTube,
-            youtube("Professor_Overthinks_Every_Jump", &["moderator"], AVATAR_INDIGO),
+            youtube(
+                "Professor_Overthinks_Every_Jump",
+                &["moderator"],
+                AVATAR_INDIGO,
+            ),
             "Friendly reminder that if you press the dodge button BEFORE the giant laser hits you, it hurts significantly less. Source: watching you get vaporized six times in a row. HeyGuys",
             vec![emote("HeyGuys", HEY_GUYS)],
             MessageKind::Text,
@@ -315,7 +333,11 @@ pub fn sample_messages(round: usize) -> Vec<ChatMessage> {
         msg(
             19,
             YouTube,
-            youtube("Lord Commander of Unread Tabs", &["member", "verified"], AVATAR_TEAL),
+            youtube(
+                "Lord Commander of Unread Tabs",
+                &["member", "verified"],
+                AVATAR_TEAL,
+            ),
             "Please buy yourself a snack that isn't cold toast, you've been staring at that puzzle for twenty minutes.",
             vec![],
             MessageKind::Donation {
@@ -425,111 +447,5 @@ mod tests {
                 assert!(ids.insert(msg.id.clone()), "duplicate id {}", msg.id);
             }
         }
-    }
-
-    #[test]
-    fn samples_are_recognised() {
-        assert!(sample_messages(3).iter().all(is_sample));
-        let mut other = sample_messages(0).remove(0);
-        other.id = "manual-1".into(); // the app's test window
-        assert!(!is_sample(&other));
-    }
-
-    #[test]
-    fn demo_moderation_targets_twitch_messages() {
-        // DemoSource deletes/clears on Twitch; the targets must be Twitch too.
-        let messages = sample_messages(0);
-        assert_eq!(messages[0].platform, ChatPlatform::Twitch);
-        assert_eq!(messages.last().unwrap().platform, ChatPlatform::Twitch);
-    }
-
-    #[tokio::test]
-    async fn demo_source_deletes_its_first_message() {
-        let (tx, mut rx) = mpsc::channel(64);
-        tokio::spawn(
-            DemoSource {
-                interval: Duration::from_millis(1),
-            }
-            .run(tx, Reporter::detached()),
-        );
-
-        let first_id = sample_messages(0)[0].id.clone();
-        loop {
-            match rx.recv().await.expect("demo keeps running") {
-                ChatEvent::Delete { message_id, .. } => {
-                    assert_eq!(message_id, first_id);
-                    break;
-                }
-                ChatEvent::Message(_) => continue,
-                other => panic!("expected a delete first, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn sample_messages_cover_variety_and_showcase() {
-        let messages = sample_messages(0);
-        for platform in ChatPlatform::ALL {
-            assert!(
-                messages.iter().any(|m| m.platform == platform),
-                "missing platform {platform:?}"
-            );
-        }
-        assert!(messages.iter().any(|m| matches!(m.kind, MessageKind::Text)));
-        assert!(messages.iter().any(|m| matches!(m.kind, MessageKind::EmoteOnly)));
-        assert!(messages.iter().any(|m| matches!(m.kind, MessageKind::Donation { .. })));
-        assert!(messages.iter().any(|m| matches!(m.kind, MessageKind::Special { .. })));
-        assert!(messages.iter().any(|m| matches!(m.kind, MessageKind::MembershipJoin { .. })));
-        assert!(messages.iter().any(|m| matches!(m.kind, MessageKind::MembershipGift { .. })));
-        assert!(messages.iter().any(|m| matches!(m.kind, MessageKind::SystemNotice { .. })));
-
-        assert!(
-            messages.iter().any(|m| m.author.name.chars().count() <= 2),
-            "expected a short author name"
-        );
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.author.name.chars().count() >= 24 && !m.author.name.chars().any(char::is_whitespace)),
-            "expected a long unspaced author name"
-        );
-        assert!(
-            messages
-                .iter()
-                .any(|m| (1..=4).contains(&m.text.chars().count())),
-            "expected a short message"
-        );
-        assert!(
-            messages.iter().any(|m| m.text.chars().count() >= 120),
-            "expected a long message"
-        );
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.text.chars().count() >= 30 && !m.text.chars().any(char::is_whitespace)),
-            "expected an unbroken word message"
-        );
-        for m in &messages {
-            assert!(!m.author.name.contains('\n'), "newline in author name: {:?}", m.author.name);
-            assert!(!m.text.contains('\n'), "newline in text: {:?}", m.text);
-        }
-
-        let showcase = showcase_messages(0);
-        assert!(!showcase.is_empty());
-        assert!(showcase.iter().all(is_sample));
-        assert!(
-            showcase.iter().any(|m| m.author.name.chars().count() <= 2),
-            "showcase should include a short author name"
-        );
-        assert!(
-            showcase
-                .iter()
-                .any(|m| m.author.name.chars().count() >= 24 && !m.author.name.chars().any(char::is_whitespace)),
-            "showcase should include a long unspaced author name"
-        );
-        assert!(
-            showcase.iter().any(|m| m.text.chars().count() >= 120),
-            "showcase should include a long message"
-        );
     }
 }

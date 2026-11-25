@@ -82,6 +82,8 @@ mod tests {
             "the copy doesn't need the original"
         );
         assert!(!settings.join(format!("{FILE_NAME}.partial")).exists());
+        // Importing the already-copied file over itself is fine.
+        assert_eq!(import(&copy, &settings).unwrap().1, 2);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -105,16 +107,6 @@ mod tests {
             2,
             "the good copy survives"
         );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn importing_the_copy_itself_is_fine() {
-        let dir = temp_dir("same");
-        let download = dir.join("x.json");
-        std::fs::write(&download, EXPORT).unwrap();
-        let (copy, _) = import(&download, &dir).unwrap();
-        assert_eq!(import(&copy, &dir).unwrap().1, 2);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

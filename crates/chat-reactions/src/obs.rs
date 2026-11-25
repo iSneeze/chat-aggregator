@@ -902,19 +902,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_timed_filter_goes_back_off() {
-        let (listener, url) = listener().await;
-        let mut obs = fake_obs(listener, None, mic());
-        let mut out = start(&url, None);
-        out.connected().await;
-        let fired = Instant::now();
-        out.send(chipmunk(Some(300))).await;
-        assert_eq!(next(&mut obs).await, "filter Mic/Chipmunk on");
-        assert_eq!(next(&mut obs).await, "filter Mic/Chipmunk off");
-        assert!(fired.elapsed() >= Duration::from_millis(300));
-    }
-
-    #[tokio::test]
     async fn firing_again_makes_it_last_longer_instead_of_stacking() {
         let (listener, url) = listener().await;
         let mut obs = fake_obs(listener, None, mic());

@@ -145,154 +145,78 @@ mod tests {
     }
 
     #[test]
-    fn only_what_changed_is_touched() {
-        let (controls, server) = controls();
-        let old = Settings::default();
-        let mut new = old.clone();
-        new.server.stagger_ms = 0;
-        new.server.port = 9000;
-        new.app.appearance = crate::Appearance::Dark;
+    fn live_settings_apply_without_reloading_overlays() {
+        use crate::theme_options::{ThemeValue, ThemeValues};
 
-        assert!(!controls.apply(&old, &new), "YouTube unchanged");
-        assert!(changed(&server.overlay));
-        assert!(server.overlay.borrow().stagger.is_off());
-        assert!(!changed(&server.reload), "no reload for pacing");
-        assert!(!changed(&server.api));
-        assert!(!changed(&server.reactions));
-        assert!(!changed(&server.tips));
-    }
-
-    #[test]
-    fn new_tip_settings_are_sent_without_a_restart() {
-        let (controls, server) = controls();
-        let old = Settings::default();
-        let mut new = old.clone();
-        new.profile.tips.currency = "EUR".into();
-        assert!(!controls.apply(&old, &new), "no YouTube restart");
-        assert!(changed(&server.tips));
-        assert_eq!(server.tips.borrow().currency(), Some("EUR"));
-        assert!(!changed(&server.reactions));
-        assert!(!changed(&server.reload), "overlays don't reload");
-    }
-
-    #[test]
-    fn what_overlays_hide_applies_without_a_reload() {
-        let (controls, server) = controls();
-        let old = Settings::default();
-        let mut new = old.clone();
-        new.profile.overlay.hide = vec![Hide::StreamElements];
-        controls.apply(&old, &new);
-        assert!(changed(&server.overlay));
-        assert_eq!(server.overlay.borrow().hide, [Hide::StreamElements]);
-        assert!(!changed(&server.reload), "overlays don't reload");
-    }
-
-    #[test]
-    fn new_reaction_settings_reach_the_reactor() {
-        let (controls, server) = controls();
-        let old = Settings::default();
-        let mut new = old.clone();
-        new.profile.reactions.paused = true;
-        assert!(!controls.apply(&old, &new));
-        assert!(changed(&server.reactions));
-        assert!(server.reactions.borrow().paused);
-        assert!(!changed(&server.reload), "overlays don't reload");
-    }
-
-    #[test]
-    fn a_new_direction_reloads_the_overlays() {
-        let (controls, server) = controls();
-        let old = Settings::default();
-        let mut new = old.clone();
-        new.profile.overlay.newest = Newest::Top;
-        controls.apply(&old, &new);
-        assert_eq!(server.overlay.borrow().newest, Newest::Top);
-        assert!(changed(&server.reload), "overlays reload");
-        assert_eq!(
-            server.overlay.borrow().theme,
-            ThemeSource::default(),
-            "same theme"
-        );
-    }
-
-    #[test]
-    fn a_new_theme_reaches_the_overlays() {
-        let (controls, server) = controls();
-        let old = Settings::default();
-        let mut new = old.clone();
-        new.profile.overlay.theme = Some("minimal".into());
-        new.profile.overlay.newest = Newest::Top;
-        controls.apply(&old, &new);
-        assert_eq!(
-            server.overlay.borrow().theme,
-            ThemeSource::Builtin(Builtin::Minimal)
-        );
-        assert_eq!(server.overlay.borrow().newest, Newest::Top);
-        assert_eq!(*server.reload.borrow(), 1, "reloaded once for both");
-    }
-
-    #[test]
-    fn history_and_the_api_switch_apply_at_once() {
         let (controls, server) = controls();
         for i in 0..5 {
             let mut msg = chat_core::demo::sample_messages(0).remove(0);
             msg.id = format!("m{i}");
             controls.hub.publish(chat_core::ChatEvent::Message(msg));
         }
-        let old = Settings::default();
-        let mut new = old.clone();
-        new.server.history = 2;
-        new.server.api = true;
-        controls.apply(&old, &new);
-        assert_eq!(controls.hub.subscribe().0.len(), 2, "the oldest went");
-        assert!(*server.api.borrow());
-    }
 
-    #[test]
-    fn youtube_changes_are_left_to_the_caller() {
-        let (controls, _server) = controls();
-        let old = Settings::default();
-        let mut new = old.clone();
-        new.youtube.api_key = Some("key".into());
-        assert!(controls.apply(&old, &new));
-    }
-
-    #[test]
-    fn the_same_pacing_written_differently_changes_nothing() {
-        let (controls, server) = controls();
-        // The longest delay is capped at 5 s: 5 s and 6 s are the same.
-        let mut old = Settings::default();
-        old.server.stagger_max_ms = Stagger::MAX_DELAY_LIMIT.as_millis() as u64;
-        let mut new = old.clone();
-        new.server.stagger_max_ms += 1000;
-        controls.apply(&old, &new);
+        // Capped pacing written differently changes nothing.
+        let mut capped = Settings::default();
+        capped.server.stagger_max_ms = Stagger::MAX_DELAY_LIMIT.as_millis() as u64;
+        let mut over = capped.clone();
+        over.server.stagger_max_ms += 1000;
+        assert!(!controls.apply(&capped, &over));
         assert!(!changed(&server.overlay));
         assert!(!changed(&server.reload));
-    }
 
-    #[test]
-    fn theme_options_apply_without_a_reload() {
-        use crate::theme_options::{ThemeValue, ThemeValues};
-
-        let (controls, server) = controls();
         let old = Settings::default();
         let mut new = old.clone();
+        new.server.stagger_ms = 0;
+        new.server.port = 9000;
+        new.server.history = 2;
+        new.server.api = true;
+        new.app.appearance = crate::Appearance::Dark;
+        new.profile.overlay.hide = vec![Hide::StreamElements];
         let mut opts = ThemeValues::new();
         opts.insert("text_color".into(), ThemeValue::Text("#ff00aa".into()));
         new.profile
             .overlay
             .theme_options
             .insert("default".into(), opts.clone());
+        new.profile.reactions.paused = true;
+        new.profile.tips.currency = "EUR".into();
 
-        controls.apply(&old, &new);
+        assert!(!controls.apply(&old, &new), "YouTube unchanged");
         assert!(changed(&server.overlay));
+        assert!(server.overlay.borrow().stagger.is_off());
+        assert_eq!(server.overlay.borrow().hide, [Hide::StreamElements]);
         assert_eq!(
             server.overlay.borrow().theme_options.get("default"),
             Some(&opts)
         );
         assert!(
             !changed(&server.reload),
-            "theme options update live over SSE without reloading"
+            "live settings don't reload overlays"
         );
+        assert!(*server.api.borrow());
+        assert_eq!(controls.hub.subscribe().0.len(), 2);
+        assert!(server.reactions.borrow().paused);
+        assert_eq!(server.tips.borrow().currency(), Some("EUR"));
+    }
+
+    #[test]
+    fn theme_direction_and_youtube_trigger_reload_or_restart() {
+        let (controls, server) = controls();
+        let old = Settings::default();
+        let mut new = old.clone();
+        new.profile.overlay.theme = Some("minimal".into());
+        new.profile.overlay.newest = Newest::Top;
+        new.youtube.api_key = Some("key".into());
+
+        assert!(
+            controls.apply(&old, &new),
+            "YouTube changes ask the caller to restart"
+        );
+        assert_eq!(
+            server.overlay.borrow().theme,
+            ThemeSource::Builtin(Builtin::Minimal)
+        );
+        assert_eq!(server.overlay.borrow().newest, Newest::Top);
+        assert_eq!(*server.reload.borrow(), 1, "reloaded once for both");
     }
 }

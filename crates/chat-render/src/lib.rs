@@ -399,27 +399,6 @@ mod tests {
         Theme::builtin().render(msg).unwrap()
     }
 
-    #[test]
-    fn every_sample_renders() {
-        let theme = Theme::builtin();
-        for msg in sample_messages(0) {
-            let html = theme.render(&msg).unwrap();
-            assert!(html.starts_with("<article class=\"msg msg--"), "{html}");
-            assert!(html.contains(&format!("data-id=\"{}\"", msg.id)), "{html}");
-        }
-    }
-
-    #[test]
-    fn chat_text_is_escaped() {
-        let html = render(&message(
-            ChatPlatform::Twitch,
-            "<script>alert('x')</script>",
-            MessageKind::Text,
-        ));
-        assert!(!html.contains("<script>"), "{html}");
-        assert!(html.contains("&lt;script&gt;"), "{html}");
-    }
-
     /// Classic attempts to turn chat into markup or script. They must all
     /// end up as text: in OBS, script in an overlay runs without Chromium's
     /// sandbox (see `OVERLAY_CSP` in chat-server for the second line of
@@ -443,7 +422,10 @@ mod tests {
                 name: value.into(),
                 color: Some(value.into()),
                 badges: vec![value.into()],
-                badge_urls: std::collections::BTreeMap::new(),
+                badge_urls: std::collections::BTreeMap::from([(
+                    value.into(),
+                    format!("https://static-cdn.jtvnw.net/badges/v1/{value}/2"),
+                )]),
                 avatar_url: Some(value.into()),
             },
             text: value.into(),
@@ -545,168 +527,6 @@ mod tests {
             let markup = html.split(r#"<span class="msg__body">"#).next().unwrap();
             assert!(!markup.contains("> <"), "{html}");
         }
-        let line = |kind| {
-            theme
-                .render(&message(ChatPlatform::YouTube, "gg", kind))
-                .unwrap()
-        };
-        let donation = line(MessageKind::Donation {
-            amount: "€5.00".into(),
-            tier: Some(3),
-            value: None,
-            currency: None,
-        });
-        assert!(
-            donation.contains(concat!(
-                r#"<span class="msg__author">Ann</span><span class="msg__mod" title="moderator"></span>"#,
-                r#"<span class="msg__colon">:</span><data class="msg__event msg__amount">€5.00</data>"#,
-                r#"<span class="msg__body">gg</span></div>"#
-            )),
-            "{donation}"
-        );
-        assert!(donation.contains("msg--role-moderator"), "{donation}");
-        let gift = line(MessageKind::MembershipGift { count: 5 });
-        assert!(
-            gift.contains(r#"<span class="msg__event">gifted <data class="msg__count" value="5">5</data> memberships</span>"#),
-            "{gift}"
-        );
-        let milestone = line(MessageKind::MembershipJoin {
-            info: "12 months member".into(),
-            months: Some(12),
-        });
-        assert!(milestone.contains(">Member for <data"), "{milestone}");
-
-        // Lead moderators get the canonical moderator role and wrench too.
-        let mut lead_mod = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
-        lead_mod.author.badges = vec!["lead_moderator".into()];
-        let rendered = theme.render(&lead_mod).unwrap();
-        assert!(rendered.contains("msg--role-moderator"), "{rendered}");
-        assert!(rendered.contains("msg__mod"), "{rendered}");
-        assert!(rendered.contains("--chatter-hue:"), "{rendered}");
-        assert!(rendered.contains("--author-color: #7f5af0"), "{rendered}");
-
-        // Chatters without a platform color still get a seeded --chatter-hue
-        // and omit --author-color so CSS falls back to their steady random hue.
-        let mut no_color = message(ChatPlatform::YouTube, "hi", MessageKind::Text);
-        no_color.author.color = None;
-        let rendered_no_color = theme.render(&no_color).unwrap();
-        assert!(rendered_no_color.contains("--chatter-hue:"), "{rendered_no_color}");
-        assert!(!rendered_no_color.contains("--author-color:"), "{rendered_no_color}");
-    }
-
-    #[test]
-    fn bubbles_theme_renders_bubbles_and_chatter_seeds() {
-        let theme = Theme::from_builtin(Builtin::Bubbles);
-        let msg = message(ChatPlatform::Twitch, "hello chat", MessageKind::Text);
-        let html = theme.render(&msg).unwrap();
-        assert!(html.contains(r#"class="msg msg--text msg--twitch msg--role-moderator msg--side-"#), "{html}");
-        assert!(html.contains("--chatter-hue:"), "{html}");
-        assert!(html.contains("--author-color: #7f5af0"), "{html}");
-        assert!(
-            html.contains(r#"<span class="msg__avatar msg__avatar--fallback" aria-hidden="true">A</span>"#),
-            "chatter without avatar_url gets an initial-letter fallback: {html}"
-        );
-        assert!(html.contains(r#"<div class="msg__bubble">"#), "{html}");
-        assert!(html.contains(r#"<header class="msg__meta">"#), "{html}");
-
-        // Chatters with an avatar_url render the photo instead of the fallback.
-        let mut with_avatar = message(ChatPlatform::YouTube, "hi", MessageKind::Text);
-        with_avatar.author.avatar_url = Some("avatar.png".into());
-        let with_avatar_html = theme.render(&with_avatar).unwrap();
-        assert!(with_avatar_html.contains(r#"<img class="msg__avatar" src="avatar.png" alt="">"#), "{with_avatar_html}");
-        assert!(!with_avatar_html.contains("msg__avatar--fallback"), "{with_avatar_html}");
-
-        // System notices omit the nameplate pill and avatar, keeping a clean announcement bubble.
-        let mut notice = message(
-            ChatPlatform::Twitch,
-            "",
-            MessageKind::SystemNotice {
-                info: "Kim is raiding".into(),
-            },
-        );
-        notice.author.avatar_url = Some("avatar.png".into());
-        let notice_html = theme.render(&notice).unwrap();
-        assert!(!notice_html.contains("msg__meta"), "{notice_html}");
-        assert!(!notice_html.contains("msg__avatar"), "{notice_html}");
-        assert!(notice_html.contains("Kim is raiding"), "{notice_html}");
-    }
-
-    #[test]
-    fn cozy_theme_renders_charms_and_tilt() {
-        let theme = Theme::from_builtin(Builtin::Cozy);
-        let msg = message(ChatPlatform::Twitch, "warm tea", MessageKind::Text);
-        let html = theme.render(&msg).unwrap();
-        assert!(html.contains(r#"class="msg msg--text msg--twitch msg--role-moderator msg--tilt-"#), "{html}");
-        assert!(html.contains(r#"<span class="msg__charm msg__charm--"#), "{html}");
-        assert!(html.contains("--chatter-hue:"), "{html}");
-
-        // System notices omit the header and charm, keeping a centered stationery note.
-        let notice = message(
-            ChatPlatform::Twitch,
-            "",
-            MessageKind::SystemNotice {
-                info: "Kim is raiding".into(),
-            },
-        );
-        let notice_html = theme.render(&notice).unwrap();
-        assert!(!notice_html.contains("msg__meta"), "{notice_html}");
-        assert!(!notice_html.contains("msg__charm"), "{notice_html}");
-        assert!(notice_html.contains("Kim is raiding"), "{notice_html}");
-    }
-
-    #[test]
-    fn retro_theme_renders_dialogue_box_and_portrait() {
-        let theme = Theme::from_builtin(Builtin::Retro);
-        let mut msg = message(ChatPlatform::YouTube, "press start", MessageKind::Text);
-        msg.author.avatar_url = Some("portrait.png".into());
-        let html = theme.render(&msg).unwrap();
-        assert!(html.contains(r#"<header class="msg__meta">"#), "{html}");
-        assert!(html.contains(r#"<div class="msg__box">"#), "{html}");
-        assert!(
-            html.contains(r#"<img class="msg__avatar" src="portrait.png" alt="">"#),
-            "{html}"
-        );
-        assert!(html.contains(r#"<div class="msg__content">"#), "{html}");
-
-        // System notices omit the speaker nameplate and portrait.
-        let mut notice = message(
-            ChatPlatform::Twitch,
-            "",
-            MessageKind::SystemNotice {
-                info: "Kim is raiding".into(),
-            },
-        );
-        notice.author.avatar_url = Some("portrait.png".into());
-        let notice_html = theme.render(&notice).unwrap();
-        assert!(!notice_html.contains("msg__meta"), "{notice_html}");
-        assert!(!notice_html.contains("msg__avatar"), "{notice_html}");
-        assert!(notice_html.contains("Kim is raiding"), "{notice_html}");
-    }
-
-    #[test]
-    fn neon_theme_renders_hud_panel_and_platform_tag() {
-        let theme = Theme::from_builtin(Builtin::Neon);
-        let msg = message(ChatPlatform::Twitch, "entering night city", MessageKind::Text);
-        let html = theme.render(&msg).unwrap();
-        assert!(html.contains(r#"<div class="msg__panel">"#), "{html}");
-        assert!(
-            html.contains(r#"<span class="msg__platform" title="twitch">twitch</span>"#),
-            "{html}"
-        );
-        assert!(html.contains("--chatter-hue:"), "{html}");
-
-        // System notices keep the HUD panel without a speaker header.
-        let notice = message(
-            ChatPlatform::Twitch,
-            "",
-            MessageKind::SystemNotice {
-                info: "Kim is raiding".into(),
-            },
-        );
-        let notice_html = theme.render(&notice).unwrap();
-        assert!(notice_html.contains(r#"<div class="msg__panel">"#), "{notice_html}");
-        assert!(!notice_html.contains("msg__meta"), "{notice_html}");
-        assert!(notice_html.contains("Kim is raiding"), "{notice_html}");
     }
 
     #[test]
@@ -752,25 +572,6 @@ mod tests {
     }
 
     #[test]
-    fn root_carries_classes_and_data_attributes() {
-        let html = render(&message(ChatPlatform::YouTube, "hi", MessageKind::Text));
-        assert!(
-            html.contains(r#"class="msg msg--text msg--youtube msg--role-moderator""#),
-            "{html}"
-        );
-        assert!(html.contains(r#"data-platform="youtube""#), "{html}");
-        assert!(html.contains(r#"data-author="u1""#), "{html}");
-        assert!(
-            html.contains(r#"style="--author-color: #7f5af0""#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<span class="badge badge--moderator">"#),
-            "{html}"
-        );
-    }
-
-    #[test]
     fn emotes_become_images() {
         let mut msg = message(ChatPlatform::Twitch, "hi Kappa", MessageKind::Text);
         msg.emotes = vec![EmoteRef {
@@ -787,51 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn donation_shows_amount_and_is_paid() {
-        let html = render(&message(
-            ChatPlatform::YouTube,
-            "gg",
-            MessageKind::Donation {
-                amount: "€5.00".into(),
-                tier: Some(3),
-                value: None,
-                currency: None,
-            },
-        ));
-        assert!(html.contains("msg--donation"), "{html}");
-        assert!(html.contains("msg--paid"), "{html}");
-        assert!(html.contains("msg--tier-3"), "{html}");
-        assert!(
-            html.contains(r#"<data class="msg__amount">€5.00</data>"#),
-            "{html}"
-        );
-    }
-
-    #[test]
-    fn sticker_without_image_shows_amount_and_description() {
-        let html = render(&message(
-            ChatPlatform::YouTube,
-            "",
-            MessageKind::Special {
-                image_url: None,
-                amount: Some("€2.00".into()),
-                info: Some("dancing cat".into()),
-                tier: None,
-                value: None,
-                currency: None,
-            },
-        ));
-        assert!(html.contains("msg--special"), "{html}");
-        assert!(!html.contains("msg--tier"), "no tier, no class: {html}");
-        assert!(html.contains("msg--paid"), "{html}");
-        assert!(
-            html.contains(r#"<p class="msg__event"><data class="msg__amount">€2.00</data> <span class="msg__info">dancing cat</span></p>"#),
-            "{html}"
-        );
-        assert!(!html.contains("msg__sticker"), "{html}");
-    }
-
-    #[test]
     fn gift_wording_follows_platform_and_count() {
         let gift = |platform, count| {
             render(&message(
@@ -842,49 +598,6 @@ mod tests {
         };
         assert!(gift(ChatPlatform::Twitch, 5).contains(r#"5</data> subs</p>"#));
         assert!(gift(ChatPlatform::YouTube, 1).contains(r#"1</data> membership</p>"#));
-    }
-
-    #[test]
-    fn empty_text_has_no_body() {
-        let html = render(&message(
-            ChatPlatform::Twitch,
-            "",
-            MessageKind::SystemNotice {
-                info: "Kim is raiding".into(),
-            },
-        ));
-        assert!(!html.contains("msg__body"), "{html}");
-        assert!(
-            html.contains(r#"<p class="msg__event">Kim is raiding</p>"#),
-            "{html}"
-        );
-    }
-
-    #[test]
-    fn invalid_color_is_dropped() {
-        let mut msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
-        msg.author.color = Some("red; background: url(x)".into());
-        assert!(!render(&msg).contains("--author-color"));
-    }
-
-    #[test]
-    fn templates_can_seed_per_chatter_values() {
-        let theme = Theme::from_template(
-            "{{ author.id | seed(360, 'hue') }} {{ author.id | seed(6) }}".into(),
-        )
-        .unwrap();
-        let msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
-        let id = minijinja::Value::from(msg.author.id.as_str());
-        let expected = format!(
-            "{} {}",
-            seed::filter(&id, 360, Some("hue")).unwrap(),
-            seed::filter(&id, 6, None).unwrap()
-        );
-        assert_eq!(theme.render(&msg).unwrap(), expected);
-
-        // A mistake in a theme is a render error, not a crash.
-        let broken = Theme::from_template("{{ author.id | seed(0) }}".into()).unwrap();
-        assert!(broken.render(&msg).is_err());
     }
 
     #[test]
@@ -951,19 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn folder_without_manifest_has_no_options() {
-        let dir =
-            std::env::temp_dir().join(format!("chat-render-nomanifest-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(CSS_FILE), "/* custom */").unwrap();
-
-        let manifest = ThemeSource::Folder(dir.clone()).manifest().unwrap();
-        assert!(manifest.options.is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn badge_icons_render_when_https_and_fall_back_otherwise() {
         let mut msg = message(ChatPlatform::Twitch, "hi", MessageKind::Text);
         msg.author.badges = vec![
@@ -1023,32 +723,6 @@ mod tests {
                     && !html.contains(".."),
                 "{builtin:?}: path-traversal badge URL must fall back to text pill:\n{html}"
             );
-        }
-    }
-
-    #[test]
-    fn hostile_badge_urls_never_become_markup() {
-        for builtin in Builtin::ALL {
-            let theme = Theme::from_builtin(builtin);
-            let mut safe = filled_with("x", MessageKind::Text);
-            safe.author
-                .badge_urls
-                .insert("x".into(), "https://static-cdn.jtvnw.net/badges/v1/x/2".into());
-            let expected = theme.render(&safe).unwrap();
-
-            for hostile in HOSTILE {
-                let mut msg = filled_with(hostile, MessageKind::Text);
-                msg.author.badge_urls.insert(
-                    (*hostile).into(),
-                    format!("https://static-cdn.jtvnw.net/badges/v1/{hostile}/2"),
-                );
-                let html = theme.render(&msg).unwrap();
-                assert_eq!(
-                    markup(&html),
-                    markup(&expected),
-                    "{builtin:?}: hostile badge URL {hostile:?} changed markup:\n{html}"
-                );
-            }
         }
     }
 

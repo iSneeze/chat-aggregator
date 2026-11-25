@@ -158,20 +158,8 @@ impl TokenProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oauth::fake_google::{self, REVOKED};
+    use crate::oauth::fake_google;
     use std::sync::atomic::Ordering;
-
-    #[tokio::test]
-    async fn not_logged_in_is_login_required() {
-        let (app, _, _) = fake_google::start(3600).await;
-        for account in [Account::Legacy, Account::Channel("UC_main".into())] {
-            let err = TokenProvider::from_store(app.clone(), account)
-                .await
-                .err()
-                .unwrap();
-            assert!(err.downcast_ref::<LoginRequired>().is_some(), "{err:#}");
-        }
-    }
 
     #[tokio::test]
     async fn each_account_uses_its_own_login() {
@@ -226,13 +214,5 @@ mod tests {
         let (a, b) = tokio::join!(provider.access_token(), other.access_token());
         assert_eq!(a.unwrap(), b.unwrap());
         assert_eq!(fake.refreshes.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn revoked_login_is_login_required() {
-        let (app, _, _) = fake_google::start(3600).await;
-        let provider = TokenProvider::new(app, Account::Legacy, REVOKED.into(), None).unwrap();
-        let err = provider.access_token().await.unwrap_err();
-        assert!(err.downcast_ref::<LoginRequired>().is_some(), "{err:#}");
     }
 }

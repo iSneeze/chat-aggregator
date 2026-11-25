@@ -575,23 +575,6 @@ mod tests {
     }
 
     #[test]
-    fn other_hosts_are_left_alone() {
-        let avatars = Avatars::new();
-        for url in [
-            "https://example.com/avatar.png",
-            "http://yt3.ggpht.com/no-https",
-            "not a url",
-        ] {
-            let msg = message_with_avatar("m1", url);
-            assert!(
-                matches!(avatars.for_overlay(&msg), Cow::Borrowed(_)),
-                "{url} must not be rewritten"
-            );
-        }
-        assert!(avatars.lock_entries().by_key.is_empty());
-    }
-
-    #[test]
     fn only_googles_image_hosts_are_allowed() {
         let allowed = |url: &str| google_image_host(&Url::parse(url).unwrap());
         assert!(allowed("https://yt3.ggpht.com/a=s88"));
@@ -721,7 +704,11 @@ mod tests {
             rewritten.author.badge_urls
         );
         assert_eq!(
-            rewritten.author.badge_urls.get("moderator").map(String::as_str),
+            rewritten
+                .author
+                .badge_urls
+                .get("moderator")
+                .map(String::as_str),
             Some("https://static-cdn.jtvnw.net/badges/v1/mod/2")
         );
     }

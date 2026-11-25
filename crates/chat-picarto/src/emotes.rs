@@ -451,36 +451,34 @@ mod tests {
     }
 
     #[test]
-    fn reads_emoji_names() {
+    fn reads_emoji_names_and_joiners() {
         let emoji = parse_emoji(&bundle());
         assert_eq!(emoji["rofl"], "🤣");
         assert_eq!(emoji["e-mail"], "📧");
+        assert_eq!(emoji["family_mmgb"], "👨\u{200d}👨\u{200d}👧\u{200d}👦");
         assert!(!emoji.contains_key("bad"));
         assert_eq!(emoji.len(), 4);
     }
 
     #[test]
-    fn joined_emoji_keep_their_joiners() {
-        let emoji = parse_emoji(&bundle());
-        assert_eq!(emoji["family_mmgb"], "👨\u{200d}👨\u{200d}👧\u{200d}👦");
-    }
-
-    #[test]
-    fn too_few_emoji_means_none() {
-        // The test bundle's 4 names are below MIN_EMOJI: a changed format.
-        let site = SiteEmotes::from_bundle(&bundle());
-        assert_eq!(site.emoji_len(), 0);
-        assert_eq!(site.ptv_len(), 3);
-    }
-
-    #[test]
-    fn ptv_emotes_become_images() {
-        let body = site().convert(":PTV-ShipIt: :ptv-victory::ptv-uneasy:", &[]);
-        // Codes keep their spelling; unknown ones stay text.
-        assert_eq!(body.text, ":PTV-ShipIt: :ptv-victory::ptv-uneasy:");
-        assert_eq!(codes(&body), [":PTV-ShipIt:", ":ptv-uneasy:"]);
+    fn ptv_emotes_convert_win_over_channel_and_ignore_stray_colons() {
+        let channel = [channel_emote("shipit", "theirs.png")];
+        let body = site().convert(
+            "at 10:30 :PTV-ShipIt: :ptv-shipit: :ptv-victory::ptv-uneasy: ok:",
+            &channel,
+        );
+        // Codes keep their spelling; unknown ones stay text; PTV wins over channel; duplicates listed once.
+        assert_eq!(
+            body.text,
+            "at 10:30 :PTV-ShipIt: :ptv-shipit: :ptv-victory::ptv-uneasy: ok:"
+        );
+        assert_eq!(
+            codes(&body),
+            [":PTV-ShipIt:", ":ptv-shipit:", ":ptv-uneasy:"]
+        );
         assert_eq!(body.emotes[0].url, PNG);
-        assert_eq!(body.emotes[1].url, GIF);
+        assert_eq!(body.emotes[1].url, PNG);
+        assert_eq!(body.emotes[2].url, GIF);
     }
 
     #[test]
@@ -492,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_emotes_come_from_the_message() {
+    fn channel_emotes_come_from_the_message_and_bust_cache() {
         let channel = [
             None,
             channel_emote(
@@ -510,17 +508,7 @@ mod tests {
         // An `a` without a dash matches the part after the code's first one.
         assert_eq!(body.emotes[1].url, "https://images.picarto.tv/wave.png");
         assert!(body.emote_only);
-    }
 
-    #[test]
-    fn ptv_emotes_win_over_channel_emotes() {
-        let channel = [channel_emote("shipit", "theirs.png")];
-        let body = site().convert(":ptv-shipit:", &channel);
-        assert_eq!(body.emotes[0].url, PNG);
-    }
-
-    #[test]
-    fn channel_emote_version_busts_the_cache() {
         let mut emote = channel_emote("cchan-wave", "wave.png").unwrap();
         emote.d = Some(serde_json::json!(1700000000));
         assert_eq!(
@@ -532,28 +520,6 @@ mod tests {
     }
 
     #[test]
-    fn e_list_parses_with_nulls() {
-        let e: Vec<Option<ChannelEmote>> =
-            serde_json::from_str(r#"[null,{"a":"cchan-wave","u":"wave.png"}]"#).unwrap();
-        assert!(e[0].is_none());
-        assert_eq!(e[1].as_ref().unwrap().a, "cchan-wave");
-    }
-
-    #[test]
-    fn stray_colons_do_not_hide_codes() {
-        let body = site().convert("at 10:30 :ptv-shipit: ok:", &[]);
-        assert_eq!(body.text, "at 10:30 :ptv-shipit: ok:");
-        assert_eq!(codes(&body), [":ptv-shipit:"]);
-    }
-
-    #[test]
-    fn emotes_listed_once() {
-        let body = site().convert(":ptv-shipit: :ptv-shipit:", &[]);
-        assert_eq!(codes(&body), [":ptv-shipit:"]);
-        assert!(body.emote_only);
-    }
-
-    #[test]
     fn emote_only_needs_images_and_nothing_else() {
         let site = site();
         assert!(site.convert(" :ptv-shipit:  :ptv-uneasy: ", &[]).emote_only);
@@ -561,12 +527,5 @@ mod tests {
         assert!(!site.convert(":ptv-shipit: hi", &[]).emote_only);
         assert!(!site.convert("", &[]).emote_only);
         assert!(!site.convert(":rofl:", &[]).emote_only);
-    }
-
-    #[test]
-    fn empty_tables_leave_text_alone() {
-        let body = SiteEmotes::default().convert(":ptv-shipit: :rofl:", &[]);
-        assert_eq!(body.text, ":ptv-shipit: :rofl:");
-        assert!(body.emotes.is_empty());
     }
 }

@@ -112,10 +112,12 @@ mod tests {
     }
 
     #[test]
-    fn lists_theme_folders_sorted() {
+    fn lists_valid_theme_folders_sorted() {
         let dir = temp("list");
         assert!(list(&dir).is_empty(), "no folder yet is fine");
-        for name in ["dark", "Studio", ".hidden"] {
+        for name in [
+            "dark", "Studio", ".hidden", "my.theme", "default", "cozy", "CON",
+        ] {
             std::fs::create_dir_all(dir.join(name)).unwrap();
         }
         std::fs::write(dir.join("notes.txt"), "not a theme").unwrap();
@@ -185,7 +187,10 @@ mod tests {
             validate_name(" Minimal ").is_err(),
             "built-in names are taken"
         );
-        assert!(validate_name("Bubbles").is_err(), "built-in names are taken");
+        assert!(
+            validate_name("Bubbles").is_err(),
+            "built-in names are taken"
+        );
         assert!(validate_name("Cozy").is_err(), "built-in names are taken");
         assert!(validate_name("Retro").is_err(), "built-in names are taken");
         assert!(validate_name("Neon").is_err(), "built-in names are taken");
@@ -200,15 +205,5 @@ mod tests {
         assert!(validate_name("CON").is_err());
         assert!(validate_name("nul").is_err());
         assert!(validate_name("COM1").is_err());
-    }
-
-    #[test]
-    fn list_skips_folders_with_invalid_names() {
-        let dir = temp("list-valid");
-        for name in ["Studio", "my.theme", "default", "cozy", "CON"] {
-            std::fs::create_dir_all(dir.join(name)).unwrap();
-        }
-        assert_eq!(list(&dir), ["Studio"]);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

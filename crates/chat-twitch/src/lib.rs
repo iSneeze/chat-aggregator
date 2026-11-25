@@ -242,11 +242,12 @@ fn fallback_notice_info(irc: &IRCMessage, event_id: &str, sender_name: &str) -> 
                 None => format!("{sender_name} reached a watch streak milestone!"),
             }
         }
-        "bitsbadgetier" => match tag(irc, "msg-param-threshold").and_then(|v| v.parse::<u64>().ok())
-        {
-            Some(threshold) => format!("{sender_name} earned the {threshold} bits badge!"),
-            None => format!("{sender_name} earned a new bits badge!"),
-        },
+        "bitsbadgetier" => {
+            match tag(irc, "msg-param-threshold").and_then(|v| v.parse::<u64>().ok()) {
+                Some(threshold) => format!("{sender_name} earned the {threshold} bits badge!"),
+                None => format!("{sender_name} earned a new bits badge!"),
+            }
+        }
         _ => String::new(),
     }
 }
@@ -263,7 +264,10 @@ fn convert_user_notice(un: UserNoticeMessage, badges: &BadgeMap) -> Option<ChatM
     let kind = match un.event {
         UserNoticeEvent::Raid { viewer_count, .. } => {
             let info = if un.system_message.is_empty() {
-                format!("{} is raiding with a party of {viewer_count}!", un.sender.name)
+                format!(
+                    "{} is raiding with a party of {viewer_count}!",
+                    un.sender.name
+                )
             } else {
                 un.system_message
             };
@@ -359,8 +363,7 @@ fn classify_raw_user_notice(
         "sub" | "resub" => {
             let months = (event_id == "resub")
                 .then(|| {
-                    tag(irc, "msg-param-cumulative-months")
-                        .and_then(|v| v.parse::<u32>().ok())
+                    tag(irc, "msg-param-cumulative-months").and_then(|v| v.parse::<u32>().ok())
                 })
                 .flatten();
             let info = if system_message.is_empty() {
@@ -514,8 +517,7 @@ fn raw_message_id(irc: &IRCMessage) -> String {
 fn parse_raw_color(irc: &IRCMessage) -> Option<String> {
     let raw = tag(irc, "color")?;
     let hex = raw.strip_prefix('#')?;
-    (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
-        .then(|| raw.to_ascii_lowercase())
+    (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())).then(|| raw.to_ascii_lowercase())
 }
 
 fn parse_raw_timestamp(irc: &IRCMessage) -> jiff::Timestamp {
@@ -567,11 +569,7 @@ fn parse_raw_emotes(irc: &IRCMessage, message_text: &str) -> Vec<Emote> {
             if start >= end {
                 continue;
             }
-            let code: String = message_text
-                .chars()
-                .skip(start)
-                .take(end - start)
-                .collect();
+            let code: String = message_text.chars().skip(start).take(end - start).collect();
             emotes.push(Emote {
                 id: id.to_owned(),
                 char_range: start..end,
@@ -632,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn privmsg_converts_and_resolves_badge_icons() {
+    fn privmsg_and_bits_convert_with_badge_icons() {
         let out = convert_msg(
             "@badge-info=;badges=moderator/1;color=#7F5AF0;display-name=Alice;emotes=;id=abc;mod=1;room-id=123;subscriber=0;tmi-sent-ts=1700000000000;turbo=0;user-id=42;user-type=mod :alice!alice@alice.tmi.twitch.tv PRIVMSG #somechannel :hello world",
         );
@@ -648,16 +646,13 @@ mod tests {
         );
         assert_eq!(out.text, "hello world");
         assert!(matches!(out.kind, MessageKind::Text));
-    }
 
-    #[test]
-    fn bits_message_is_donation() {
-        let out = convert_msg(
+        let bits = convert_msg(
             "@badge-info=;badges=;bits=100;color=;display-name=Bob;emotes=;id=def;mod=0;room-id=123;subscriber=0;tmi-sent-ts=1700000000000;turbo=0;user-id=43;user-type= :bob!bob@bob.tmi.twitch.tv PRIVMSG #somechannel :Cheer100 hey!",
         );
         // 100 bits: tier 1 (below 200), counted as a number for amount rules.
         assert!(matches!(
-            out.kind,
+            bits.kind,
             MessageKind::Donation {
                 tier: Some(1),
                 value: Some(100.0),
@@ -668,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn emote_only_message_detected() {
+    fn emote_only_message_and_out_of_bounds_ranges() {
         let out = convert_msg(
             "@badge-info=;badges=;color=;display-name=Cara;emotes=25:0-4,6-10;id=ghi;mod=0;room-id=123;subscriber=0;tmi-sent-ts=1700000000000;turbo=0;user-id=44;user-type= :cara!cara@cara.tmi.twitch.tv PRIVMSG #somechannel :Kappa Kappa",
         );
@@ -676,19 +671,16 @@ mod tests {
         // Two occurrences, one unique emote.
         assert_eq!(out.emotes.len(), 1);
         assert_eq!(out.emotes[0].code, "Kappa");
-    }
 
-    #[test]
-    fn out_of_bounds_emote_range_does_not_panic() {
         // Range 0-9 on a 5-char message: the Twitch bug twitch-irc passes through.
-        let out = convert_msg(
+        let oob = convert_msg(
             "@badge-info=;badges=;color=;display-name=Dan;emotes=25:0-9;id=jkl;mod=0;room-id=123;subscriber=0;tmi-sent-ts=1700000000000;turbo=0;user-id=45;user-type= :dan!dan@dan.tmi.twitch.tv PRIVMSG #somechannel :Kappa",
         );
-        assert!(matches!(out.kind, MessageKind::EmoteOnly));
+        assert!(matches!(oob.kind, MessageKind::EmoteOnly));
     }
 
     #[test]
-    fn clearmsg_is_delete() {
+    fn moderation_events_convert() {
         let event = convert(
             parse(
                 "@login=alazymeme;room-id=;target-msg-id=3c92014f-340a-4dc3-a9c9-e5cf182f4a84;tmi-sent-ts=1594561955611 :tmi.twitch.tv CLEARMSG #pajlada :bye",
@@ -701,10 +693,7 @@ mod tests {
             }
             other => panic!("expected Delete, got {other:?}"),
         }
-    }
 
-    #[test]
-    fn timeout_and_ban_clear_user() {
         for raw in [
             // timeout (has ban-duration)
             "@ban-duration=1;room-id=11148817;target-user-id=148973258;tmi-sent-ts=1594553828245 :tmi.twitch.tv CLEARCHAT #pajlada :fabzeef",
@@ -716,39 +705,41 @@ mod tests {
                 other => panic!("expected ClearUser, got {other:?}"),
             }
         }
-    }
 
-    #[test]
-    fn clearchat_without_user_clears_all() {
-        let event = convert(
+        let clear_all = convert(
             parse("@room-id=40286300;tmi-sent-ts=1594561392337 :tmi.twitch.tv CLEARCHAT #randers"),
             &BadgeMap::builtin(),
         );
-        assert!(matches!(event, Some(ChatEvent::ClearAll { .. })));
+        assert!(matches!(clear_all, Some(ChatEvent::ClearAll { .. })));
     }
 
     const SUBGIFT: &str = "@badge-info=;badges=;color=;display-name=Gifter;emotes=;flags=;id=g1;login=gifter;mod=0;msg-id=subgift;msg-param-gift-months=1;msg-param-months=2;msg-param-recipient-display-name=Lucky;msg-param-recipient-id=99;msg-param-recipient-user-name=lucky;msg-param-sub-plan-name=Sub;msg-param-sub-plan=1000;room-id=123;subscriber=0;system-msg=Gifter\\sgifted\\sa\\ssub;tmi-sent-ts=1700000000000;user-id=46;user-type= :tmi.twitch.tv USERNOTICE #somechannel";
 
     #[test]
-    fn direct_sub_gift_counts_one() {
+    fn sub_gifts_handle_direct_community_and_mystery_gifts() {
         let out = convert_msg(SUBGIFT);
         assert!(matches!(out.kind, MessageKind::MembershipGift { count: 1 }));
-    }
 
-    #[test]
-    fn sub_gift_from_community_gift_is_skipped() {
-        let raw = SUBGIFT.replacen(
+        let community = SUBGIFT.replacen(
             "msg-id=subgift;",
             "msg-id=subgift;msg-param-community-gift-id=777;",
             1,
         );
-        assert!(convert(parse(&raw), &BadgeMap::builtin()).is_none());
+        assert!(convert(parse(&community), &BadgeMap::builtin()).is_none());
+
+        let mystery = convert_msg(
+            "@badge-info=;badges=;color=;display-name=Gifter;emotes=;flags=;id=g0;login=gifter;mod=0;msg-id=submysterygift;msg-param-mass-gift-count=5;msg-param-origin-id=abc;msg-param-sender-count=5;msg-param-sub-plan=1000;room-id=123;subscriber=0;system-msg=Gifter\\sis\\sgifting\\s5\\ssubs;tmi-sent-ts=1700000000000;user-id=46;user-type= :tmi.twitch.tv USERNOTICE #somechannel",
+        );
+        assert!(matches!(
+            mystery.kind,
+            MessageKind::MembershipGift { count: 5 }
+        ));
     }
 
     const RESUB: &str = "@badge-info=subscriber/12;badges=subscriber/12;color=;display-name=Viewer42;emotes=;flags=;id=r1;login=viewer42;mod=0;msg-id=resub;msg-param-cumulative-months=12;msg-param-should-share-streak=0;msg-param-sub-plan-name=Sub;msg-param-sub-plan=1000;room-id=123;subscriber=1;system-msg=Viewer42\\ssubscribed\\sat\\sTier\\s1.\\sThey've\\ssubscribed\\sfor\\s12\\smonths!;tmi-sent-ts=1700000000000;user-id=47;user-type= :viewer42!viewer42@viewer42.tmi.twitch.tv USERNOTICE #somechannel :time flies";
 
     #[test]
-    fn resub_carries_the_months() {
+    fn sub_and_resub_handle_months() {
         let out = convert_msg(RESUB);
         match out.kind {
             MessageKind::MembershipJoin { info, months } => {
@@ -761,18 +752,15 @@ mod tests {
             other => panic!("expected MembershipJoin, got {other:?}"),
         }
         assert_eq!(out.text, "time flies");
-    }
 
-    #[test]
-    fn first_sub_has_no_months() {
-        let raw = RESUB.replacen("msg-id=resub;", "msg-id=sub;", 1).replacen(
+        let first = RESUB.replacen("msg-id=resub;", "msg-id=sub;", 1).replacen(
             "msg-param-cumulative-months=12;",
             "msg-param-cumulative-months=1;",
             1,
         );
-        let out = convert_msg(&raw);
+        let first_out = convert_msg(&first);
         assert!(matches!(
-            out.kind,
+            first_out.kind,
             MessageKind::MembershipJoin { months: None, .. }
         ));
     }
@@ -782,7 +770,7 @@ mod tests {
     const WATCH_STREAK: &str = "@badge-info=;badges=;color=;display-name=Viewer42;emotes=emotesv2_0000:10-20;flags=;id=w1;login=viewer42;mod=0;msg-id=viewermilestone;msg-param-category=watch-streak;msg-param-copoReward=450;msg-param-id=w0;msg-param-value=5;room-id=123;subscriber=0;system-msg=Viewer42\\swatched\\s5\\sconsecutive\\sstreams\\sand\\ssparked\\sa\\swatch\\sstreak!;tmi-sent-ts=1700000000000;user-id=47;user-type= :tmi.twitch.tv USERNOTICE #your_channel :5 yippee! :_hypeWave:";
 
     #[test]
-    fn unknown_user_notice_becomes_a_notice() {
+    fn user_notices_convert_to_system_notices() {
         let out = convert_msg(WATCH_STREAK);
         match out.kind {
             MessageKind::SystemNotice { info } => assert_eq!(
@@ -795,11 +783,8 @@ mod tests {
         assert_eq!(out.text, "5 yippee! :_hypeWave:");
         assert_eq!(out.emotes.len(), 1);
         assert_eq!(out.emotes[0].code, ":_hypeWave:");
-    }
 
-    #[test]
-    fn bits_badge_gets_a_readable_notice() {
-        let raw = WATCH_STREAK
+        let bits_badge = WATCH_STREAK
             .replacen(
                 "msg-id=viewermilestone;",
                 "msg-id=bitsbadgetier;msg-param-threshold=1000;",
@@ -810,19 +795,18 @@ mod tests {
                 "bits\\sbadge\\stier\\snotification",
                 1,
             );
-        let out = convert_msg(&raw);
         assert!(matches!(
-            out.kind,
+            convert_msg(&bits_badge).kind,
             MessageKind::SystemNotice { info } if info == "Viewer42 earned the 1000 bits badge!"
         ));
-    }
 
-    #[test]
-    fn mystery_gift_counts_the_wave() {
-        let out = convert_msg(
-            "@badge-info=;badges=;color=;display-name=Gifter;emotes=;flags=;id=g0;login=gifter;mod=0;msg-id=submysterygift;msg-param-mass-gift-count=5;msg-param-origin-id=abc;msg-param-sender-count=5;msg-param-sub-plan=1000;room-id=123;subscriber=0;system-msg=Gifter\\sis\\sgifting\\s5\\ssubs;tmi-sent-ts=1700000000000;user-id=46;user-type= :tmi.twitch.tv USERNOTICE #somechannel",
-        );
-        assert!(matches!(out.kind, MessageKind::MembershipGift { count: 5 }));
+        let ann = "@badge-info=;badges=moderator/1;color=#7F5AF0;display-name=Alice;emotes=;flags=;id=ann-1;login=alice;mod=1;msg-id=announcement;msg-param-color=PURPLE;room-id=123;subscriber=0;system-msg=;tmi-sent-ts=1700000000000;user-id=42;user-type=mod :tmi.twitch.tv USERNOTICE #somechannel :Stream starts in 5 minutes!";
+        let ann_out = convert_msg(ann);
+        assert!(matches!(
+            ann_out.kind,
+            MessageKind::SystemNotice { info } if info == "Announcement from Alice"
+        ));
+        assert_eq!(ann_out.text, "Stream starts in 5 minutes!");
     }
 
     #[test]
@@ -874,25 +858,11 @@ mod tests {
         assert_eq!(out.text, "Kappa nice!");
         assert_eq!(out.emotes.len(), 1);
         assert_eq!(out.emotes[0].code, "Kappa");
-    }
 
-    #[test]
-    fn announcement_with_empty_system_msg_gets_sender_banner() {
-        let raw = "@badge-info=;badges=moderator/1;color=#7F5AF0;display-name=Alice;emotes=;flags=;id=ann-1;login=alice;mod=1;msg-id=announcement;msg-param-color=PURPLE;room-id=123;subscriber=0;system-msg=;tmi-sent-ts=1700000000000;user-id=42;user-type=mod :tmi.twitch.tv USERNOTICE #somechannel :Stream starts in 5 minutes!";
-        let out = convert_msg(raw);
+        let shared_raid = "@badge-info=;badges=;color=;display-name=Kim;emotes=;flags=;id=sc-1;login=kim;mod=0;msg-id=sharedchatnotice;msg-param-displayName=Kim;msg-param-viewerCount=25;room-id=123;source-msg-id=raid;subscriber=0;system-msg=;tmi-sent-ts=1700000000000;user-id=99;user-type= :tmi.twitch.tv USERNOTICE #somechannel";
+        let shared_out = convert_msg(shared_raid);
         assert!(matches!(
-            out.kind,
-            MessageKind::SystemNotice { info } if info == "Announcement from Alice"
-        ));
-        assert_eq!(out.text, "Stream starts in 5 minutes!");
-    }
-
-    #[test]
-    fn shared_chat_raid_notice_recovers_underlying_event() {
-        let raw = "@badge-info=;badges=;color=;display-name=Kim;emotes=;flags=;id=sc-1;login=kim;mod=0;msg-id=sharedchatnotice;msg-param-displayName=Kim;msg-param-viewerCount=25;room-id=123;source-msg-id=raid;subscriber=0;system-msg=;tmi-sent-ts=1700000000000;user-id=99;user-type= :tmi.twitch.tv USERNOTICE #somechannel";
-        let out = convert_msg(raw);
-        assert!(matches!(
-            out.kind,
+            shared_out.kind,
             MessageKind::SystemNotice { info } if info == "Kim is raiding with a party of 25!"
         ));
     }

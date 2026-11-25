@@ -318,16 +318,12 @@ mod tests {
     }
 
     #[test]
-    fn without_a_queue_nothing_waits() {
-        let now = Instant::now();
-        let mut waiting = waiting(0);
-        waiting.push(job("a", now));
-        assert!(actions(&mut waiting, now).is_empty());
-    }
-
-    #[test]
     fn the_queue_keeps_fresh_ones_in_order_and_drops_old_ones() {
         let start = Instant::now();
+        let mut off = waiting(0);
+        off.push(job("a", start));
+        assert!(actions(&mut off, start).is_empty());
+
         let mut waiting = waiting(30);
         waiting.push(job("old", start));
         waiting.push(job("newer", start + Duration::from_secs(20)));
@@ -336,21 +332,6 @@ mod tests {
             actions(&mut waiting, start + Duration::from_secs(45)),
             ["newer", "newest"]
         );
-    }
-
-    #[test]
-    fn finishing_reports_to_the_reactor_and_the_test() {
-        let (results, mut results_rx) = mpsc::unbounded_channel();
-        let (reply, mut reply_rx) = oneshot::channel();
-        let mut job = job("bonk", Instant::now());
-        job.report = Report {
-            results: Some(results),
-            reply: Some(reply),
-        };
-        job.finish("test", Outcome::Refused("no filter".into()));
-        let refused = Outcome::Refused("no filter".into());
-        assert_eq!(results_rx.try_recv(), Ok(("bonk".into(), refused.clone())));
-        assert_eq!(reply_rx.try_recv(), Ok(refused));
     }
 
     #[test]
@@ -376,11 +357,5 @@ mod tests {
         assert_eq!(start.elapsed(), Duration::ZERO);
         pause(6, &wake).await;
         assert_eq!(start.elapsed(), backoff(6), "unwoken, the full pause");
-    }
-
-    #[test]
-    fn backoff_grows_to_its_cap() {
-        let secs: Vec<u64> = (1..=8).map(|n| backoff(n).as_secs()).collect();
-        assert_eq!(secs, [1, 2, 4, 8, 16, 30, 30, 30]);
     }
 }

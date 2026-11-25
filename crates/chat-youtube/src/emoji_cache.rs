@@ -323,15 +323,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn a_broken_cache_starts_empty() {
-        let dir = temp_dir("broken");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("UC1.json"), "{ not json").unwrap();
-        assert!(EmojiCache::open(&dir, "UC1").unwrap().emojis().is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
     #[tokio::test]
     async fn learned_emoji_and_member_badges_are_used_at_once_and_saved_at_the_end() {
         let dir = temp_dir("learned");

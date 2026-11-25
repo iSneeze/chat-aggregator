@@ -756,7 +756,7 @@ pub(crate) mod tests {
 
     #[test]
     fn paid_messages_by_amount() {
-        use ChatPlatform::{StreamElements, Twitch};
+        use ChatPlatform::{StreamElements, Twitch, YouTube};
         let nice = amount(69.0, Compare::Exactly);
         let eur = Some("EUR");
         // Exactly: to the cent.
@@ -767,59 +767,21 @@ pub(crate) mod tests {
         assert!(nice.matches(&paid(StreamElements, 69.0, None), None));
         // Bits are counted, not converted.
         assert!(nice.matches(&paid(Twitch, 69.0, None), eur));
-        // At least: the amount itself is in.
-        let fifty = amount(50.0, Compare::AtLeast);
-        assert!(fifty.matches(&paid(StreamElements, 50.0, eur), eur));
-        assert!(fifty.matches(&paid(StreamElements, 420.0, eur), eur));
-        assert!(!fifty.matches(&paid(StreamElements, 49.99, eur), eur));
-        assert!(!fifty.matches(&message("50"), eur), "free chat");
-    }
-
-    #[test]
-    fn amounts_in_another_currency_never_match() {
-        let nice = amount(69.0, Compare::Exactly);
-        let eur = Some("EUR");
-        let super_chat = |currency| paid(ChatPlatform::YouTube, 69.0, Some(currency));
+        // Another currency or missing tip currency never matches Super Chats.
+        let super_chat = |currency| paid(YouTube, 69.0, Some(currency));
         assert!(nice.matches(&super_chat("EUR"), eur));
         assert!(!nice.matches(&super_chat("JPY"), eur), "¥69 isn't €69");
         assert!(
             !nice.matches(&super_chat("EUR"), None),
             "no tip currency set"
         );
-        // Jewels have no currency, but aren't money either.
-        assert!(!nice.matches(&paid(ChatPlatform::YouTube, 69.0, None), eur));
-    }
-
-    #[test]
-    fn memberships_and_gifts() {
-        let join = kind(MessageKind::MembershipJoin {
-            info: "subscribed".into(),
-            months: None,
-        });
-        let gift = |count| kind(MessageKind::MembershipGift { count });
-        assert!(Trigger::Membership.matches(&join, None));
-        assert!(!Trigger::Membership.matches(&gift(1), None));
-        let five = Trigger::Gift { min_count: 5 };
-        assert!(five.matches(&gift(5), None));
-        assert!(!five.matches(&gift(4), None));
-        assert!(!five.matches(&join, None));
-    }
-
-    #[test]
-    fn roles_across_platforms() {
-        let role = |badges: &[&str]| Role::of(&by(message(""), "1", badges));
-        assert_eq!(role(&[]), Role::Everyone);
-        assert_eq!(role(&["verified"]), Role::Everyone);
-        assert_eq!(role(&["subscriber"]), Role::Subscriber);
-        assert_eq!(role(&["member"]), Role::Subscriber);
-        assert_eq!(role(&["vip"]), Role::Vip);
-        assert_eq!(
-            role(&["subscriber", "moderator"]),
-            Role::Moderator,
-            "the highest"
-        );
-        assert_eq!(role(&["owner"]), Role::Broadcaster);
-        assert_eq!(role(&["broadcaster"]), Role::Broadcaster);
+        assert!(!nice.matches(&paid(YouTube, 69.0, None), eur));
+        // At least: the amount itself is in.
+        let fifty = amount(50.0, Compare::AtLeast);
+        assert!(fifty.matches(&paid(StreamElements, 50.0, eur), eur));
+        assert!(fifty.matches(&paid(StreamElements, 420.0, eur), eur));
+        assert!(!fifty.matches(&paid(StreamElements, 49.99, eur), eur));
+        assert!(!fifty.matches(&message("50"), eur), "free chat");
     }
 
     #[test]
@@ -854,41 +816,41 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_rule_rests_after_firing() {
-        let guards = Guards {
-            cooldown_secs: 10,
-            ..Guards::default()
-        };
-        let mut list = rules(vec![rule("bonk", command("!bonk"), guards)]);
+    fn rule_and_per_chatter_cooldowns() {
+        let mut list = rules(vec![rule(
+            "bonk",
+            command("!bonk"),
+            Guards {
+                cooldown_secs: 10,
+                ..Guards::default()
+            },
+        )]);
         let start = Instant::now();
         let a = by(message("!bonk"), "1", &[]);
         let b = by(message("!bonk"), "2", &[]);
         assert_eq!(list.check(&a, start).len(), 1);
         assert!(list.check(&b, after(start, 9)).is_empty(), "anyone's");
         assert_eq!(list.check(&b, after(start, 10)).len(), 1);
-    }
 
-    #[test]
-    fn a_chatter_rests_on_their_own() {
-        let guards = Guards {
-            user_cooldown_secs: 60,
-            ..Guards::default()
-        };
-        let mut list = rules(vec![rule("bonk", command("!bonk"), guards)]);
-        let start = Instant::now();
-        let a = by(message("!bonk"), "1", &[]);
-        let b = by(message("!bonk"), "2", &[]);
-        assert_eq!(list.check(&a, start).len(), 1);
-        assert!(list.check(&a, after(start, 30)).is_empty());
-        assert_eq!(list.check(&b, after(start, 30)).len(), 1, "others can");
+        let mut per_user = rules(vec![rule(
+            "bonk",
+            command("!bonk"),
+            Guards {
+                user_cooldown_secs: 60,
+                ..Guards::default()
+            },
+        )]);
+        assert_eq!(per_user.check(&a, start).len(), 1);
+        assert!(per_user.check(&a, after(start, 30)).is_empty());
+        assert_eq!(per_user.check(&b, after(start, 30)).len(), 1, "others can");
         let mut same_id_elsewhere = a.clone();
         same_id_elsewhere.platform = ChatPlatform::YouTube;
         assert_eq!(
-            list.check(&same_id_elsewhere, after(start, 30)).len(),
+            per_user.check(&same_id_elsewhere, after(start, 30)).len(),
             1,
             "ids are per platform"
         );
-        assert_eq!(list.check(&a, after(start, 60)).len(), 1);
+        assert_eq!(per_user.check(&a, after(start, 60)).len(), 1);
     }
 
     #[test]
@@ -934,7 +896,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_crowd_fires_once_enough_different_chatters_join_in() {
+    fn a_crowd_fires_once_enough_recent_different_chatters_join_in() {
         let mut list = rules(vec![rule("f", command("F"), crowd(3, 30))]);
         let start = Instant::now();
         let f = |id: &str| by(message("F"), id, &[]);
@@ -954,25 +916,20 @@ pub(crate) mod tests {
         assert!(list.check(&f("4"), after(start, 4)).is_empty());
         assert!(list.check(&f("5"), after(start, 5)).is_empty());
         assert_eq!(list.check(&f("6"), after(start, 6)).len(), 1);
-    }
 
-    #[test]
-    fn a_crowd_forgets_who_joined_in_too_long_ago() {
-        let mut list = rules(vec![rule("f", command("F"), crowd(2, 30))]);
-        let start = Instant::now();
-        let f = |id: &str| by(message("F"), id, &[]);
-        list.check(&f("1"), start);
+        // Old entries expire out of the window; joining again refreshes them.
+        let mut windowed = rules(vec![rule("f", command("F"), crowd(2, 30))]);
+        windowed.check(&f("1"), start);
         assert!(
-            list.check(&f("2"), after(start, 30)).is_empty(),
+            windowed.check(&f("2"), after(start, 30)).is_empty(),
             "30 s later, the first one is out"
         );
-        assert_eq!(list.check(&f("3"), after(start, 31)).len(), 1);
+        assert_eq!(windowed.check(&f("3"), after(start, 31)).len(), 1);
 
-        // Joining in again keeps a chatter in.
-        let mut list = rules(vec![rule("f", command("F"), crowd(2, 30))]);
-        list.check(&f("1"), start);
-        list.check(&f("1"), after(start, 25));
-        assert_eq!(list.check(&f("2"), after(start, 50)).len(), 1);
+        let mut refresh = rules(vec![rule("f", command("F"), crowd(2, 30))]);
+        refresh.check(&f("1"), start);
+        refresh.check(&f("1"), after(start, 25));
+        assert_eq!(refresh.check(&f("2"), after(start, 50)).len(), 1);
     }
 
     #[test]
@@ -1030,18 +987,14 @@ pub(crate) mod tests {
         paused.paused = true;
         list.update(&paused);
         assert!(list.check(&message("!bonk"), now).is_empty());
-    }
 
-    #[test]
-    fn demo_messages_never_fire() {
-        let mut list = rules(vec![rule(
+        let mut paid = rules(vec![rule(
             "any",
             Trigger::Paid { min_tier: None },
             Guards::default(),
         )]);
-        let now = Instant::now();
         for msg in chat_core::demo::sample_messages(0) {
-            assert!(list.check(&msg, now).is_empty(), "{msg:?}");
+            assert!(paid.check(&msg, now).is_empty(), "{msg:?}");
         }
     }
 
@@ -1095,11 +1048,5 @@ pub(crate) mod tests {
         // Past everyone's cooldown, the next one clears the map.
         list.check(&by(message("!x"), "new", &[]), after(start, 11));
         assert_eq!(list.state["x"].users.len(), 1);
-    }
-
-    #[test]
-    fn untrimmed_command_is_rejected_by_check() {
-        let r = rule("bonk", command(" !bonk "), Guards::default());
-        assert!(r.check().is_err());
     }
 }

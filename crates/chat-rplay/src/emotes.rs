@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_are_read_and_odd_entries_skipped() {
+    fn lists_are_read_with_higher_level_winning() {
         let emotes = emotes();
         assert_eq!(emotes.len(), 3);
         // The log's counts, per list as fetched: odd entries included.
@@ -254,22 +254,17 @@ mod tests {
         ] }] });
         assert_eq!(count(&creator), (4, 1));
         assert_eq!(count(&json!({ "emoticonGroups": null })), (0, 0));
-        let body = emotes.find(":_hypeWave:");
-        assert_eq!(codes(&body), [":_hypeWave:"]);
+        let body = emotes.find(":_hypeWave: :_cheer:");
+        assert_eq!(codes(&body), [":_hypeWave:", ":_cheer:"]);
         assert_eq!(
             body.emotes[0].url,
             "https://pb3.rplay.live/emoticon/free/hypeWave.gif"
         );
-        assert!(body.emote_only);
-    }
-
-    #[test]
-    fn the_higher_level_wins_a_shared_key() {
-        let body = emotes().find(":_cheer:");
         assert_eq!(
-            body.emotes[0].url,
+            body.emotes[1].url,
             "https://pb3.rplay.live/emoticon/0123456789abcdef01234567/cheer.png"
         );
+        assert!(body.emote_only);
     }
 
     #[test]
@@ -282,6 +277,10 @@ mod tests {
         assert!(emotes.find(" :_hypeWave: :yourHeart: ").emote_only);
         // No word borders, as on RPlay's page.
         assert_eq!(codes(&emotes.find("a:_hypeWave:b")), [":_hypeWave:"]);
+        // A match consumes its colons (`:_cheer:` uses the colon `:_hypeWave:` would need).
+        let touching = emotes.find(":_cheer:_hypeWave:");
+        assert_eq!(codes(&touching), [":_cheer:"]);
+        assert!(!touching.emote_only, "`_hypeWave:` is left as text");
     }
 
     #[test]
@@ -293,23 +292,5 @@ mod tests {
         let body = emotes.find(":_hypeWave: :_HYPEWAVE:");
         assert_eq!(codes(&body), [":_hypeWave:", ":_HYPEWAVE:"]);
         assert!(body.emote_only);
-    }
-
-    #[test]
-    fn a_match_takes_its_colons_with_it() {
-        // `:_cheer:` uses the colon `:_hypeWave:` would need.
-        let body = emotes().find(":_cheer:_hypeWave:");
-        assert_eq!(codes(&body), [":_cheer:"]);
-        assert!(!body.emote_only, "`_hypeWave:` is left as text");
-    }
-
-    #[test]
-    fn unknown_codes_and_plain_colons_stay_text() {
-        let emotes = emotes();
-        for text in ["10:30 :nope:", "", ":", "::", "no colons"] {
-            let body = emotes.find(text);
-            assert!(body.emotes.is_empty(), "{text:?}");
-            assert!(!body.emote_only, "{text:?}");
-        }
     }
 }

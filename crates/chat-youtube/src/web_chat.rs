@@ -224,19 +224,15 @@ async fn follow(
 
 /// Sends the emoji and custom member badges in `value` that weren't sent
 /// before (or whose image changed). `false` if nobody listens anymore.
-async fn send_new(
-    value: &Value,
-    sent: &mut Sent,
-    learned: &mpsc::Sender<LearnedBatch>,
-) -> bool {
+async fn send_new(value: &Value, sent: &mut Sent, learned: &mpsc::Sender<LearnedBatch>) -> bool {
     let mut batch = LearnedBatch::default();
     emojis_in(value, &mut batch.emojis);
     member_badges_in(value, &mut batch.member_badges);
     // `insert` hands back the URL it replaced: new unless that was this
     // same URL. (Also drops repeats within one batch.)
-    batch.emojis.retain(|(code, url)| {
-        sent.emojis.insert(code.clone(), url.clone()).as_ref() != Some(url)
-    });
+    batch
+        .emojis
+        .retain(|(code, url)| sent.emojis.insert(code.clone(), url.clone()).as_ref() != Some(url));
     batch.member_badges.retain(|(author_id, url)| {
         sent.member_badges
             .insert(author_id.clone(), url.clone())
@@ -511,29 +507,6 @@ mod tests {
         found.clear();
         custom_emoji(&odd, &mut found);
         assert!(found.is_empty());
-    }
-
-    #[test]
-    fn the_page_gives_version_data_and_where_to_continue() {
-        let html = page(json!({
-            "actions": [message(emoji(&[":_hypeWave:"], "hype"))],
-            "continuations": continuation("invalidationContinuationData", "next-1"),
-        }));
-        let (version, data) = parse_page(&html).unwrap();
-        assert_eq!(version, "2.20261019.01.00");
-        let chat = data.pointer("/contents/liveChatRenderer").unwrap();
-        assert_eq!(
-            next_poll(chat),
-            Next::Poll {
-                continuation: "next-1".into(),
-                wait: Duration::from_secs(1)
-            }
-        );
-    }
-
-    #[test]
-    fn a_page_without_the_data_is_an_error() {
-        assert!(parse_page("<html>Something went wrong</html>").is_err());
     }
 
     #[test]

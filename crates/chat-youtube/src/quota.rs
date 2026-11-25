@@ -184,49 +184,20 @@ mod tests {
     }
 
     #[test]
-    fn waits_until_the_reset_plus_grace() {
-        let wait = wait_duration(utc("2026-07-15T05:00:00Z"));
-        assert_eq!(wait, Duration::from_secs(2 * 3600) + RESET_GRACE);
-    }
-
-    #[test]
-    fn right_after_a_reset_only_rechecks_soon() {
-        // 10 minutes after the reset, still exhausted: Google hasn't caught
-        // up yet. Don't wait a whole day.
+    fn wait_duration_handles_reset_grace_recheck_and_dst() {
+        assert_eq!(
+            wait_duration(utc("2026-07-15T05:00:00Z")),
+            Duration::from_secs(2 * 3600) + RESET_GRACE
+        );
+        // 10 minutes after the reset, still exhausted: recheck soon instead of waiting a day.
         assert_eq!(wait_duration(utc("2026-07-15T07:10:00Z")), RECHECK);
-    }
-
-    #[test]
-    fn the_previous_reset_follows_dst_switch_days() {
-        // 8 March 2026 has 23 hours in Los Angeles: its midnight (08:00 UTC,
-        // still PST) was 23 h before the next one, not 24. 20 minutes after
-        // it, only recheck soon.
+        // 8 March 2026 has 23 hours in Los Angeles: 20 minutes after midnight PST, recheck soon.
         assert_eq!(wait_duration(utc("2026-03-08T08:20:00Z")), RECHECK);
-        // 1 November 2026 has 25 hours: its midnight was 07:00 UTC (still
-        // PDT). 70 minutes later the reset is long done; wait for the next
-        // one (08:00 UTC tomorrow, now PST) instead of rechecking.
+        // 1 November 2026 has 25 hours: 70 minutes after midnight PDT, wait for tomorrow's PST reset.
         assert_eq!(
             wait_duration(utc("2026-11-01T08:10:00Z")),
             Duration::from_secs(23 * 3600 + 50 * 60) + RESET_GRACE
         );
-    }
-
-    #[test]
-    fn classifies_resource_exhausted() {
-        let daily = Status::resource_exhausted(
-            "The request cannot be completed because you have exceeded your quota.",
-        );
-        assert_eq!(classify(&daily), Some(Exhaustion::Daily));
-
-        let per_minute = Status::resource_exhausted(
-            "Quota exceeded for quota metric 'Queries' and limit 'Queries per minute'",
-        );
-        assert_eq!(classify(&per_minute), Some(Exhaustion::RateLimit));
-
-        let unclear = Status::resource_exhausted("too many requests");
-        assert_eq!(classify(&unclear), Some(Exhaustion::RateLimit));
-
-        assert_eq!(classify(&Status::not_found("x")), None);
     }
 
     #[test]

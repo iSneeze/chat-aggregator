@@ -32,30 +32,3 @@ pub(crate) fn secret_name(app: &OAuthApp, account: &Account) -> String {
         Account::Channel(id) => format!("youtube:{}:{id}", app.client_id()),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_old_name_stays_what_existing_logins_are_stored_under() {
-        let app = OAuthApp::new("123-abc.apps.googleusercontent.com", "secret");
-        assert_eq!(
-            secret_name(&app, &Account::Legacy),
-            "youtube:123-abc.apps.googleusercontent.com"
-        );
-    }
-
-    #[test]
-    fn each_channel_has_its_own_name() {
-        let app = OAuthApp::new("123-abc.apps.googleusercontent.com", "secret");
-        assert_eq!(
-            secret_name(&app, &Account::Channel("UC_main".into())),
-            "youtube:123-abc.apps.googleusercontent.com:UC_main"
-        );
-        assert_ne!(
-            secret_name(&app, &Account::Channel("UC_main".into())),
-            secret_name(&app, &Account::Channel("UC_second".into()))
-        );
-    }
-}

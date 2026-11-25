@@ -233,11 +233,7 @@ impl BadgeMap {
 
     /// Resolves `badges` from `twitch-irc` into `Author::badge_urls`.
     pub(crate) fn resolve(&self, badges: &[Badge]) -> BTreeMap<String, String> {
-        self.resolve_pairs(
-            badges
-                .iter()
-                .map(|b| (b.name.as_str(), b.version.as_str())),
-        )
+        self.resolve_pairs(badges.iter().map(|b| (b.name.as_str(), b.version.as_str())))
     }
 
     /// Resolves raw `(name, version)` badge pairs into `Author::badge_urls`.
@@ -274,7 +270,10 @@ impl BadgeMap {
             .context("requesting Twitch badges")?
             .error_for_status()
             .context("Twitch badges endpoint returned an error")?;
-        let body = resp.text().await.context("reading Twitch badges response")?;
+        let body = resp
+            .text()
+            .await
+            .context("reading Twitch badges response")?;
         Self::parse_gql_response(&body)
     }
 
@@ -342,8 +341,16 @@ mod tests {
     #[test]
     fn builtin_map_resolves_core_badges_and_subscriber_fallback() {
         let map = BadgeMap::builtin();
-        assert!(map.get("moderator", "1").unwrap().starts_with(BADGE_CDN_PREFIX));
-        assert!(map.get("broadcaster", "1").unwrap().starts_with(BADGE_CDN_PREFIX));
+        assert!(
+            map.get("moderator", "1")
+                .unwrap()
+                .starts_with(BADGE_CDN_PREFIX)
+        );
+        assert!(
+            map.get("broadcaster", "1")
+                .unwrap()
+                .starts_with(BADGE_CDN_PREFIX)
+        );
         // Unlisted subscriber month tier falls back to base subscriber badge.
         assert_eq!(map.get("subscriber", "12"), map.get("subscriber", "0"));
         // Unknown badge returns None (rendered as text pill).

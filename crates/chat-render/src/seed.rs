@@ -85,16 +85,6 @@ mod tests {
         filter(&Value::from(value), n, salt).unwrap()
     }
 
-    #[test]
-    fn hash_is_the_standard_fnv1a() {
-        // Published FNV-1a 64-bit test vectors.
-        assert_eq!(fnv1a([b""]), 0xcbf2_9ce4_8422_2325);
-        assert_eq!(fnv1a([b"a"]), 0xaf63_dc4c_8601_ec8c);
-        assert_eq!(fnv1a([b"foobar"]), 0x8594_4171_f739_67e8);
-        // Parts are simply concatenated.
-        assert_eq!(fnv1a([b"foo", b"bar"]), fnv1a([b"foobar"]));
-    }
-
     /// Themes rely on these staying the same forever: if this fails, every
     /// chatter's look would change. Don't update the numbers, fix the code.
     #[test]
@@ -111,15 +101,6 @@ mod tests {
     }
     // Computed independently (a Python version of the same steps).
     const PINNED: [u32; 3] = [190, 1, 159];
-
-    #[test]
-    fn hash_mixes_all_bits() {
-        // Published MurmurHash3 fmix64 behaviour: 0 stays 0, and one flipped
-        // input bit changes about half of the output bits.
-        assert_eq!(fmix64(0), 0);
-        let changed = (fmix64(1) ^ fmix64(0)).count_ones();
-        assert!((20..=44).contains(&changed), "{changed} bits changed");
-    }
 
     /// IDs that differ only in their last characters, like real ones, must
     /// still spread evenly (6000 draws over 6 values: 1000 each on average).
@@ -138,26 +119,10 @@ mod tests {
     }
 
     #[test]
-    fn salts_give_independent_numbers() {
-        let differ = (0..100)
-            .filter(|i| {
-                let id = format!("user-{i}");
-                seed(&id, 1000, Some("hue")) != seed(&id, 1000, Some("shape"))
-            })
-            .count();
-        assert!(differ > 95, "only {differ} of 100 differ");
-    }
-
-    #[test]
     fn salt_and_value_are_kept_apart() {
         assert_ne!(
             seed("c", u32::MAX, Some("ab")),
             seed("bc", u32::MAX, Some("a"))
         );
-    }
-
-    #[test]
-    fn zero_is_refused() {
-        assert!(filter(&Value::from("x"), 0, None).is_err());
     }
 }

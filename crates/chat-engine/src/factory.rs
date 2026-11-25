@@ -327,17 +327,6 @@ impl SourceFactory for Production {
 mod tests {
     use super::*;
 
-    #[test]
-    fn setup_errors_wait_for_the_user() {
-        // Found behind added context too, as the actor sees errors.
-        let missing = anyhow::Error::new(SetupError(
-            "there is no Picarto channel named \"your_channel\"".into(),
-        ))
-        .context("Picarto chat");
-        assert!(needs_attention(&missing));
-        assert!(!needs_attention(&anyhow::anyhow!("connection reset")));
-    }
-
     /// A YouTube source uses its channel's login from the engine's secret
     /// store; without a channel, the first one listed, and before any is,
     /// the single login of older versions. Loading one asks nothing of

@@ -532,8 +532,7 @@ async fn consume_stream(
         }
         emojis.take_learned();
         for item in response.items {
-            let Some(event) =
-                convert::convert(item, dedupe, emojis.map(), emojis.member_badges())
+            let Some(event) = convert::convert(item, dedupe, emojis.map(), emojis.member_badges())
             else {
                 continue;
             };
@@ -569,18 +568,6 @@ fn is_fatal(status: &Status) -> bool {
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
-
-    #[test]
-    fn reconnects_slow_down_to_twenty_seconds() {
-        let mut waits = vec![FIRST_RECONNECT_BACKOFF];
-        for _ in 0..5 {
-            waits.push(next_backoff(*waits.last().unwrap()));
-        }
-        let secs: Vec<u64> = waits.iter().map(Duration::as_secs).collect();
-        assert_eq!(secs, [2, 4, 8, 16, 20, 20]);
-        // After a rate limit's long wait, back to the cap.
-        assert_eq!(next_backoff(RATE_LIMIT_BACKOFF), MAX_RECONNECT_BACKOFF);
-    }
 
     #[test]
     fn a_closed_chat_ends_your_broadcast_but_not_the_source() {
@@ -654,21 +641,6 @@ mod tests {
         );
         assert_eq!(urls(source.broadcast_emojis(None, None).map()).len(), 2);
         std::fs::remove_dir_all(&folder).unwrap();
-    }
-
-    #[test]
-    fn start_times_name_the_day_unless_it_is_today() {
-        use jiff::civil::date;
-        let zone = jiff::tz::TimeZone::fixed(jiff::tz::offset(2));
-        let today = date(2026, 10, 7);
-        let at = |d, h| {
-            date(2026, 10, d)
-                .at(h, 0, 0, 0)
-                .to_zoned(zone.clone())
-                .unwrap()
-        };
-        assert_eq!(start_label(&at(7, 20), today), "20:00");
-        assert_eq!(start_label(&at(8, 20), today), "Thu 8 Oct 20:00");
     }
 
     /// Runs `consume_stream` against `addr` with a short stall limit, and

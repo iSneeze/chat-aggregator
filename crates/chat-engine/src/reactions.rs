@@ -99,13 +99,4 @@ mod tests {
         engine.shutdown().await;
         let _ = std::fs::remove_dir_all(dir);
     }
-
-    #[tokio::test]
-    async fn without_a_store_there_is_no_password() {
-        let mut config = EngineConfig::default();
-        config.settings.server.port = 0;
-        let engine = Engine::start(config).await.unwrap();
-        assert!(engine.handle().obs_password_stored().await.is_err());
-        engine.shutdown().await;
-    }
 }

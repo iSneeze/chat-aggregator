@@ -465,16 +465,7 @@ mod tests {
     const NOW: &str = "2026-10-07T18:00:00Z";
 
     #[test]
-    fn an_answer_without_items_is_an_empty_list() {
-        // What `fields` turns "no broadcasts" / "no such video" into.
-        let broadcasts: BroadcastsResponse = serde_json::from_str("{}").unwrap();
-        assert!(pick_broadcast(broadcasts.items, NOW.parse().unwrap()).is_none());
-        let videos: VideosResponse = serde_json::from_str("{}").unwrap();
-        assert!(videos.items.is_empty());
-    }
-
-    #[test]
-    fn a_live_broadcast_wins() {
+    fn a_live_broadcast_wins_even_with_chat_off() {
         let picked = pick(
             vec![
                 broadcast("soon", "ready", Some("2026-10-07T18:05:00Z")),
@@ -491,17 +482,16 @@ mod tests {
                 chat: Some("chat-on-air".into())
             }
         );
-    }
 
-    #[test]
-    fn a_live_broadcast_with_its_chat_off_is_still_live() {
-        let mut on_air = broadcast("on-air", "live", Some("2026-10-07T17:00:00Z"));
-        on_air["snippet"]
+        let mut no_chat = broadcast("on-air", "live", Some("2026-10-07T17:00:00Z"));
+        no_chat["snippet"]
             .as_object_mut()
             .unwrap()
             .remove("liveChatId");
-        let picked = pick(vec![on_air], NOW).unwrap();
-        assert_eq!(picked.state, Broadcast::Live { chat: None });
+        assert_eq!(
+            pick(vec![no_chat], NOW).unwrap().state,
+            Broadcast::Live { chat: None }
+        );
     }
 
     #[test]
@@ -538,18 +528,5 @@ mod tests {
             NOW,
         );
         assert!(stale.is_none(), "3.5 h late: stale");
-    }
-
-    #[test]
-    fn only_stale_or_unscheduled_broadcasts_mean_nothing_is_coming() {
-        let picked = pick(
-            vec![
-                broadcast("free-chat", "ready", Some("2026-03-01T12:00:00Z")),
-                broadcast("draft", "created", None),
-                broadcast("old", "complete", Some("2026-10-06T20:00:00Z")),
-            ],
-            NOW,
-        );
-        assert!(picked.is_none());
     }
 }

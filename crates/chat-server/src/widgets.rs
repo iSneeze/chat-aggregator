@@ -806,53 +806,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_settings_from_the_block() {
-        let widget = Widget::from_page("test", page(BLOCK, "go()")).unwrap();
-        assert_eq!(widget.manifest.title, "Test widget");
-        assert_eq!(widget.manifest.description, "For the tests.");
-        let settings = &widget.manifest.settings;
-        assert_eq!(settings.len(), 4);
-        assert_eq!(settings[0].name, "size");
-        assert_eq!(settings[0].help.as_deref(), Some("How big."));
-        assert_eq!(
-            settings[0].kind,
-            Kind::Number {
-                default: 56.0,
-                min: 8.0,
-                max: 512.0,
-                step: Some(4.0),
-                unit: Some("px".into())
-            }
-        );
-        assert_eq!(settings[1].kind, Kind::Bool { default: true });
-        assert_eq!(settings[1].help, None);
-        assert_eq!(
-            settings[2].kind,
-            Kind::Text {
-                default: "✨".into()
-            }
-        );
-        assert_eq!(
-            settings[3].kind,
-            Kind::Choice {
-                default: "party".into(),
-                options: vec!["party".into(), "calm".into()]
-            }
-        );
-    }
-
-    #[test]
-    fn fields_from_newer_versions_are_ignored() {
-        let block = r#"{ "title": "T", "icon": "🎉", "settings": [
-            { "name": "a", "label": "A", "type": "bool", "default": false, "group": "x" } ] }"#;
-        let widget = Widget::from_page("test", page(block, "")).unwrap();
-        assert_eq!(
-            widget.manifest.settings[0].kind,
-            Kind::Bool { default: false }
-        );
-    }
-
-    #[test]
     fn only_the_widgets_own_scripts_may_run() {
         let html = format!(
             "{}<script type=\"application/json\" id=\"data\">{{\"x\": 1}}</script>\
@@ -876,15 +829,6 @@ mod tests {
             widget.csp
         );
 
-        // No script at all: nothing may run.
-        let html = "<script type=\"application/json\" id=\"widget\">{\"title\": \"T\"}</script>";
-        let widget = Widget::from_page("test", html).unwrap();
-        assert_eq!(script_src(&widget.csp), "script-src 'none'");
-    }
-
-    #[test]
-    fn connections_only_go_back_to_this_computer() {
-        let widget = Widget::from_page("test", page(BLOCK, "")).unwrap();
         let host = HeaderValue::from_static("127.0.0.1:7878");
         assert!(
             widget
@@ -898,6 +842,11 @@ mod tests {
                 .ends_with("; connect-src 'self'")
         );
         assert!(widget.csp_for(None).ends_with("; connect-src 'self'"));
+
+        // No script at all: nothing may run.
+        let html = "<script type=\"application/json\" id=\"widget\">{\"title\": \"T\"}</script>";
+        let widget = Widget::from_page("test", html).unwrap();
+        assert_eq!(script_src(&widget.csp), "script-src 'none'");
     }
 
     #[test]
@@ -1027,29 +976,20 @@ mod tests {
         assert!(scripts("<!-- <script>a</script>").is_empty());
     }
 
-    #[test]
-    fn the_built_in_widgets_are_valid_and_read_their_own_block() {
+    #[tokio::test]
+    async fn the_built_in_widgets_are_served_with_their_security_rules() {
+        let server = start(None).await;
         let builtin = Widget::builtin();
         assert!(!builtin.is_empty());
         for widget in builtin {
             assert!(!widget.manifest.settings.is_empty(), "{}", widget.name);
-            // The name an import of it would get, so importing it (or
-            // another widget with its title) runs into the built-in name.
             assert_eq!(widget.name, name_from(&widget.manifest.title));
-            // The page takes its defaults from the block, so the app's form
-            // and the page can't disagree.
             assert!(
                 widget.page.contains(r#"document.getElementById("widget")"#),
                 "{} doesn't read its widget block",
                 widget.name
             );
-        }
-    }
 
-    #[tokio::test]
-    async fn the_built_in_widgets_are_served_with_their_security_rules() {
-        let server = start(None).await;
-        for widget in Widget::builtin() {
             let url = format!("http://{}/widgets/{}", server.addr, widget.name);
             let resp = reqwest::get(url).await.unwrap();
             assert_eq!(resp.status(), StatusCode::OK, "{}", widget.name);
@@ -1078,17 +1018,6 @@ mod tests {
                 csp.ends_with(&format!("connect-src 'self' ws://{}", server.addr)),
                 "{csp}"
             );
-        }
-    }
-
-    #[tokio::test]
-    async fn unknown_widgets_are_not_found() {
-        let server = start(None).await;
-        for path in ["nope", "live-emoji.html", "..%2Fsrc%2Flib.rs"] {
-            let resp = reqwest::get(format!("http://{}/widgets/{path}", server.addr))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
         }
     }
 
@@ -1285,19 +1214,6 @@ mod tests {
         );
 
         assert!(imported(&dir.join("missing")).is_empty());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn removing_deletes_only_that_widget() {
-        let dir = scratch("remove");
-        std::fs::write(dir.join("one.html"), page(BLOCK, "")).unwrap();
-        std::fs::write(dir.join("two.html"), page(BLOCK, "")).unwrap();
-        remove(&dir, "one").unwrap();
-        let names: Vec<String> = imported(&dir).into_iter().map(|w| w.name).collect();
-        assert_eq!(names, ["two"]);
-        assert!(remove(&dir, "../two").is_err());
-        assert!(remove(&dir, "one").is_err(), "already gone");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

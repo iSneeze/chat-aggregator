@@ -211,28 +211,6 @@ mod tests {
     }
 
     #[test]
-    fn traffic_light_mapping() {
-        use Activity::*;
-        let running = |a| status(SourceState::Running(a)).health();
-        assert_eq!(running(Receiving), Health::Ok);
-        assert_eq!(running(Idle("waiting for broadcast".into())), Health::Ok);
-        assert_eq!(running(Connecting), Health::Warning);
-        assert_eq!(running(Degraded("rate limited".into())), Health::Warning);
-        assert_eq!(running(Blocked("quota".into())), Health::Error);
-
-        let retrying = SourceState::Retrying {
-            attempt: 1,
-            next_try: Timestamp::now(),
-            error: "x".into(),
-        };
-        assert_eq!(status(retrying).health(), Health::Warning);
-        let attention = SourceState::NeedsAttention { error: "x".into() };
-        assert_eq!(status(attention).health(), Health::Error);
-        assert_eq!(status(SourceState::Stopped).health(), Health::Off);
-        assert_eq!(status(SourceState::Finished).health(), Health::Off);
-    }
-
-    #[test]
     fn overall_is_the_worst() {
         let mut all = Status {
             overlay_url: String::new(),

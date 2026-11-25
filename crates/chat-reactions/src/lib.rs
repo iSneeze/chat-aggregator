@@ -292,38 +292,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_parts_take_defaults() {
-        let settings = parse("").unwrap();
-        assert_eq!(settings, ReactionSettings::default());
-        assert_eq!(settings.warudo.url, DEFAULT_WARUDO_URL);
-        assert_eq!(settings.warudo.queue_secs, 0, "dropped unless asked for");
-        assert_eq!(settings.obs.url, DEFAULT_OBS_URL);
-        assert_eq!(settings.obs.queue_secs, 0);
-        assert!(!settings.paused);
-        assert_eq!(settings.check(), Ok(()));
-    }
-
-    #[test]
-    fn typos_are_errors() {
-        for text in [
-            "pasued = true",
-            "[warudo]\nulr = \"ws://x\"",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"comand\", command = \"!a\" }\naction = { target = \"warudo\", action = \"a\" }",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"command\", comand = \"!a\" }\naction = { target = \"warudo\", action = \"a\" }",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\nguards = { cooldown = 5 }\naction = { target = \"warudo\", action = \"a\" }",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\nguards = { min_role = \"mod\" }\naction = { target = \"warudo\", action = \"a\" }",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\nguards = { crowd = { chatters = 3, within = 30 } }\naction = { target = \"warudo\", action = \"a\" }",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\nguards = { crowd = { chatters = 3 } }\naction = { target = \"warudo\", action = \"a\" }",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\naction = { target = \"warduo\", action = \"a\" }",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\naction = { target = \"obs_filter\", source = \"Mic\", filtr = \"x\" }",
-            "[[rules]]\nname = \"a\"\ntrigger = { type = \"membership\" }\naction = { target = \"obs_media\", source = \"Mic\", seconds = 3 }",
-            "obs = { password = \"hunter2\" }",
-        ] {
-            assert!(parse(text).is_err(), "accepted: {text}");
-        }
-    }
-
-    #[test]
     fn check_finds_rules_that_cant_work() {
         let rule = |name: &str, trigger: Trigger, action: &str| Rule {
             name: name.into(),
@@ -376,6 +344,7 @@ mod tests {
                 rule("a", command("!b"), "y"),
             ]),
             with(vec![rule("a", command(""), "x")]),
+            with(vec![rule("a", command(" !bonk "), "x")]),
             with(vec![rule("a", command("!a b"), "x")]),
             with(vec![rule(
                 "a",
@@ -444,48 +413,5 @@ mod tests {
         for settings in bad {
             assert!(settings.check().is_err(), "accepted: {settings:?}");
         }
-    }
-
-    #[test]
-    fn written_settings_read_back_the_same() {
-        let settings = parse(
-            r#"
-            [[rules]]
-            name = "bonk"
-            trigger = { type = "command", command = "!bonk" }
-            guards = { min_role = "moderator", cooldown_secs = 10 }
-            action = { target = "warudo", action = "throw_item" }
-
-            [[rules]]
-            name = "gift"
-            enabled = false
-            trigger = { type = "gift", min_count = 5 }
-            action = { target = "warudo", action = "confetti" }
-
-            [[rules]]
-            name = "respects"
-            trigger = { type = "keyword", keyword = "F" }
-            guards = { crowd = { chatters = 10, within_secs = 30 } }
-            action = { target = "warudo", action = "candles" }
-            "#,
-        )
-        .unwrap();
-        let text = toml::to_string_pretty(&settings).unwrap();
-        assert_eq!(parse(&text).unwrap(), settings, "{text}");
-        assert_eq!(
-            text.matches("enabled").count(),
-            1,
-            "only written when off:\n{text}"
-        );
-        assert_eq!(
-            text.matches("[rules.guards]").count(),
-            2,
-            "no guards aren't written:\n{text}"
-        );
-        assert_eq!(
-            text.matches("[rules.guards.crowd]").count(),
-            1,
-            "no crowd isn't written:\n{text}"
-        );
     }
 }

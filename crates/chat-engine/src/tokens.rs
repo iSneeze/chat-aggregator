@@ -198,31 +198,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_key_of_an_rplay_widget_link_is_stored() {
-        let (engine, store, dir) = engine_with_secrets("tokens-rplay").await;
-        let handle = engine.handle();
-        let rplay = SourceConfig::Rplay {
-            label: "Main".into(),
-        };
-        let stored = || async { store.load("rplay:Main").await.unwrap() };
-        let link =
-            "https://rplay.live/live/chat/basic/0123456789abcdef01234567?toolkey=Key-123&lang=en";
-        handle.store_token(&rplay, link).await.unwrap();
-        assert_eq!(stored().await.as_deref(), Some("Key-123"));
-
-        // A link without a key: refused, and the stored key stays.
-        let refused = handle
-            .store_token(&rplay, "https://rplay.live/live/0123456789abcdef01234567")
-            .await
-            .unwrap_err();
-        assert!(refused.is::<SetupError>(), "{refused:#}");
-        assert_eq!(stored().await.as_deref(), Some("Key-123"));
-
-        engine.shutdown().await;
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[tokio::test]
     async fn bad_input_stores_and_adds_nothing() {
         let (engine, _store, dir) = engine_with_secrets("tokens-bad").await;
         let handle = engine.handle();

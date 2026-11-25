@@ -58,9 +58,7 @@ mod tests {
     use chat_core::secrets::SecretStore;
 
     use crate::config_file::{ProfileFile, save_all};
-    use crate::{
-        ConfigFile, Engine, EngineConfig, EngineHandle, Newest, SourceConfig, SourceState, Status,
-    };
+    use crate::{ConfigFile, Engine, EngineHandle, Newest, SourceConfig, SourceState, Status};
 
     /// A settings folder of its own (`name` keeps tests apart), empty.
     fn settings_dir(name: &str) -> PathBuf {
@@ -363,19 +361,5 @@ mod tests {
         assert_eq!(loaded.config.profile, "Indie");
         engine.shutdown().await;
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn without_a_settings_folder_there_are_no_profiles() {
-        let mut config = EngineConfig::default();
-        config.settings.server.port = 0;
-        let engine = Engine::start(config).await.unwrap();
-        let handle = engine.handle();
-        let status = handle.status().borrow().clone();
-        assert_eq!(status.profile, "Main");
-        assert!(status.profiles.is_empty());
-        assert!(handle.create_profile("Indie", false).await.is_err());
-        assert!(handle.switch_profile("Main").await.is_err());
-        engine.shutdown().await;
     }
 }

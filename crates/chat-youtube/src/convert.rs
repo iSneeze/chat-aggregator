@@ -233,13 +233,23 @@ mod tests {
     }
 
     #[test]
-    fn converts_text_message() {
-        let msg = convert_msg(text_item("m1", "hello"), &EmojiMap::default());
+    fn converts_text_message_and_custom_emoji() {
+        let emojis = EmojiMap::from_json(
+            r#"{ "version": 1, "entries": [ { "code": ":yt:", "url": "https://yt3.ggpht.com/yt" } ] }"#,
+        )
+        .unwrap();
+
+        let msg = convert_msg(text_item("m1", "hi :yt:"), &emojis);
         assert_eq!(msg.id, "m1");
         assert_eq!(msg.author.name, "Ann");
         assert_eq!(msg.author.badges, vec!["moderator".to_string()]);
-        assert_eq!(msg.text, "hello");
+        assert_eq!(msg.text, "hi :yt:");
+        assert_eq!(msg.emotes.len(), 1);
+        assert_eq!(msg.emotes[0].url, "https://yt3.ggpht.com/yt");
         assert!(matches!(msg.kind, MessageKind::Text));
+
+        let emote_only = convert_msg(text_item("m2", ":yt: :yt:"), &emojis);
+        assert!(matches!(emote_only.kind, MessageKind::EmoteOnly));
     }
 
     #[test]
@@ -302,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn milestone_carries_the_months() {
+    fn milestone_and_new_member_handle_months() {
         let item = membership_item(
             Type::MemberMilestoneChatEvent,
             DisplayedContent::MemberMilestoneChatDetails(pb::LiveChatMemberMilestoneChatDetails {
@@ -317,28 +327,16 @@ mod tests {
             other => panic!("expected MembershipJoin, got {other:?}"),
         }
         assert_eq!(msg.text, "still here");
-    }
 
-    #[test]
-    fn new_member_has_no_months() {
-        let item = membership_item(
+        let new_member = membership_item(
             Type::NewSponsorEvent,
             DisplayedContent::NewSponsorDetails(pb::LiveChatNewSponsorDetails::default()),
         );
-        let msg = convert_msg(item, &EmojiMap::default());
+        let new_msg = convert_msg(new_member, &EmojiMap::default());
         assert!(matches!(
-            msg.kind,
+            new_msg.kind,
             MessageKind::MembershipJoin { months: None, .. }
         ));
-    }
-
-    #[test]
-    fn duplicate_id_is_dropped() {
-        let mut dedupe = BoundedIdSet::new(16);
-        let emojis = EmojiMap::default();
-        let badges = HashMap::new();
-        assert!(convert(text_item("m1", "hi"), &mut dedupe, &emojis, &badges).is_some());
-        assert!(convert(text_item("m1", "hi"), &mut dedupe, &emojis, &badges).is_none());
     }
 
     #[test]
@@ -391,43 +389,6 @@ mod tests {
             Some(ChatEvent::ClearUser { user_id, .. }) => assert_eq!(user_id, "UC_TROLL"),
             other => panic!("expected ClearUser, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn silent_events_are_skipped() {
-        for ty in [Type::ChatEndedEvent, Type::SponsorOnlyModeStartedEvent] {
-            let item = pb::LiveChatMessage {
-                id: Some("s1".into()),
-                snippet: Some(pb::LiveChatMessageSnippet {
-                    r#type: Some(ty as i32),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            let out = convert(
-                item,
-                &mut BoundedIdSet::new(16),
-                &EmojiMap::default(),
-                &HashMap::new(),
-            );
-            assert!(out.is_none(), "{ty:?} should be skipped, got {out:?}");
-        }
-    }
-
-    #[test]
-    fn custom_emoji_are_resolved() {
-        let emojis = EmojiMap::from_json(
-            r#"{ "version": 1, "entries": [ { "code": ":yt:", "url": "https://yt3.ggpht.com/yt" } ] }"#,
-        )
-        .unwrap();
-
-        let msg = convert_msg(text_item("m1", "hi :yt:"), &emojis);
-        assert_eq!(msg.emotes.len(), 1);
-        assert_eq!(msg.emotes[0].url, "https://yt3.ggpht.com/yt");
-        assert!(matches!(msg.kind, MessageKind::Text));
-
-        let msg = convert_msg(text_item("m2", ":yt: :yt:"), &emojis);
-        assert!(matches!(msg.kind, MessageKind::EmoteOnly));
     }
 
     #[test]

@@ -1195,7 +1195,10 @@ Two = "2px"
                         preset.name.clone(),
                     )]));
                     let got = m.parse_query_options(&explicit).expect("explicit preset");
-                    assert_eq!(m.resolve(Some(&got.values)), m.resolve(Some(&preset.values)));
+                    assert_eq!(
+                        m.resolve(Some(&got.values)),
+                        m.resolve(Some(&preset.values))
+                    );
                     assert!(
                         !got.css_query.is_empty(),
                         "default-matching preset must still forward css_query"

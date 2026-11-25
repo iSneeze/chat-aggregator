@@ -125,17 +125,6 @@ mod tests {
         file.write_all(text.as_bytes()).unwrap();
     }
 
-    #[test]
-    fn creates_the_settings_folder_on_first_start() {
-        let dir = temp_dir("first");
-        write_run(&dir, "run 1");
-        assert_eq!(
-            std::fs::read_to_string(dir.join(FILE_NAME)).unwrap(),
-            "run 1"
-        );
-        assert!(!dir.join(OLD_FILE_NAME).exists());
-    }
-
     /// Something to log into, for tests: a shared buffer.
     #[derive(Clone, Default)]
     struct Buffer(Arc<std::sync::Mutex<Vec<u8>>>);

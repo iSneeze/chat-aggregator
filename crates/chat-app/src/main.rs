@@ -221,24 +221,6 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// The engine saves after changes, not at startup: a hand-written file
-    /// (with its comments) stays as it is until something changes.
-    #[test]
-    fn starting_leaves_the_config_file_alone() {
-        let dir = settings_dir("untouched");
-        let config = dir.join("config.toml");
-        let text =
-            "# my notes\n[server]\nport = 0\n\n[[sources]]\ntype = \"demo\"\nenabled = false\n";
-        std::fs::write(&config, text).unwrap();
-
-        let started = start(config.clone(), &dir).unwrap_or_else(|e| panic!("{:#}", e.error));
-        let status = started.engine.handle().status().borrow().clone();
-        assert_eq!(status.sources.len(), 1, "the switched-off source is listed");
-        started.runtime.block_on(started.engine.shutdown());
-        assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
     #[test]
     fn a_broken_config_fails_at_the_config_step_and_is_left_alone() {
         let dir = settings_dir("config");

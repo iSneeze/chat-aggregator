@@ -177,17 +177,11 @@ mod tests {
         assert_eq!(censor("badge", &banned), "***ge");
         assert_eq!(censor("worse, bad", &banned), "*****, ***");
         assert_eq!(censor("nothing here", &banned), "nothing here");
-    }
 
-    #[test]
-    fn censoring_handles_other_scripts_and_odd_words() {
-        // One star per letter, in any script; an empty word changes nothing
-        // (RPlay's empty regex replaces nothing with nothing).
-        let banned = words(&["", "나쁜", "バカ"]);
-        assert_eq!(censor("나쁜 말, バ カ!", &banned), "** 말, **!");
-        // Characters a regex would treat specially are plain letters here.
+        // Other scripts, empty words, regex metacharacters, and leading whitespace.
+        let unicode = words(&["", "나쁜", "バカ"]);
+        assert_eq!(censor("나쁜 말, バ カ!", &unicode), "** 말, **!");
         assert_eq!(censor("1+1 (a.b)", &words(&["1+1", "a.b"])), "*** (***)");
-        // Whitespace before the first letter stays.
         assert_eq!(censor("  bad", &words(&["bad"])), "  ***");
     }
 }

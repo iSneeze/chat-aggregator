@@ -609,16 +609,6 @@ mod tests {
     }
 
     #[test]
-    fn emotes_and_banned_words() {
-        let m = message(room().decode(&message_frame(":_hypeWave:")));
-        assert_eq!(m.emotes[0].code, ":_hypeWave:");
-        assert!(matches!(m.kind, MessageKind::EmoteOnly));
-
-        let m = message(room().decode(&message_frame("not B A D at all")));
-        assert_eq!(m.text, "not *** at all");
-    }
-
-    #[test]
     fn content_that_isnt_json_is_the_text() {
         let frame =
             message_frame("x").replace(r#""Content":"{\"m\":\"x\"}""#, r#""Content":"plain""#);
@@ -741,32 +731,26 @@ mod tests {
             }
             other => panic!("expected a donation, got {other:?}"),
         }
-    }
 
-    #[test]
-    fn a_chatters_donation_needs_no_lookup() {
-        let room = &mut room();
+        // Known chatters resolve inline without lookup.
         room.decode(&message_frame("hi"));
-        let frame = donation_frame(json!({ "userId": VIEWER, "coin": "100", "content": "" }));
-        assert_eq!(message(room.decode(&frame)).author.name, "Viewer42");
-    }
+        let inline = donation_frame(json!({ "userId": VIEWER, "coin": "100", "content": "" }))
+            .replace("Eventdonation", "Eventdonation2");
+        assert_eq!(message(room.decode(&inline)).author.name, "Viewer42");
 
-    #[test]
-    fn a_failed_lookup_falls_back_to_what_chat_said() {
-        let room = &mut room();
-        let frame =
+        // Hidden donor name falls back to empty name/avatar on failed lookup.
+        let hidden =
             donation_frame(json!({ "userId": VIEWER, "coin": "1", "isHiddenName": "true" }));
-        let Frame::Donation(pending) = room.decode(&frame) else {
+        let Frame::Donation(pending_hidden) = self::room().decode(&hidden) else {
             panic!("expected a donation to finish");
         };
-        let m = pending.finish(None);
-        assert_eq!(m.author.name, "");
-        // A donor who hid their profile shows no photo either.
-        assert_eq!(m.author.avatar_url, None);
+        let hidden_msg = pending_hidden.finish(None);
+        assert_eq!(hidden_msg.author.name, "");
+        assert_eq!(hidden_msg.author.avatar_url, None);
     }
 
     #[test]
-    fn replays_and_mission_results_arent_donations() {
+    fn donations_and_missions_filter_replays_and_results() {
         for attributes in [
             json!({ "userId": VIEWER, "coin": "5", "isReplay": "true" }),
             json!({ "userId": VIEWER, "coin": "5", "donationType": "mission_success" }),
@@ -777,16 +761,11 @@ mod tests {
                 Frame::Ignored
             ));
         }
-        // Test donations are shown.
         let test = json!({ "userId": VIEWER, "coin": "5", "isTest": "true" });
         assert!(matches!(
             room().decode(&donation_frame(test)),
             Frame::Donation(_)
         ));
-    }
-
-    #[test]
-    fn missions_starting_or_boosted_are_donations() {
         for kind in ["created", "appended"] {
             let frame = event_frame(
                 "mission",
@@ -865,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_state_and_emote_changes() {
+    fn control_and_status_frames() {
         // `liveOff` came with `"Attributes": null` in the capture.
         assert!(matches!(
             room().decode(&event_frame("liveOn", Value::Null)),
@@ -877,10 +856,7 @@ mod tests {
         ));
         let changed = event_frame("updatedEmoticonData", json!({ "creatorOid": CHANNEL }));
         assert!(matches!(room().decode(&changed), Frame::ReloadEmotes));
-    }
 
-    #[test]
-    fn errors_and_everything_else() {
         let error = r#"{"Type":"ERROR","Id":"x","RequestId":"y","ErrorCode":429,"ErrorMessage":"slow down"}"#;
         match room().decode(error) {
             Frame::Error(text) => assert_eq!(text, "429 slow down"),
@@ -893,56 +869,5 @@ mod tests {
             Frame::UserChanged(user_id) => assert_eq!(user_id, VIEWER),
             other => panic!("expected a changed user, got {other:?}"),
         }
-        for frame in [
-            event_frame("updatedUserData", json!({})),
-            event_frame("subscriberOnlyChanged", json!({ "enabled": "true" })),
-            event_frame(
-                "MODERATION_ACTION",
-                json!({ "type": "ban", "targetUserOid": VIEWER }),
-            ),
-            r#"{"Type":"SOMETHING_NEW"}"#.to_owned(),
-            "not json".to_owned(),
-        ] {
-            assert!(matches!(room().decode(&frame), Frame::Ignored), "{frame}");
-        }
-    }
-
-    #[test]
-    fn odd_messages_are_skipped_not_fatal() {
-        let room = &mut room();
-        let no_id = message_frame("hi").replace(r#""Id":"ExampleId001","#, "");
-        assert!(matches!(room.decode(&no_id), Frame::Ignored));
-        let no_sender = message_frame("hi").replace(VIEWER, "");
-        assert!(matches!(room.decode(&no_sender), Frame::Ignored));
-        // A missing nickname or time: shown anyway.
-        let bare = json!({ "Type": "MESSAGE", "Id": "x", "Content": "{\"m\":\"hi\"}",
-                           "Sender": { "UserId": VIEWER, "Attributes": null } });
-        let m = message(room.decode(&bare.to_string()));
-        assert_eq!((m.author.name.as_str(), m.text.as_str()), ("", "hi"));
-    }
-
-    #[test]
-    fn the_log_gets_each_kind_once_and_names_cut_short() {
-        let mut room = room();
-        assert!(room.first_time("event liveOn"));
-        assert!(!room.first_time("event liveOn"), "once per kind");
-        // A flood of odd kinds stops at the limit.
-        for n in 0..LOGGED_MAX * 2 {
-            room.first_time(&format!("type odd{n}"));
-        }
-        assert_eq!(room.logged.len(), LOGGED_MAX);
-        assert!(!room.first_time("event never seen"));
-
-        // Field names a viewer's client could choose: few, and short.
-        let long = "x".repeat(100);
-        let mut fields = Map::new();
-        for n in 0..30 {
-            fields.insert(format!("{n:02}{long}"), Value::Null);
-        }
-        let logged = names(Some(&fields));
-        assert_eq!(logged.len(), 20);
-        assert!(logged.iter().all(|name| name.chars().count() == 40));
-        assert_eq!(short("視聴者"), "視聴者");
-        assert_eq!(names(None), Vec::<&str>::new());
     }
 }

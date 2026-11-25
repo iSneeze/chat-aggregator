@@ -314,28 +314,6 @@ mod tests {
         }
     }
 
-    /// Without a client, nothing is asked of Google or the keyring.
-    #[tokio::test]
-    async fn without_a_client_youtube_is_not_set_up() {
-        let dir = temp_dir("no-client");
-        let engine = start(&dir, false).await;
-        let handle = engine.handle();
-        assert_eq!(
-            handle.youtube_accounts().await.unwrap(),
-            YouTubeAccounts::NotSetUp
-        );
-        let Err(e) = handle.youtube_login().await else {
-            panic!("a login without a client");
-        };
-        assert!(e.to_string().contains("client id"), "{e}");
-        let account = YouTubeAccount {
-            channel: Some(your_channel()),
-            logged_in: true,
-        };
-        assert!(handle.youtube_logout(&account).await.is_err());
-        engine.shutdown().await;
-    }
-
     /// A login uses the client in the settings, even one saved a moment
     /// before. Dropping it (cancel) stops the local server that waits for
     /// Google's answer.

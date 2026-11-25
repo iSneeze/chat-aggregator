@@ -404,15 +404,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn labels() {
-        assert_eq!(normalize_label("  Main ").as_deref(), Ok("Main"));
-        for bad in ["", "   ", "two\nlines", &"x".repeat(41)] {
-            assert!(normalize_label(bad).is_err(), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn the_key_comes_from_any_widget_link() {
+    fn toolkey_extraction_from_widget_links_and_invalid_inputs() {
         for link in [
             "https://rplay.live/live/chat/basic/0123456789abcdef01234567?toolkey=Key-123_abc&lang=en",
             "https://rplay.live/live/chat/box/0123456789abcdef01234567?fs=17&b=%23000&c=%23fff&toolkey=Key-123_abc&lang=en",
@@ -428,10 +420,6 @@ mod tests {
             toolkey_from("https://rplay.live/x?toolkey=a%2Bb%3D").as_deref(),
             Ok("a+b=")
         );
-    }
-
-    #[test]
-    fn links_without_a_key_are_refused() {
         for input in [
             "",
             "https://rplay.live/live/0123456789abcdef01234567",

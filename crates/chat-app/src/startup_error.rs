@@ -184,11 +184,7 @@ mod tests {
     use std::io::ErrorKind;
     use std::path::Path;
 
-    use gpui_kit::component::Root;
-    use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{AppContext as _, TestAppContext};
-
-    use super::{Problem, Stage, StartupError, StartupErrorView, describe};
+    use super::{Problem, Stage, StartupError, describe};
 
     fn failed(stage: Stage, error: anyhow::Error) -> Problem {
         describe(&StartupError { stage, error }, Path::new("/settings"))
@@ -199,46 +195,22 @@ mod tests {
     }
 
     #[test]
-    fn a_taken_port_asks_whether_the_app_is_already_running() {
-        let problem = failed(Stage::Server, io(ErrorKind::AddrInUse));
-        assert!(problem.headline.contains("already in use"), "{problem:?}");
+    fn describe_maps_error_kinds() {
+        let taken = failed(Stage::Server, io(ErrorKind::AddrInUse));
+        assert!(taken.headline.contains("already in use"), "{taken:?}");
         assert!(
-            problem
-                .advice
-                .contains("Is chat-aggregator already running?"),
-            "{problem:?}"
+            taken.advice.contains("Is chat-aggregator already running?"),
+            "{taken:?}"
         );
-        assert!(problem.details.contains("127.0.0.1:7878"), "{problem:?}");
-    }
+        assert!(taken.details.contains("127.0.0.1:7878"), "{taken:?}");
 
-    #[test]
-    fn a_reserved_port_says_so() {
-        let problem = failed(Stage::Server, io(ErrorKind::PermissionDenied));
-        assert!(problem.advice.contains("reserves"), "{problem:?}");
-    }
+        let reserved = failed(Stage::Server, io(ErrorKind::PermissionDenied));
+        assert!(reserved.advice.contains("reserves"), "{reserved:?}");
 
-    #[test]
-    fn a_broken_config_names_the_line() {
         let error = chat_engine::ConfigFile::parse("[server]\nprot = 7878\n").unwrap_err();
-        let problem = failed(Stage::Config, error);
-        assert!(problem.headline.contains("settings"), "{problem:?}");
-        assert!(problem.details.contains("prot"), "{problem:?}");
-        assert!(problem.details.contains("line 2"), "{problem:?}");
-    }
-
-    #[gpui_kit::test]
-    fn the_window_offers_the_folder_and_quit(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let problem = failed(Stage::Server, io(ErrorKind::AddrInUse));
-        let window = cx.add_window(|window, cx| {
-            let view = cx.new(|_| StartupErrorView { problem });
-            Root::new(view, window, cx)
-        });
-        cx.update_window(window.into(), |_, window, cx| {
-            window.render_frame(cx);
-            assert!(window.try_find("startup-open-folder").is_some());
-            assert!(window.try_find("startup-quit").is_some());
-        })
-        .unwrap();
+        let config = failed(Stage::Config, error);
+        assert!(config.headline.contains("settings"), "{config:?}");
+        assert!(config.details.contains("prot"), "{config:?}");
+        assert!(config.details.contains("line 2"), "{config:?}");
     }
 }

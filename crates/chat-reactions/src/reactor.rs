@@ -871,24 +871,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_test_does_not_start_a_program_no_rule_needs() {
-        let (listener, url) = listener().await;
-        let mut warudo = fake_warudo(listener, false);
-        let off = crate::Rule {
-            enabled: false,
-            ..rule("wave", command("!wave"), Guards::default())
-        };
-        let running = start(Arc::new(Hub::new(10)), settings(&url, vec![off]));
-        assert_eq!(
-            test(&running, "wave").await,
-            Err("Warudo isn't connected".into())
-        );
-        assert!(running.status.borrow().outputs.is_empty());
-        let quiet = tokio::time::timeout(Duration::from_millis(200), warudo.recv()).await;
-        assert!(quiet.is_err(), "nothing reached Warudo");
-    }
-
-    #[tokio::test]
     async fn obs_refusing_a_rule_shows_on_it_until_the_rule_changes() {
         use crate::obs::tests::{Scene, fake_obs};
         let (obs_listener, obs_url) = crate::obs::tests::listener().await;

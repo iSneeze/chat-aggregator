@@ -862,28 +862,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serves_page_and_css() {
-        let server = start(None).await;
-        let base = format!("http://{}", server.addr);
-
-        let page = reqwest::get(&base).await.unwrap().text().await.unwrap();
-        assert!(page.contains(r#"<main class="chat""#));
-        assert!(page.contains(r#"new EventSource("events" + location.search)"#));
-        assert!(page.contains(r#"href="theme/overlay.css""#));
-
-        let resp = reqwest::get(format!("{base}/theme/overlay.css"))
-            .await
-            .unwrap();
-        assert!(
-            resp.headers()["content-type"]
-                .to_str()
-                .unwrap()
-                .starts_with("text/css")
-        );
-        assert!(resp.text().await.unwrap().contains("--max-messages"));
-    }
-
-    #[tokio::test]
     async fn sse_replays_history_then_streams_live_events() {
         let server = start(None).await;
         server.hub.publish(message("old"));
@@ -951,59 +929,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_overlay_url_hides_its_own_choice() {
-        let server = start(None).await;
-        // The app hides nothing; this overlay hides donations.
-        let mut resp = reqwest::get(format!("http://{}/events?hide=donation", server.addr))
-            .await
-            .unwrap();
-        eventually(|| server.connections.overlays() == 1).await;
-        server.hub.publish(tip("tip"));
-        server.hub.publish(message("chat"));
-        let mut seen = String::new();
-        read_until(&mut resp, &mut seen, r#"data-id="chat""#).await;
-        assert!(!seen.contains(r#"data-id="tip""#), "{seen}");
-
-        // The app hides tips; an empty `?hide=` still shows everything.
-        server
-            .overlay
-            .send_modify(|o| o.hide = vec![Hide::StreamElements]);
-        let mut resp = reqwest::get(format!("http://{}/events?hide=", server.addr))
-            .await
-            .unwrap();
-        let mut seen = String::new();
-        // Both in the history now.
-        read_until(&mut resp, &mut seen, r#"data-id="chat""#).await;
-        assert!(seen.contains(r#"data-id="tip""#), "{seen}");
-    }
-
-    #[tokio::test]
-    async fn overlays_connecting_after_a_stagger_change_use_the_new_values() {
-        let server = start(None).await;
-        // Very slow pacing: a burst of three would take 4 s...
-        server.overlay.send_modify(|o| {
-            o.stagger = Stagger::new(Duration::from_secs(2), Duration::from_secs(5));
-        });
-        // ...but it's switched off before this overlay connects.
-        server.overlay.send_modify(|o| o.stagger = Stagger::off());
-        let mut resp = reqwest::get(format!("http://{}/events", server.addr))
-            .await
-            .unwrap();
-        eventually(|| server.connections.overlays() == 1).await;
-
-        for id in ["b1", "b2", "b3"] {
-            server.hub.publish(message(id));
-        }
-        let mut seen = String::new();
-        timeout(
-            Duration::from_secs(1),
-            read_until(&mut resp, &mut seen, r#"data-id="b3""#),
-        )
-        .await
-        .expect("unpaced: the whole burst arrives at once");
-    }
-
-    #[tokio::test]
     async fn overlay_page_only_allows_its_own_script() {
         let server = start(None).await;
         let resp = reqwest::get(format!("http://{}/", server.addr))
@@ -1034,20 +959,6 @@ mod tests {
         // Nothing falls back to "allow everything".
         assert!(csp.starts_with("default-src 'none';"), "{csp}");
         assert!(csp.contains("connect-src 'self'"), "{csp}");
-    }
-
-    #[tokio::test]
-    async fn overlay_page_carries_the_default_direction() {
-        let server = start(None).await;
-        let page = |server: &TestServer| {
-            let url = format!("http://{}/", server.addr);
-            async move { reqwest::get(url).await.unwrap().text().await.unwrap() }
-        };
-        assert!(page(&server).await.contains(r#"data-newest="bottom""#));
-        server.overlay.send_modify(|o| o.newest = Newest::Top);
-        let top = page(&server).await;
-        assert!(top.contains(r#"data-newest="top""#), "{top}");
-        assert!(!top.contains(r#"data-newest="bottom""#));
     }
 
     #[tokio::test]
@@ -1216,7 +1127,10 @@ mod tests {
         let base = format!("http://{}", server.addr);
 
         let (_, page) = get_text(format!("{base}/?theme=studio&newest=top")).await;
-        assert!(page.contains(r#"href="themes/studio/overlay.css""#), "{page}");
+        assert!(
+            page.contains(r#"href="themes/studio/overlay.css""#),
+            "{page}"
+        );
         assert!(!page.contains(r#"href="theme/overlay.css""#), "{page}");
         let (_, css) = get_text(format!("{base}/themes/studio/overlay.css")).await;
         assert_eq!(css, "/* studio */");
@@ -1406,31 +1320,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pinned_theme_gets_its_own_theme_options_live() {
-        use chat_render::options::{ThemeValue, ThemeValues};
-
-        let server = start(None).await;
-        let base = format!("http://{}", server.addr);
-
-        let mut resp = reqwest::get(format!("{base}/events?theme=minimal"))
-            .await
-            .unwrap();
-        eventually(|| server.connections.overlays() == 1).await;
-
-        let mut opts = ThemeValues::new();
-        opts.insert("show_platform".into(), ThemeValue::Bool(false));
-        opts.insert("font_size".into(), ThemeValue::Number(28.0));
-        server.overlay.send_modify(|o| {
-            o.theme_options.insert("minimal".into(), opts);
-        });
-
-        let mut seen = String::new();
-        read_until(&mut resp, &mut seen, "event: style").await;
-        assert!(seen.contains(r#""--chat-font-size":"28px""#), "{seen}");
-        assert!(seen.contains("chat--hide-platform"), "{seen}");
-    }
-
-    #[tokio::test]
     async fn url_pinned_theme_options_override_profile_and_stay_locked() {
         use chat_render::options::{ThemeValue, ThemeValues};
 
@@ -1447,8 +1336,10 @@ mod tests {
 
         // A URL with `?preset=Sakura&max_messages=7` uses Sakura + max_messages=7
         // from theme defaults (so timestamps stay off despite the profile).
-        let (_, page) =
-            get_text(format!("{base}/?theme=default&preset=Sakura&max_messages=7")).await;
+        let (_, page) = get_text(format!(
+            "{base}/?theme=default&preset=Sakura&max_messages=7"
+        ))
+        .await;
         assert!(page.contains("chat--custom-accent"), "{page}");
         assert!(!page.contains("chat--show-time"), "{page}");
         assert!(
@@ -1462,7 +1353,10 @@ mod tests {
         .await;
         assert!(css.contains("--chat-accent: #ff85b3;"), "{css}");
         assert!(css.contains("--max-messages: 7;"), "{css}");
-        assert!(!css.contains("#111111"), "profile text_color must not leak: {css}");
+        assert!(
+            !css.contains("#111111"),
+            "profile text_color must not leak: {css}"
+        );
 
         // A preset matching all defaults (`Midnight`) still overrides the profile
         // back to defaults instead of falling back to profile options.

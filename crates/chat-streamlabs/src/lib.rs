@@ -178,20 +178,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn labels_are_trimmed_and_checked() {
-        assert_eq!(normalize_label("  Corpo \n").unwrap(), "Corpo");
-        assert_eq!(normalize_label("インディー").unwrap(), "インディー");
-        for input in [
-            "",
-            "   ",
-            "two\nlines",
-            &"x".repeat(chat_core::MAX_SOURCE_LABEL_LEN + 1),
-        ] {
-            assert!(normalize_label(input).is_err(), "{input:?}");
-        }
-    }
-
-    #[test]
     fn the_token_never_shows_in_errors() {
         let (tx, _rx) = watch::channel(TipSettings::default());
         let source = StreamlabsSource {

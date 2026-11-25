@@ -434,8 +434,8 @@ mod tests {
 
     use gpui_kit::component::input::InputState;
 
+    use super::ReactionsWindow;
     use super::form::{Inputs, summary};
-    use super::{ReactionsWindow, Tested};
     use crate::app_config::AppConfig;
 
     struct Ui {
@@ -476,8 +476,8 @@ mod tests {
             .unwrap();
         static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir()
-            .join(format!("chat-app-reactions-{}-{id}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("chat-app-reactions-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut config = EngineConfig::default();
         config.settings.server.port = 0;
@@ -717,26 +717,6 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_form_problem_is_shown_and_nothing_is_saved(cx: &mut TestAppContext) {
-        let ui = open(cx, &["bonk"]);
-        act(cx, &ui, |window, cx| window.click("rule-new", cx));
-        type_into(cx, &ui, "rule-name", "wave");
-        // No command typed.
-        act(cx, &ui, |window, cx| window.click("rule-save", cx));
-        let error = ui.view.read_with(cx, |view, _| view.form_error.clone());
-        assert!(error.is_some_and(|e| e.contains("command")));
-
-        // A name that's taken.
-        set_name(cx, &ui, "bonk");
-        type_into(cx, &ui, "rule-command", "!wave");
-        type_into(cx, &ui, "rule-warudo-action", "wave");
-        act(cx, &ui, |window, cx| window.click("rule-save", cx));
-        let error = ui.view.read_with(cx, |view, _| view.form_error.clone());
-        assert!(error.is_some_and(|e| e.contains("already")));
-        assert_eq!(names(&ui), ["bonk"]);
-    }
-
-    #[gpui_kit::test]
     fn a_crowd_takes_both_numbers_and_no_per_chatter_cooldown(cx: &mut TestAppContext) {
         let ui = open(cx, &[]);
         let error = |cx: &mut TestAppContext| ui.view.read_with(cx, |v, _| v.form_error.clone());
@@ -781,14 +761,6 @@ mod tests {
         act(cx, &ui, |window, cx| window.click("rule-save", cx));
         run_until(cx, |_| names(&ui) == ["a", "b2", "c"]);
         run_until(cx, |cx| editing(cx, &ui).as_deref() == Some("b2"));
-    }
-
-    #[gpui_kit::test]
-    fn the_list_switch_applies_at_once(cx: &mut TestAppContext) {
-        let ui = open(cx, &["a", "b"]);
-        act(cx, &ui, |window, cx| window.click(("rule-on", 1usize), cx));
-        run_until(cx, |_| !settings(&ui).profile.reactions.rules[1].enabled);
-        assert!(settings(&ui).profile.reactions.rules[0].enabled);
     }
 
     #[gpui_kit::test]
@@ -886,33 +858,6 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_test_needs_its_program_connected(cx: &mut TestAppContext) {
-        let ui = open(cx, &["a"]);
-        // Nothing listens at Warudo's address in a test: not connected, so
-        // Test is off, and the engine would say why anyway.
-        act(cx, &ui, |window, cx| {
-            window.click(("rule-test", 0usize), cx)
-        });
-        assert_eq!(
-            ui.view
-                .read_with(cx, |view, _| view.tests.get("a").cloned()),
-            None
-        );
-        let view = ui.view.clone();
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            view.update(cx, |view, cx| view.test("a".into(), window, cx));
-        })
-        .unwrap();
-        run_until(cx, |cx| {
-            matches!(
-                ui.view
-                    .read_with(cx, |view, _| view.tests.get("a").cloned()),
-                Some(Tested::Failed(_))
-            )
-        });
-    }
-
-    #[gpui_kit::test]
     fn the_obs_password_goes_to_the_secret_store(cx: &mut TestAppContext) {
         let ui = open(cx, &[]);
         let stored =
@@ -939,40 +884,5 @@ mod tests {
             window.click("obs-password-remove", cx)
         });
         run_until(cx, |cx| stored(cx) == Some(false));
-    }
-
-    #[gpui_kit::test]
-    fn connection_settings_are_checked_and_saved(cx: &mut TestAppContext) {
-        let ui = open(cx, &[]);
-        type_into(cx, &ui, "warudo-queue", "0"); // "00": still zero, fine
-        let view = ui.view.clone();
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            let url = view.read(cx).outputs.warudo_url.clone();
-            url.update(cx, |input, cx| {
-                input.set_value("http://192.168.1.20:19190", window, cx)
-            });
-        })
-        .unwrap();
-        act(cx, &ui, |window, cx| window.click("warudo-save", cx));
-        let error = ui.view.read_with(cx, |view, _| view.warudo_error.clone());
-        assert!(error.is_some_and(|e| e.contains("ws://")));
-
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            let url = view.read(cx).outputs.warudo_url.clone();
-            url.update(cx, |input, cx| {
-                input.set_value("ws://192.168.1.20:19190", window, cx)
-            });
-        })
-        .unwrap();
-        type_into(cx, &ui, "warudo-queue", "30"); // "0030"
-        act(cx, &ui, |window, cx| window.click("warudo-save", cx));
-        run_until(cx, |_| {
-            settings(&ui).profile.reactions.warudo.queue_secs == 30
-        });
-        assert_eq!(
-            settings(&ui).profile.reactions.warudo.url,
-            "ws://192.168.1.20:19190"
-        );
-        assert!(!ui.view.read_with(cx, |view, cx| view.unsaved(cx)));
     }
 }

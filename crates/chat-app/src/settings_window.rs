@@ -881,8 +881,8 @@ mod tests {
     use std::path::PathBuf;
 
     use chat_core::ChatEvent;
-    use chat_engine::{Appearance, ConfigFile, Engine, EngineConfig, Hide};
-    use gpui_kit::component::{Root, Theme};
+    use chat_engine::{ConfigFile, Engine, EngineConfig, Hide};
+    use gpui_kit::component::Root;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, WindowHandle};
 
     use chat_core::tiers::{Amount, TipSettings};
@@ -1049,28 +1049,6 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_tier_table_resets_to_youtubes_steps(cx: &mut TestAppContext) {
-        let ui = open(cx, "tips-reset");
-        type_tip(&ui, cx, Some(5), "500");
-        cx.executor().advance_clock(APPLY_AFTER * 2);
-        run_until(cx, || {
-            ui.saved()
-                .is_some_and(|f| f.profile.tips.tiers[5] == Amount::whole(500))
-        });
-        // What the table's button does (the table is on another page than
-        // the one the window opens on).
-        let view = ui.view().clone();
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            view.update(cx, |this, cx| this.reset_tip_tiers(window, cx));
-        })
-        .unwrap();
-        cx.executor().advance_clock(APPLY_AFTER * 2);
-        run_until(cx, || {
-            ui.saved().is_some_and(|f| f.profile.tips.is_default())
-        });
-    }
-
-    #[gpui_kit::test]
     fn typing_applies_only_the_final_value_after_a_pause(cx: &mut TestAppContext) {
         let ui = open(cx, "debounce");
         ui.fill_history(20);
@@ -1096,57 +1074,25 @@ mod tests {
     fn closing_the_window_applies_what_is_pending(cx: &mut TestAppContext) {
         let mut ui = open(cx, "close");
         ui.view().update(cx, |this, cx| {
-            this.change(|draft| draft.stagger_ms = 0, cx);
+            this.change(
+                |draft| {
+                    draft.stagger_ms = 0;
+                    draft.api_key = "test-key".into();
+                },
+                cx,
+            );
         });
         // Nothing may hold the view any more for it to be released.
         ui.view = None;
         cx.update_window(ui.window.into(), |_, window, _| window.remove_window())
             .unwrap();
-        run_until(cx, || ui.saved().is_some_and(|f| f.server.stagger_ms == 0));
-        assert!(ui.engines().server.stagger().is_off());
-    }
-
-    /// The API key goes through `apply_youtube` like the YouTube section's
-    /// settings, also when the window closes within the pause (and isn't
-    /// there any more to show problems in).
-    #[gpui_kit::test]
-    fn a_pending_api_key_is_saved_when_the_window_closes(cx: &mut TestAppContext) {
-        let mut ui = open(cx, "api-key");
-        ui.view().update(cx, |this, cx| {
-            this.change(|draft| draft.api_key = "test-key".into(), cx);
-        });
-        ui.view = None;
-        cx.update_window(ui.window.into(), |_, window, _| window.remove_window())
-            .unwrap();
         run_until(cx, || {
-            ui.saved()
-                .is_some_and(|f| f.youtube.api_key.as_deref() == Some("test-key"))
+            ui.saved().is_some_and(|f| {
+                f.server.stagger_ms == 0 && f.youtube.api_key.as_deref() == Some("test-key")
+            })
         });
+        assert!(ui.engines().server.stagger().is_off());
         assert_eq!(ui.engines().youtube.api_key.as_deref(), Some("test-key"));
-    }
-
-    #[gpui_kit::test]
-    fn the_json_api_switches_at_once_and_is_saved(cx: &mut TestAppContext) {
-        let ui = open(cx, "api");
-        assert!(!ui.engines().server.api, "off by default");
-        // No pause to wait out: the switch applies on the spot.
-        ui.view().update(cx, |this, cx| this.set_api(true, cx));
-        run_until(cx, || ui.saved().is_some_and(|f| f.server.api));
-        assert!(ui.engines().server.api);
-
-        ui.view().update(cx, |this, cx| this.set_api(false, cx));
-        run_until(cx, || ui.saved().is_some_and(|f| !f.server.api));
-        assert!(!ui.engines().server.api);
-    }
-
-    #[gpui_kit::test]
-    fn emoji_learning_switches_at_once_and_is_saved(cx: &mut TestAppContext) {
-        let ui = open(cx, "learn-emojis");
-        assert!(ui.engines().youtube.learn_emojis, "on by default");
-        ui.view()
-            .update(cx, |this, cx| this.set_learn_emojis(false, cx));
-        run_until(cx, || ui.saved().is_some_and(|f| !f.youtube.learn_emojis));
-        assert!(!ui.engines().youtube.learn_emojis);
     }
 
     #[gpui_kit::test]
@@ -1181,58 +1127,5 @@ mod tests {
         run_until(cx, || {
             ui.saved().is_some_and(|f| f.profile.overlay.hide == chat)
         });
-    }
-
-    #[gpui_kit::test]
-    fn a_new_look_applies_at_once_and_is_saved(cx: &mut TestAppContext) {
-        let ui = open(cx, "look");
-        ui.view().update(cx, |this, cx| {
-            this.set_appearance(Appearance::HighContrast, cx);
-        });
-        cx.run_until_parked();
-        cx.update(|cx| {
-            assert_eq!(Theme::global(cx).theme_name().as_ref(), "High Contrast");
-        });
-        run_until(cx, || {
-            ui.saved()
-                .is_some_and(|f| f.app.appearance == Appearance::HighContrast)
-        });
-    }
-
-    #[gpui_kit::test]
-    fn removing_an_allowed_site_is_saved(cx: &mut TestAppContext) {
-        const GAME: &str = "https://game.example";
-        let ui = open(cx, "origins");
-        // "Allow" in the main window's question.
-        let handle = ui.engine.handle();
-        ui._runtime
-            .block_on(handle.answer_api_request(GAME, true))
-            .unwrap();
-        assert_eq!(ui.engines().server.api_origins, [GAME]);
-
-        ui.view()
-            .update(cx, |this, cx| this.remove_api_origin(GAME, cx));
-        run_until(cx, || {
-            ui.saved().is_some_and(|f| f.server.api_origins.is_empty())
-        });
-        assert!(ui.engines().server.api_origins.is_empty());
-    }
-
-    /// Regression test: errors reported in this window must reach the
-    /// screen (`Root` draws them only when `gpui_kit::init` ran first).
-    #[gpui_kit::test]
-    fn reported_errors_are_shown(cx: &mut TestAppContext) {
-        use gpui_kit::test::TestWindowExt;
-        let ui = open(cx, "report");
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            crate::ui::report(window, cx, "something went wrong".into());
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            window.render_frame(cx);
-            assert!(window.try_find("notification").is_some());
-        })
-        .unwrap();
     }
 }

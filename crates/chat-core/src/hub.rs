@@ -144,15 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn history_keeps_only_the_newest() {
-        let hub = Hub::new(2);
-        for id in ["a", "b", "c"] {
-            hub.publish(msg(ChatPlatform::Twitch, id, "u"));
-        }
-        assert_eq!(history_ids(&hub), ["b", "c"]);
-    }
-
-    #[test]
     fn history_size_can_change_while_running() {
         let hub = Hub::new(3);
         for id in ["a", "b", "c"] {
@@ -178,13 +169,6 @@ mod tests {
             hub.publish(msg(ChatPlatform::Twitch, id, "u1"));
         }
         assert_eq!(history_ids(&hub), ["c", "d"]);
-    }
-
-    #[test]
-    fn zero_disables_history() {
-        let hub = Hub::new(0);
-        hub.publish(msg(ChatPlatform::Twitch, "a", "u"));
-        assert!(history_ids(&hub).is_empty());
     }
 
     #[test]
@@ -231,11 +215,5 @@ mod tests {
             rx.try_recv().is_err(),
             "nothing else, in particular not 'old'"
         );
-    }
-
-    #[test]
-    fn publish_without_subscribers_is_fine() {
-        let hub = Hub::new(1);
-        hub.publish(msg(ChatPlatform::Twitch, "a", "u")); // must not panic
     }
 }

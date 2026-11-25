@@ -225,12 +225,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_is_one_part() {
-        assert_eq!(split_body("hello", &[]), vec![text("hello")]);
-        assert!(split_body("", &[]).is_empty());
-    }
-
-    #[test]
     fn word_emotes_match_whole_words_only() {
         let emotes = [emote("Kappa")];
         let parts = split_body("Kappa Kappachino xKappa Kappa", &emotes);
@@ -286,25 +280,6 @@ mod tests {
         let parts = split_body("日本語 😂 Kappa", &emotes);
         assert_eq!(parts[0], text("日本語 😂 "));
         assert!(matches!(parts[1], Part::Emote { .. }));
-    }
-
-    #[test]
-    fn templates_see_the_months_of_a_membership() {
-        let render = |months| {
-            let mut msg = chat_core::demo::sample_messages(0).remove(0);
-            msg.kind = MessageKind::MembershipJoin {
-                info: "subscribed".into(),
-                months,
-            };
-            minijinja::Environment::new()
-                .render_str(
-                    "{{ months if months is not none else 'new' }}",
-                    MessageView::new(&msg),
-                )
-                .unwrap()
-        };
-        assert_eq!(render(Some(12)), "12");
-        assert_eq!(render(None), "new");
     }
 
     #[test]

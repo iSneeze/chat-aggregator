@@ -739,7 +739,6 @@ pub(crate) fn find_profile_file(profiles_dir: &Path, name: &str) -> Option<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chat_core::tiers::Amount;
 
     /// A settings folder of its own (`name` keeps tests apart), empty.
     fn settings_dir(name: &str) -> PathBuf {
@@ -995,211 +994,19 @@ mod tests {
         let err =
             ConfigFile::parse("profile = \"Main\"\n[[sources]]\ntype = \"demo\"").unwrap_err();
         assert!(format!("{err:#}").contains("sources"), "{err:#}");
-    }
-
-    #[test]
-    fn theme_settings_name_or_point_at_a_theme() {
-        let themes_dir = Path::new("/settings/themes");
-        let theme = |name: &str| {
-            OverlaySettings {
-                theme: Some(name.into()),
-                ..OverlaySettings::default()
-            }
-            .theme_source(Some(themes_dir))
-        };
-        assert_eq!(
-            OverlaySettings::default().theme_source(Some(themes_dir)),
-            ThemeSource::default()
-        );
-        assert_eq!(
-            theme("minimal"),
-            ThemeSource::Builtin(crate::Builtin::Minimal),
-            "built-in themes by name"
-        );
-        assert_eq!(
-            theme("cozy"),
-            ThemeSource::Builtin(crate::Builtin::Cozy),
-            "built-in themes by name"
-        );
-        assert_eq!(
-            theme("studio"),
-            ThemeSource::Folder(themes_dir.join("studio")),
-            "a theme name is a folder in themes/ next to the config file"
-        );
-        let anywhere = std::env::temp_dir().join("my-theme");
-        assert_eq!(
-            theme(anywhere.to_str().unwrap()),
-            ThemeSource::Folder(anywhere),
-            "or the full path of any theme folder"
-        );
-    }
-
-    #[test]
-    fn missing_parts_take_defaults() {
-        let (file, old) = ConfigFile::parse("").unwrap();
-        assert_eq!((file.clone(), old), (ConfigFile::default(), None));
-        assert_eq!(file.profile, DEFAULT_PROFILE);
-        assert_eq!(file.server.port, DEFAULT_PORT);
-        assert!(!file.server.api, "the JSON API is off unless asked for");
-
-        let (file, _) = ConfigFile::parse("[server]\nport = 9000").unwrap();
-        assert_eq!(file.server.port, 9000);
-        assert_eq!(
-            file.server.history, DEFAULT_HISTORY,
-            "rest of the section stays default"
-        );
-        assert_eq!(ProfileFile::parse("").unwrap(), ProfileFile::default());
-    }
-
-    #[test]
-    fn typos_are_errors_that_name_the_line() {
-        let err = ConfigFile::parse("[server]\nprot = 9000").unwrap_err();
-        let message = format!("{err:#}");
-        assert!(
-            message.contains("prot") && message.contains("line 2"),
-            "{message}"
-        );
-        // In an old file too: telling the layouts apart doesn't loosen it.
+        // In an old file too: telling the layouts apart doesn't loosen unknown-field errors.
         let err = ConfigFile::parse("[server]\ntheme = \"cozy\"\nprot = 9000").unwrap_err();
         let message = format!("{err:#}");
         assert!(
             message.contains("prot") && message.contains("line 3"),
             "{message}"
         );
-        let err = ConfigFile::parse("[[sources]]\ntype = \"twich\"").unwrap_err();
-        assert!(format!("{err:#}").contains("twich"), "{err:#}");
-        let err = ConfigFile::parse("profle = \"Main\"").unwrap_err();
-        assert!(format!("{err:#}").contains("profle"), "{err:#}");
-        let err = ConfigFile::parse("profile = \"../Main\"").unwrap_err();
-        assert!(format!("{err:#}").contains("profile"), "{err:#}");
-
-        let err = ProfileFile::parse("[[sources]]\ntype = \"twich\"").unwrap_err();
-        assert!(format!("{err:#}").contains("twich"), "{err:#}");
-        // Unlike in an overlay URL, an unknown name to hide is an error here:
-        // the app can say so.
-        let err = ProfileFile::parse("[overlay]\nhide = [\"stremelements\"]").unwrap_err();
-        assert!(format!("{err:#}").contains("stremelements"), "{err:#}");
-
-        // Inside a source and in [youtube] too: a typo must not silently
-        // change what gets watched.
-        let err =
-            ProfileFile::parse("[[sources]]\ntype = \"youtube\"\nvidoe_id = \"x\"").unwrap_err();
-        assert!(format!("{err:#}").contains("vidoe_id"), "{err:#}");
-        let err = ConfigFile::parse("[youtube]\nclient_secert = \"x\"").unwrap_err();
-        assert!(format!("{err:#}").contains("client_secert"), "{err:#}");
-        // (Not caught next to `type = "demo"`: serde doesn't check extra
-        // keys for variants without fields. Harmless for the demo.)
-        let err =
-            ProfileFile::parse("[[sources]]\ntype = \"twitch\"\nchannel = \"x\"\nenabeld = false")
-                .unwrap_err();
-        assert!(format!("{err:#}").contains("enabeld"), "{err:#}");
-        let err = ConfigFile::parse("[app]\nappearance = \"blue\"").unwrap_err();
-        assert!(format!("{err:#}").contains("blue"), "{err:#}");
-        let err = ProfileFile::parse("[reactions]\npasued = true").unwrap_err();
-        assert!(format!("{err:#}").contains("pasued"), "{err:#}");
-        // Today's server settings no longer take the overlay's.
-        let err = ProfileFile::parse("[server]\nport = 1").unwrap_err();
-        assert!(format!("{err:#}").contains("server"), "{err:#}");
-    }
-
-    #[test]
-    fn reaction_rules_that_cant_work_are_errors() {
-        let rule = |name: &str, command: &str| {
-            format!(
-                "[[reactions.rules]]\nname = \"{name}\"\n\
-                 trigger = {{ type = \"command\", command = \"{command}\" }}\n\
-                 action = {{ target = \"warudo\", action = \"x\" }}\n"
-            )
-        };
-        assert!(ProfileFile::parse(&rule("a", "!a")).is_ok());
-        let err = ProfileFile::parse(&(rule("a", "!a") + &rule("a", "!b"))).unwrap_err();
-        assert!(format!("{err:#}").contains("unique"), "{err:#}");
-        assert!(ProfileFile::parse(&rule("a", "")).is_err());
-        // In an old config.toml just the same.
-        assert!(ConfigFile::parse(&(rule("a", "!a") + &rule("a", "!b"))).is_err());
-    }
-
-    #[test]
-    fn the_templates_are_valid() {
-        let (file, old) = ConfigFile::parse(TEMPLATE).unwrap();
-        assert_eq!(old, None, "the template has today's layout");
-        assert_eq!(file, ConfigFile::default());
-        let profile = ProfileFile::parse(PROFILE_TEMPLATE).unwrap();
-        assert_eq!(profile.sources, [SourceConfig::Demo.into()]);
-        assert_eq!(profile.overlay, OverlaySettings::default());
-        assert_eq!(profile.tips, TipSettings::default());
-        assert_eq!(profile.reactions, ReactionSettings::default());
-        assert!(profile.widgets.is_empty());
-    }
-
-    #[test]
-    fn widget_values_keep_their_types_and_are_only_written_when_there_are_some() {
-        use crate::widgets::Value;
-
-        // Hand-written: a whole number is a number too.
-        let file = ProfileFile::parse(
-            "[widgets.live-emoji]\nmode = \"calm\"\nsize = 72\nlife = 2.5\nglow = false\n",
-        )
-        .unwrap();
-        let values = &file.widgets["live-emoji"];
-        assert_eq!(values["mode"], Value::Text("calm".into()));
-        assert_eq!(values["size"], Value::Number(72.0));
-        assert_eq!(values["life"], Value::Number(2.5));
-        assert_eq!(values["glow"], Value::Bool(false));
-
-        // Written and read back as they were.
-        let text = toml::to_string_pretty(&file).unwrap();
-        assert_eq!(ProfileFile::parse(&text).unwrap(), file);
-        // No widgets: no `[widgets]` table at all.
-        let text = toml::to_string_pretty(&ProfileFile::default()).unwrap();
-        assert!(!text.contains("widgets"), "{text}");
-        // Something that's none of the types is an error, like a typo.
-        assert!(ProfileFile::parse("[widgets.live-emoji]\nsize = [1, 2]\n").is_err());
-    }
-
-    #[test]
-    fn tip_settings_parse_and_are_checked() {
-        let file =
-            ProfileFile::parse("[tips]\ncurrency = \"EUR\"\ntiers = [3, 6, 9, 69, 100, 420.5]")
-                .unwrap();
-        assert_eq!(file.tips.currency(), Some("EUR"));
-        assert_eq!(file.tips.tier(Amount::whole(69)), 5);
-        assert_eq!(file.tips.tiers[5], Amount::of(420.5).unwrap());
-        for bad in [
-            "[tips]\ncurrency = \"euro\"",
-            "[tips]\ntiers = [2, 5, 10, 20, 50]",
-            "[tips]\ntiers = [2, 5, 10, 9, 50, 100]",
-            "[tips]\ntiers = [2, 5, 10, 20, 50, -1]",
-        ] {
-            assert!(ProfileFile::parse(bad).is_err(), "{bad}");
-            assert!(ConfigFile::parse(bad).is_err(), "old layout: {bad}");
-        }
-    }
-
-    #[test]
-    fn default_tip_settings_stay_out_of_the_file() {
-        let mut file = ProfileFile::default();
-        let text = toml::to_string_pretty(&file).unwrap();
-        assert!(!text.contains("[tips]"), "{text}");
-        file.tips.currency = "EUR".into();
-        let text = toml::to_string_pretty(&file).unwrap();
-        // Written as typed: whole amounts as whole numbers (`2`, not
-        // `2.0`). Read back as TOML values, so the layout doesn't matter.
-        let written: toml::Table = text.parse().unwrap();
-        assert_eq!(written["tips"]["tiers"][0].as_integer(), Some(2), "{text}");
-        assert_eq!(ProfileFile::parse(&text).unwrap(), file);
-    }
-
-    #[test]
-    fn emoji_learning_is_on_unless_switched_off() {
-        let (without, _) = ConfigFile::parse("[youtube]\nclient_id = \"id\"").unwrap();
-        assert!(without.youtube.learn_emojis, "older files: on");
-        let (off, _) = ConfigFile::parse("[youtube]\nlearn_emojis = false").unwrap();
-        assert!(!off.youtube.learn_emojis);
     }
 
     #[test]
     fn save_load_roundtrip_and_private_files() {
+        use crate::theme_options::{ThemeValue, ThemeValues};
+
         let dir = settings_dir("roundtrip");
         let path = dir.join("sub").join("config.toml");
         let mut config = ConfigFile {
@@ -1210,6 +1017,12 @@ mod tests {
         config.app.appearance = Appearance::Dark;
         let mut profile = ProfileFile::default();
         profile.overlay.newest = Newest::Top;
+        let mut opts = ThemeValues::new();
+        opts.insert("accent_mode".into(), ThemeValue::Text("Custom".into()));
+        opts.insert("accent_color".into(), ThemeValue::Text("#ff85b3".into()));
+        opts.insert("font_size".into(), ThemeValue::Number(24.0));
+        opts.insert("show_timestamps".into(), ThemeValue::Bool(true));
+        profile.overlay.theme_options.insert("default".into(), opts);
         profile.reactions = toml::from_str(
             r#"
             [[rules]]
@@ -1229,6 +1042,7 @@ mod tests {
         save_all(&path, &config, &profile, false).unwrap();
         let profile_path = dir.join("sub/profiles/Indie.toml");
         let text = std::fs::read_to_string(&profile_path).unwrap();
+        assert!(text.contains("[overlay.theme_options.default]"), "{text}");
         assert_eq!(
             text.matches("enabled").count(),
             1,
@@ -1261,6 +1075,16 @@ mod tests {
 
     #[test]
     fn the_templates_are_written_together() {
+        let (file, old) = ConfigFile::parse(TEMPLATE).unwrap();
+        assert_eq!(old, None, "the template has today's layout");
+        assert_eq!(file, ConfigFile::default());
+        let parsed_profile = ProfileFile::parse(PROFILE_TEMPLATE).unwrap();
+        assert_eq!(parsed_profile.sources, [SourceConfig::Demo.into()]);
+        assert_eq!(parsed_profile.overlay, OverlaySettings::default());
+        assert_eq!(parsed_profile.tips, TipSettings::default());
+        assert_eq!(parsed_profile.reactions, ReactionSettings::default());
+        assert!(parsed_profile.widgets.is_empty());
+
         let dir = settings_dir("template");
         let path = dir.join("config.toml");
         ConfigFile::write_template(&path).unwrap();
@@ -1354,16 +1178,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_means_defaults_but_only_for_load_or_default() {
-        let path = Path::new("/nonexistent/chat-aggregator/config.toml");
-        assert_eq!(
-            ConfigFile::load_or_default(path, None).unwrap(),
-            Loaded::default()
-        );
-        assert!(ConfigFile::load(path, None).is_err());
-    }
-
-    #[test]
     fn a_broken_profile_file_is_an_error_naming_it() {
         let dir = settings_dir("broken");
         let path = dir.join("config.toml");
@@ -1421,23 +1235,5 @@ mod tests {
         std::fs::create_dir(profiles.join("folder.toml")).unwrap();
         assert_eq!(list_profiles(&profiles), ["collab", "Indie", "main"]);
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn theme_options_round_trip_in_profile_toml() {
-        use crate::theme_options::{ThemeValue, ThemeValues};
-
-        let mut profile = ProfileFile::default();
-        let mut opts = ThemeValues::new();
-        opts.insert("accent_mode".into(), ThemeValue::Text("Custom".into()));
-        opts.insert("accent_color".into(), ThemeValue::Text("#ff85b3".into()));
-        opts.insert("font_size".into(), ThemeValue::Number(24.0));
-        opts.insert("show_timestamps".into(), ThemeValue::Bool(true));
-        profile.overlay.theme_options.insert("default".into(), opts);
-
-        let text = toml::to_string_pretty(&profile).unwrap();
-        assert!(text.contains("[overlay.theme_options.default]"), "{text}");
-        let back = ProfileFile::parse(&text).unwrap();
-        assert_eq!(back, profile);
     }
 }

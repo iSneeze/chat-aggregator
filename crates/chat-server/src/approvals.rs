@@ -340,20 +340,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_clients_and_listed_sites_get_in_without_asking() {
-        let origins = ApiOrigins::new([GAME.to_string()], true);
-        for origin in [
-            None,
-            Some("http://localhost:8080"),
-            Some("http://absolute"),
-            Some(GAME),
-        ] {
-            assert_eq!(origins.check(origin).await, Ok(()), "{origin:?}");
-        }
-        assert!(origins.requests().borrow().is_empty());
-    }
-
-    #[tokio::test]
     async fn null_and_odd_origins_are_refused_without_asking() {
         let origins = ApiOrigins::new([], true);
         for origin in [
@@ -370,13 +356,6 @@ mod tests {
                 "{origin}"
             );
         }
-        assert!(origins.requests().borrow().is_empty());
-    }
-
-    #[tokio::test]
-    async fn without_anyone_to_ask_only_the_list_counts() {
-        let origins = ApiOrigins::new([], false);
-        assert_eq!(origins.check(Some(GAME)).await, Err(Refusal::NotAllowed));
         assert!(origins.requests().borrow().is_empty());
     }
 

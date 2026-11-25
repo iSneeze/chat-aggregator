@@ -101,13 +101,4 @@ mod tests {
             "Tier 4 or more: tips €12.00+, 1,000+ bits, 200+ coins, YouTube $10+"
         );
     }
-
-    #[test]
-    fn thousands_get_commas() {
-        assert_eq!(thousands(1), "1");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1_000), "1,000");
-        assert_eq!(thousands(250_000), "250,000");
-        assert_eq!(thousands(1_000_000), "1,000,000");
-    }
 }

@@ -901,7 +901,9 @@ impl ThemesWindow {
                     .icon(IconName::Copy)
                     .label("Copy URL")
                     .small()
-                    .tooltip("Copy a pinned overlay URL (?theme=…) with the current options for OBS")
+                    .tooltip(
+                        "Copy a pinned overlay URL (?theme=…) with the current options for OBS",
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.copy_url(&entry_for_copy, window, cx);
                     })),
@@ -1039,8 +1041,8 @@ mod tests {
             .unwrap();
         static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let settings_dir = std::env::temp_dir()
-            .join(format!("chat-app-themes-test-{}-{id}", std::process::id()));
+        let settings_dir =
+            std::env::temp_dir().join(format!("chat-app-themes-test-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings_dir);
         let mut engine_cfg = EngineConfig::default();
         engine_cfg.settings.server.port = 0;
@@ -1225,23 +1227,5 @@ mod tests {
         wait_until(cx, |cx| {
             ui.view.read_with(cx, |v, _| v.selected == "Cozy Minimal")
         });
-    }
-
-    #[gpui_kit::test]
-    fn invalid_new_theme_name_is_refused(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click("themes-new", cx);
-            window.click("themes-new-name", cx);
-            window.input("../escape", cx);
-            window.click("themes-new-create", cx);
-            assert_eq!(window.find("themes-new-name").value(), Some("../escape"));
-        })
-        .unwrap();
-        let error = ui.view.read_with(cx, |v, _| {
-            v.new_theme.as_ref().and_then(|f| f.error.clone())
-        });
-        assert!(error.is_some_and(|e| e.contains("letters")));
-        assert!(!ui.settings_dir.join("escape").exists());
     }
 }

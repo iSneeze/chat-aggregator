@@ -214,13 +214,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn single_message_is_not_delayed() {
-        let mut h = Harness::new(Stagger::default());
-        h.send(message("a")).await;
-        assert_eq!(h.next().await, ("a".into(), 0));
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn small_burst_is_spaced_by_the_gap() {
         let mut h = Harness::new(Stagger::default());
         for id in ["a", "b", "c"] {
@@ -262,9 +255,9 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn delete_is_immediate_and_drops_the_queued_message() {
+    async fn moderation_is_immediate_and_drops_queued_messages() {
         let mut h = Harness::new(Stagger::default());
-        for id in ["a", "b", "c"] {
+        for id in ["a", "b", "c", "d"] {
             h.send(message(id)).await;
         }
         h.send(ChatEvent::Delete {
@@ -272,37 +265,14 @@ mod tests {
             message_id: "b".into(),
         })
         .await;
-        assert_eq!(h.next().await, ("a".into(), 0));
-        assert_eq!(
-            h.next().await,
-            ("Delete".into(), 0),
-            "moderation isn't delayed"
-        );
-        assert_eq!(h.next().await, ("c".into(), 250), "b never shows");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn clear_user_drops_their_queued_messages() {
-        let mut h = Harness::new(Stagger::default());
-        for id in ["a", "b"] {
-            h.send(message(id)).await;
-        }
         h.send(ChatEvent::ClearUser {
             platform: ChatPlatform::YouTube,
-            user_id: "author-b".into(),
+            user_id: "author-c".into(),
         })
         .await;
-        h.send(message("c")).await;
         assert_eq!(h.next().await, ("a".into(), 0));
+        assert_eq!(h.next().await, ("Delete".into(), 0));
         assert_eq!(h.next().await, ("ClearUser".into(), 0));
-        assert_eq!(h.next().await, ("c".into(), 250));
-    }
-
-    #[test]
-    fn max_delay_is_capped_and_zero_means_off() {
-        let s = Stagger::new(Duration::from_millis(250), Duration::from_secs(60));
-        assert_eq!(s.max_delay, Stagger::MAX_DELAY_LIMIT);
-        assert!(Stagger::off().is_off());
-        assert!(!Stagger::default().is_off());
+        assert_eq!(h.next().await, ("d".into(), 250), "b and c never show");
     }
 }

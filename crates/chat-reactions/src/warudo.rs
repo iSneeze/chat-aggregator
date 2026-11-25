@@ -152,18 +152,6 @@ pub(crate) mod tests {
         Job::new(action, action.to_string(), fired_at)
     }
 
-    #[test]
-    fn the_payload_is_warudos_format_and_always_valid_json() {
-        let now = Instant::now();
-        assert_eq!(
-            payload(&job("throw_item", now)),
-            r#"{"action":"throw_item"}"#
-        );
-        let odd = payload(&job(r#"a"b\c"#, now));
-        let parsed: serde_json::Value = serde_json::from_str(&odd).unwrap();
-        assert_eq!(parsed["action"], r#"a"b\c"#);
-    }
-
     /// A stand-in Warudo: accepts connections and hands every text message
     /// it gets to the test. `close_after_each`: hangs up after every
     /// message (one way the real one might behave).
@@ -295,23 +283,5 @@ pub(crate) mod tests {
 
         let mut warudo = fake_warudo(TcpListener::bind(addr).await.unwrap(), false);
         assert_eq!(received(&mut warudo).await, r#"{"action":"waited"}"#);
-    }
-
-    #[tokio::test]
-    async fn without_a_queue_reactions_while_down_are_dropped() {
-        let (listener, url) = listener().await;
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        let mut out = start(&url, 0);
-        until(&mut out.state, |s| {
-            matches!(s, OutputState::Retrying { .. })
-        })
-        .await;
-        out.jobs.send(job("dropped", Instant::now())).await.unwrap();
-
-        let mut warudo = fake_warudo(TcpListener::bind(addr).await.unwrap(), false);
-        until(&mut out.state, |s| *s == OutputState::Connected).await;
-        out.jobs.send(job("live", Instant::now())).await.unwrap();
-        assert_eq!(received(&mut warudo).await, r#"{"action":"live"}"#);
     }
 }

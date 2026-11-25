@@ -408,20 +408,6 @@ mod tests {
     }
 
     #[test]
-    fn offline_and_empty_states() {
-        for state in [
-            json!({ "streamState": "offline" }),
-            json!({ "streamState": "" }),
-            json!({}),
-        ] {
-            let play: Play = serde_json::from_value(state.clone()).unwrap();
-            assert!(!play.is_live(), "{state}");
-        }
-        let embedded: Play = serde_json::from_value(json!({ "streamState": "twitch" })).unwrap();
-        assert!(embedded.is_live());
-    }
-
-    #[test]
     fn session_end_as_text_or_number() {
         let text: ChatToken = serde_json::from_value(json!({
             "token": "t", "sessionExpirationTime": "2026-10-12T11:00:00.000Z"

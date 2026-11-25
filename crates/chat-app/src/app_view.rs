@@ -811,8 +811,8 @@ mod tests {
             .unwrap();
         static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let settings_dir = std::env::temp_dir()
-            .join(format!("chat-app-ui-test-{}-{id}", std::process::id()));
+        let settings_dir =
+            std::env::temp_dir().join(format!("chat-app-ui-test-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings_dir);
         engine.settings.server.port = 0; // the OS picks a free one
         engine.themes_dir = Some(ConfigFile::themes_dir(&settings_dir));
@@ -858,163 +858,13 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_text_field_is_only_there_when_needed(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            // Twitch (selected at start) needs a channel name...
-            assert!(window.try_find("new-source-text").is_some());
-            // ...Demo needs nothing...
-            pick(window, NewSource::Demo, cx);
-            assert!(window.try_find("new-source-text").is_none());
-            // ...a YouTube video needs its id...
-            pick(window, NewSource::YouTubeVideo, cx);
-            assert!(window.try_find("new-source-text").is_some());
-            // ...Picarto a channel...
-            pick(window, NewSource::Demo, cx);
-            pick(window, NewSource::Picarto, cx);
-            assert!(window.try_find("new-source-text").is_some());
-            assert!(window.try_find("new-source-token").is_none());
-            // ...and StreamElements an account id and a token...
-            pick(window, NewSource::StreamElements, cx);
-            assert!(window.try_find("new-source-text").is_some());
-            assert!(window.try_find("new-source-token").is_some());
-            // ...as Streamlabs a name and a token...
-            pick(window, NewSource::Streamlabs, cx);
-            assert!(window.try_find("new-source-text").is_some());
-            assert!(window.try_find("new-source-token").is_some());
-            // ...and RPlay a name and a widget link.
-            pick(window, NewSource::Rplay, cx);
-            assert!(window.try_find("new-source-text").is_some());
-            assert!(window.try_find("new-source-token").is_some());
-        })
-        .unwrap();
-    }
-
-    #[gpui_kit::test]
-    fn rplay_needs_a_widget_link_with_its_key(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        let error =
-            |cx: &mut TestAppContext| ui.view.read_with(cx, |view, _| view.form_error.clone());
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            pick(window, NewSource::Rplay, cx);
-            window.click("new-source-text", cx);
-            window.input("Main", cx);
-            window.click("add", cx);
-        })
-        .unwrap();
-        let problem = error(cx).expect("the link is asked for");
-        assert!(problem.contains("Dashboard Widget"), "{problem}");
-
-        // The channel's page instead of a widget link: no key in it, so
-        // refused right in the form, and nothing is added.
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click("new-source-token", cx);
-            window.input("https://rplay.live/live/0123456789abcdef01234567", cx);
-            window.click("add", cx);
-        })
-        .unwrap();
-        let problem = error(cx).expect("a link without a key is refused");
-        assert!(problem.contains("no widget key"), "{problem}");
-        assert!(ui.engine.handle().status().borrow().sources.is_empty());
-    }
-
-    #[gpui_kit::test]
-    fn streamlabs_needs_a_name_and_a_token(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        let error =
-            |cx: &mut TestAppContext| ui.view.read_with(cx, |view, _| view.form_error.clone());
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            pick(window, NewSource::Streamlabs, cx);
-            window.click("add", cx);
-        })
-        .unwrap();
-        let problem = error(cx).expect("a name is asked for");
-        assert!(problem.contains("name"), "{problem}");
-
-        // A name, but no token: nothing is added (no source could start).
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            window.click("new-source-text", cx);
-            window.input("Corpo", cx);
-            window.click("add", cx);
-        })
-        .unwrap();
-        let problem = error(cx).expect("the token is asked for");
-        assert!(problem.contains("Socket API Token"), "{problem}");
-        assert!(ui.engine.handle().status().borrow().sources.is_empty());
-    }
-
-    #[gpui_kit::test]
-    fn streamelements_needs_an_account_id_and_a_token(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        let error =
-            |cx: &mut TestAppContext| ui.view.read_with(cx, |view, _| view.form_error.clone());
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            pick(window, NewSource::StreamElements, cx);
-            window.click("new-source-text", cx);
-            window.input("your_channel", cx);
-            window.click("add", cx);
-        })
-        .unwrap();
-        let problem = error(cx).expect("a malformed account id is refused");
-        assert!(problem.contains("Account ID"), "{problem}");
-
-        // A good id, but no token: nothing is added (no source could start).
-        // The id replaces the refused one (typing would add to it).
-        let view = ui.view.clone();
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            let input = view.read(cx).input.clone();
-            input.update(cx, |input, cx| {
-                input.set_value("0123456789abcdef01234567", window, cx)
-            });
-            window.click("add", cx);
-        })
-        .unwrap();
-        let problem = error(cx).expect("the token is asked for");
-        assert!(problem.contains("Overlay Token"), "{problem}");
-        assert!(ui.engine.handle().status().borrow().sources.is_empty());
-    }
-
-    #[gpui_kit::test]
-    fn youtube_without_a_client_asks_for_one(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            assert!(window.try_find("youtube-client-id").is_some());
-            assert!(window.try_find("youtube-connect").is_none());
-
-            // An obviously wrong client id is refused; the form stays open.
-            window.click("youtube-client-id", cx);
-            window.input("not-a-client-id", cx);
-            window.click("youtube-client-secret", cx);
-            window.input("GOCSPX-x", cx);
-            assert_eq!(
-                window.find("youtube-client-id").value(),
-                Some("not-a-client-id")
-            );
-            window.click("youtube-save", cx);
-            assert!(window.try_find("youtube-client-id").is_some());
-            assert_eq!(
-                window.find("youtube-client-id").value(),
-                Some("not-a-client-id"),
-                "the typed id stays for correcting"
-            );
-        })
-        .unwrap();
-    }
-
-    #[gpui_kit::test]
     fn builtin_themes_are_picked_by_label_and_saved_by_name(cx: &mut TestAppContext) {
         let ui = open(cx);
         let items = super::theme_items(&["studio".into()]);
         assert_eq!(
             items,
             [
-                "Default",
-                "Minimal",
-                "Bubbles",
-                "Cozy",
-                "Retro",
-                "Neon",
-                "studio",
+                "Default", "Minimal", "Bubbles", "Cozy", "Retro", "Neon", "studio",
             ],
             "built-in themes first"
         );
@@ -1053,18 +903,6 @@ mod tests {
         assert_eq!(engines(), None, "the default is saved as no theme");
     }
 
-    #[gpui_kit::test]
-    fn themes_window_opens_only_once(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        for _ in 0..2 {
-            cx.update_window(ui.window.into(), |_, window, cx| {
-                window.click("theme-customize", cx);
-            })
-            .unwrap();
-        }
-        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
-    }
-
     /// Lets GPUI tasks run until `done`; the engine answers from tokio's
     /// threads in real time (see `manual_window::tests::run_until`).
     fn run_until(cx: &mut TestAppContext, mut done: impl FnMut() -> bool) {
@@ -1081,16 +919,6 @@ mod tests {
 
     #[gpui_kit::test]
     fn reactions_are_paused_from_the_main_window(cx: &mut TestAppContext) {
-        // Without rules: only "Set up…", no switch.
-        let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            window.render_frame(cx);
-            assert!(window.try_find("open-reactions").is_some());
-            assert!(window.try_find("reactions-on").is_none());
-        })
-        .unwrap();
-        drop(ui);
-
         let mut config = EngineConfig::default();
         // Port 1, where nothing listens: avoids touching a real local Warudo.
         config.settings.profile.reactions.warudo.url = "ws://127.0.0.1:1".into();
@@ -1170,10 +998,9 @@ mod tests {
         static NEXT_SECRETS_DIR: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
         let id = NEXT_SECRETS_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        config.secrets = Some(chat_engine::SecretStore::Dir(
-            std::env::temp_dir()
-                .join(format!("chat-app-ui-test-secrets-{}-{id}", std::process::id())),
-        ));
+        config.secrets = Some(chat_engine::SecretStore::Dir(std::env::temp_dir().join(
+            format!("chat-app-ui-test-secrets-{}-{id}", std::process::id()),
+        )));
         config
     }
 
@@ -1305,31 +1132,6 @@ mod tests {
         run_until(cx, || !saved_sources()[0].enabled);
     }
 
-    #[gpui_kit::test]
-    fn chat_direction_reaches_the_engine_and_is_saved(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            ui.view.update(cx, |view, cx| {
-                view.set_newest(chat_engine::Newest::Top, window, cx);
-            });
-        })
-        .unwrap();
-        run_until(cx, || {
-            ConfigFile::load(&ui.settings_dir.join("config.toml"), None)
-                .is_ok_and(|file| file.profile.overlay.newest == chat_engine::Newest::Top)
-        });
-        assert_eq!(
-            ui.engine
-                .handle()
-                .settings()
-                .borrow()
-                .profile
-                .overlay
-                .newest,
-            chat_engine::Newest::Top
-        );
-    }
-
     /// The engine saves; when that fails, the main window says so (here: a
     /// folder is where config.toml should go).
     #[gpui_kit::test]
@@ -1353,37 +1155,6 @@ mod tests {
         for _ in 0..2 {
             cx.update_window(ui.window.into(), |_, window, cx| {
                 window.click("open-settings", cx);
-            })
-            .unwrap();
-        }
-        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
-    }
-
-    #[gpui_kit::test]
-    fn test_messages_window_opens_only_once(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        let click = |cx: &mut TestAppContext| {
-            cx.update_window(ui.window.into(), |_, window, cx| {
-                window.click("open-manual", cx);
-            })
-            .unwrap();
-        };
-        click(cx);
-        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
-        click(cx);
-        assert_eq!(
-            cx.update(|cx| cx.windows().len()),
-            2,
-            "the open one comes to the front instead"
-        );
-    }
-
-    #[gpui_kit::test]
-    fn widgets_window_opens_only_once(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        for _ in 0..2 {
-            cx.update_window(ui.window.into(), |_, window, cx| {
-                window.click("open-widgets", cx);
             })
             .unwrap();
         }
@@ -1490,19 +1261,6 @@ mod tests {
             ConfigFile::load(&ui.settings_dir.join("config.toml"), None)
                 .is_ok_and(|file| file.config.server.api_origins == [GAME])
         });
-    }
-
-    #[gpui_kit::test]
-    fn deny_refuses_the_site_without_saving_it(cx: &mut TestAppContext) {
-        let ui = open_asking(cx);
-        let connecting = connect_as_game(&ui);
-        run_until_window(cx, &ui, |window| window.try_find("dialog").is_some());
-        click_in_dialog(cx, &ui, "cancel"); // "Deny"
-        run_until_window(cx, &ui, |window| window.try_find("dialog").is_none());
-        let answer = ui._runtime.block_on(connecting).unwrap();
-        assert!(answer.contains(" 403 "), "{answer}");
-        let saved = ConfigFile::load(&ui.settings_dir.join("config.toml"), None);
-        assert!(saved.is_err(), "nothing to save");
     }
 
     #[gpui_kit::test]

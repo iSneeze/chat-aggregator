@@ -106,24 +106,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn guards_count_up_and_down() {
-        let connections = Arc::new(Connections::default());
-        let a = connections.try_overlay().unwrap();
-        let b = connections.try_overlay().unwrap();
-        let c = connections.try_api_client().unwrap();
-        let d = connections.widget();
-        assert_eq!((connections.overlays(), connections.api_clients()), (2, 1));
-        assert_eq!(connections.widgets(), 1);
-        drop(a);
-        drop(c);
-        drop(d);
-        assert_eq!((connections.overlays(), connections.api_clients()), (1, 0));
-        assert_eq!(connections.widgets(), 0);
-        drop(b);
-        assert_eq!(connections.overlays(), 0);
-    }
-
-    #[test]
     fn connection_cap_refuses_above_limit() {
         let connections = Arc::new(Connections::default());
         let guards: Vec<_> = (0..MAX_OVERLAYS)

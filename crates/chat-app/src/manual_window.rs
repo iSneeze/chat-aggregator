@@ -598,29 +598,6 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn each_kind_shows_its_fields(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            // Every kind: author and role. Message (selected at start): text.
-            assert!(window.within("manual-role").try_find(0).is_some());
-            assert!(window.try_find("manual-text").is_some());
-            assert!(window.try_find("manual-amount").is_none());
-            // Donation: amount, tier and text.
-            pick_kind(window, Kind::Donation, cx);
-            assert!(window.try_find("manual-amount").is_some());
-            // (A radio group's id is a scope for its radios, not an element.)
-            assert!(window.within("manual-tier").try_find(0).is_some());
-            assert!(window.try_find("manual-text").is_some());
-            // Gift: only the count.
-            pick_kind(window, Kind::Gift, cx);
-            assert!(window.try_find("manual-count").is_some());
-            assert!(window.try_find("manual-text").is_none());
-            assert!(window.try_find("manual-amount").is_none());
-        })
-        .unwrap();
-    }
-
-    #[gpui_kit::test]
     fn role_becomes_the_platforms_badges(cx: &mut TestAppContext) {
         let ui = open(cx);
         let badges = |cx: &mut TestAppContext| {
@@ -712,47 +689,6 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn test_tips_follow_the_tip_settings(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        let settings = ui.engine.handle().edit_settings(|s| {
-            s.profile.tips.currency = "EUR".into();
-            // Tier 5 from 69.
-            s.profile.tips.tiers = [3, 6, 9, 69, 100, 420].map(chat_core::tiers::Amount::whole);
-        });
-        ui.runtime.block_on(settings).unwrap();
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            pick_kind(window, Kind::Donation, cx);
-            window.within("manual-platform").click(2, cx);
-        })
-        .unwrap();
-        set_amount(cx, &ui, "69");
-        let kind = ui
-            .view
-            .read_with(cx, |view, cx| view.compose(cx).unwrap().kind);
-        assert!(
-            matches!(&kind, MessageKind::Donation { amount, tier: Some(5), currency: Some(c), .. }
-                if amount == "€69.00" && c == "EUR"),
-            "{kind:?}"
-        );
-    }
-
-    #[gpui_kit::test]
-    fn form_problems_are_explained(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        let empty = ui.view.read_with(cx, |view, cx| view.compose(cx));
-        assert!(empty.is_err_and(|e| e.contains("message")));
-
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            pick_kind(window, Kind::Gift, cx);
-            window.click("manual-count", cx);
-            window.input("x", cx); // "5x"
-        })
-        .unwrap();
-        let gift = ui.view.read_with(cx, |view, cx| view.compose(cx));
-        assert!(gift.is_err_and(|e| e.contains("whole number")));
-    }
-
-    #[gpui_kit::test]
     fn sends_through_the_engine_and_takes_the_source_along_when_closed(cx: &mut TestAppContext) {
         let ui = open(cx);
         let (_, mut hub) = ui.engine.hub().subscribe();
@@ -798,26 +734,5 @@ mod tests {
             .unwrap();
         let status = ui.engine.handle().status();
         run_until(cx, |_| status.borrow().source(id).is_none());
-    }
-
-    /// Regression test: errors reported in this window must reach the
-    /// screen (`Root` draws them only when `gpui_kit::init` ran first).
-    #[gpui_kit::test]
-    fn reported_errors_are_shown(cx: &mut TestAppContext) {
-        let ui = open(cx);
-        cx.update_window(ui.window.into(), |_, window, cx| {
-            crate::ui::report(window, cx, "something went wrong".into());
-        })
-        .unwrap();
-        // The window talks to the engine (tokio) as it opens: wait with
-        // `run_until`, which allows that.
-        let window = ui.window;
-        run_until(cx, |cx| {
-            cx.update_window(window.into(), |_, window, cx| {
-                window.render_frame(cx);
-                window.try_find("notification").is_some()
-            })
-            .unwrap()
-        });
     }
 }

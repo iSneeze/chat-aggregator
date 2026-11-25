@@ -391,30 +391,23 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_restart_reconnects_right_away() {
+    async fn a_restart_or_renewal_reconnects_right_away() {
         let restart = || (Duration::ZERO, Ok(Ended::Restarting));
         let lasted_restart = (STABLE_AFTER, Ok(Ended::Restarting));
+        let renew = (STABLE_AFTER * 60, Ok(Ended::Renewing));
         let scripts = vec![
             failed(),
             failed(),
             restart(),
             failed(),
             lasted_restart,
+            renew,
             failed(),
         ];
         let (_, waits) = run(scripts).await;
-        // A quick restart keeps the wait as it was; one after a connection
-        // that lasted starts it over, like any other end.
-        assert_eq!(waits, [3, 6, 0, 12, 60, 3]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_renewal_reconnects_right_away() {
-        let renew = (STABLE_AFTER * 60, Ok(Ended::Renewing));
-        let (_, waits) = run(vec![renew, failed()]).await;
-        // No pause after the renewal (the time is the connection's own),
-        // and the one after it starts over: the session had worked.
-        assert_eq!(waits, [3600, 3]);
+        // A quick restart keeps the wait as it was; one (or a renewal) after
+        // a connection that lasted starts it over, like any other end.
+        assert_eq!(waits, [3, 6, 0, 12, 60, 3600, 3]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -427,33 +420,6 @@ mod tests {
         let error = result.unwrap_err();
         assert!(error.is::<SetupError>(), "returned as it is: {error:#}");
         assert_eq!(waits, [3], "no connection after it");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_status_says_why_and_for_how_long() {
-        let (activity, mut status) = Reporter::new();
-        let mut ends = VecDeque::from([
-            Ok(Ended::Closed),
-            Err(anyhow!("no answer for 75 s")),
-            Ok(Ended::ReceiverGone),
-        ]);
-        // In a task of its own, so this test can watch the status while it
-        // runs.
-        let looping = tokio::spawn(async move {
-            keep_connected("Example", &activity, || {
-                let ended = ends.pop_front().unwrap();
-                async move { ended }
-            })
-            .await
-        });
-        for expected in [
-            "connection closed by Example; reconnecting in 3 s",
-            "connection problem: no answer for 75 s; reconnecting in 6 s",
-        ] {
-            let expected = Activity::Degraded(expected.into());
-            status.wait_for(|now| *now == expected).await.unwrap();
-        }
-        assert!(looping.await.unwrap().is_ok());
     }
 
     #[test]

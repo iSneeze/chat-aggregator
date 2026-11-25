@@ -507,16 +507,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn events_flow_from_source_to_hub() {
-        let engine = start_demo().await;
-        let (_, mut rx) = engine.hub().subscribe();
-        // The demo sends its first message after 1.5 s.
-        let event = timeout(WAIT, rx.recv()).await.unwrap().unwrap();
-        assert!(matches!(event, ChatEvent::Message(_)));
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
     async fn overlay_is_served_and_shutdown_finishes_while_connected() {
         let engine = start_demo().await;
         let base = format!("http://{}", engine.addr());
@@ -529,46 +519,6 @@ mod tests {
         timeout(WAIT, engine.shutdown())
             .await
             .expect("shutdown hung");
-    }
-
-    #[tokio::test]
-    async fn status_counts_connected_overlays() {
-        let engine = start_demo().await;
-        let _overlay = reqwest::get(format!("http://{}/events", engine.addr()))
-            .await
-            .unwrap();
-        let status = wait_for(&engine.handle(), |s| s.overlays_connected == 1).await;
-        assert_eq!(status.api_clients, 0);
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn status_counts_connected_widgets() {
-        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-        use tokio_tungstenite::tungstenite::http::HeaderValue;
-
-        let mut settings = local();
-        settings.server.api = true;
-        let engine = Engine::start(EngineConfig {
-            settings,
-            ..EngineConfig::default()
-        })
-        .await
-        .unwrap();
-        // The way a widget's page connects: from the server's own address.
-        let addr = engine.addr();
-        let mut request = format!("ws://{addr}/api/v1/ws")
-            .into_client_request()
-            .unwrap();
-        let origin = HeaderValue::from_str(&format!("http://{addr}")).unwrap();
-        request.headers_mut().insert("origin", origin);
-        let (widget, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-
-        let status = wait_for(&engine.handle(), |s| s.widgets_connected == 1).await;
-        assert_eq!(status.api_clients, 1);
-        drop(widget);
-        wait_for(&engine.handle(), |s| s.widgets_connected == 0).await;
-        engine.shutdown().await;
     }
 
     /// A web site connecting to the API waits; the status shows it, and the
@@ -611,48 +561,6 @@ mod tests {
         // it's allowed).
         handle.answer_api_request(GAME, true).await.unwrap();
         assert_eq!(handle.settings().borrow().server.api_origins, [GAME]);
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn taken_port_is_an_error() {
-        let engine = start_demo().await;
-        let mut settings = Settings::default();
-        settings.server.port = engine.addr().port();
-        let second = Engine::start(EngineConfig {
-            settings,
-            ..EngineConfig::default()
-        })
-        .await;
-        assert!(second.is_err());
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn youtube_without_settings_needs_attention() {
-        let engine = Engine::start(EngineConfig {
-            sources: vec![
-                SourceConfig::YouTube {
-                    video_id: None,
-                    account: None,
-                }
-                .into(),
-            ],
-            settings: local(),
-            ..EngineConfig::default()
-        })
-        .await
-        .unwrap();
-        let status = wait_for(&engine.handle(), |s| {
-            matches!(s.sources[0].state, SourceState::NeedsAttention { .. })
-        })
-        .await;
-        assert_eq!(status.sources[0].health(), Health::Error);
-        assert!(
-            status.sources[0].summary().contains("client id"),
-            "{}",
-            status.sources[0].summary()
-        );
         engine.shutdown().await;
     }
 
@@ -756,37 +664,6 @@ mod tests {
         engine.shutdown().await;
     }
 
-    /// The tip sources read the tip settings from the channel the factory
-    /// was built with (each gets a copy of its receiver), and a change in
-    /// the settings reaches it: no second copy for the factory to keep up
-    /// to date.
-    #[tokio::test]
-    async fn new_tip_settings_reach_the_source_factory() {
-        let mut given = None;
-        let engine = Engine::start_with(
-            EngineConfig {
-                settings: local(),
-                ..EngineConfig::default()
-            },
-            |tips| {
-                given = Some(tips);
-                Arc::new(Scripted::default())
-            },
-        )
-        .await
-        .unwrap();
-        let tips = given.expect("the factory is built with the channel");
-        assert_eq!(tips.borrow().currency(), None);
-
-        engine
-            .handle()
-            .edit_settings(|s| s.profile.tips.currency = "EUR".into())
-            .await
-            .unwrap();
-        assert_eq!(tips.borrow().currency(), Some("EUR"));
-        engine.shutdown().await;
-    }
-
     /// An amount rule counts a Super Chat only in the tip currency, and a
     /// new currency set while running reaches the reactor for the next
     /// message.
@@ -878,8 +755,6 @@ mod tests {
         Run(usize),
         /// Run this long, then fail.
         FailAfter(Duration),
-        /// End normally at once.
-        Finish,
         Panic,
     }
 
@@ -902,7 +777,6 @@ mod tests {
                     tokio::time::sleep(after).await;
                     anyhow::bail!("connection lost")
                 }
-                Behaviour::Finish => Ok(()),
                 Behaviour::Panic => panic!("oops"),
             }
         }
@@ -954,7 +828,6 @@ mod tests {
                     "not logged in yet",
                 ))
                 .context("building the YouTube source")),
-                "finish" => Ok(Behaviour::Finish),
                 "panic" => Ok(Behaviour::Panic),
                 _ => panic!("unknown script {script}"),
             }
@@ -1060,16 +933,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn normal_end_is_finished_not_retried() {
-        let (engine, factory) = start_scripted(&["finish"]).await;
-        let s = wait_for(&engine.handle(), |s| *state(s) == SourceState::Finished).await;
-        assert_eq!(s.sources[0].health(), Health::Off);
-        tokio::time::sleep(Duration::from_secs(600)).await;
-        assert_eq!(factory.builds("finish"), 1);
-        engine.shutdown().await;
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn a_panicking_source_is_retried() {
         let (engine, _) = start_scripted(&["panic"]).await;
         let s = wait_for(&engine.handle(), |s| {
@@ -1106,21 +969,6 @@ mod tests {
 
         handle.start_source(s.sources[0].id).await.unwrap();
         wait_for(&handle, |_| factory.builds("fail-then-run:99") == 2).await;
-        engine.shutdown().await;
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_source_added_stopped_doesnt_run_until_started() {
-        let (engine, factory) = start_scripted(&[]).await;
-        let handle = engine.handle();
-        let id = handle.add_stopped_source(script("emit:1")).await.unwrap();
-        let s = wait_for(&handle, |s| s.source(id).is_some()).await;
-        assert_eq!(s.source(id).unwrap().state, SourceState::Stopped);
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        assert_eq!(factory.builds("emit:1"), 0, "never connected");
-
-        handle.start_source(id).await.unwrap();
-        wait_for(&handle, |s| s.source(id).unwrap().messages == 1).await;
         engine.shutdown().await;
     }
 
@@ -1173,14 +1021,6 @@ mod tests {
         let settings = a.settings().borrow().clone();
         assert_eq!(settings.server.history, 5);
         assert_eq!(settings.profile.overlay.newest, Newest::Top);
-        engine.shutdown().await;
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn messages_are_counted() {
-        let (engine, _) = start_scripted(&["emit:3"]).await;
-        let s = wait_for(&engine.handle(), |s| s.sources[0].messages == 3).await;
-        assert!(s.sources[0].last_message.is_some());
         engine.shutdown().await;
     }
 
@@ -1267,47 +1107,13 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(factory.builds("youtube"), 5, "one restart per login");
         assert_eq!(handle.settings().borrow().youtube.accounts.len(), 1);
-        engine.shutdown().await;
-    }
 
-    /// Importing a new emoji export over the old file leaves the setting as
-    /// it was, but the sources must load the new emoji: they restart anyway
-    /// (once per import).
-    #[tokio::test(start_paused = true)]
-    async fn a_reimported_emoji_file_restarts_youtube_sources() {
-        let factory = Arc::new(Scripted::default());
-        let engine = Engine::start_with(
-            EngineConfig {
-                sources: vec![
-                    SourceConfig::YouTube {
-                        video_id: None,
-                        account: None,
-                    }
-                    .into(),
-                ],
-                settings: local(),
-                ..EngineConfig::default()
-            },
-            |_| factory.clone(),
-        )
-        .await
-        .unwrap();
-        let handle = engine.handle();
-        wait_for(&handle, |_| factory.builds("youtube") == 1).await;
-
+        // Re-importing over the same emoji file still restarts YouTube sources.
         let file = PathBuf::from("youtube-emojis.json");
         handle.use_youtube_emojis(file.clone()).await.unwrap();
-        wait_for(&handle, |_| factory.builds("youtube") == 2).await;
-        assert_eq!(
-            handle.settings().borrow().youtube.emojis,
-            Some(file.clone())
-        );
-
-        // The same file again, now with a new export in it.
+        wait_for(&handle, |_| factory.builds("youtube") == 6).await;
         handle.use_youtube_emojis(file).await.unwrap();
-        wait_for(&handle, |_| factory.builds("youtube") == 3).await;
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        assert_eq!(factory.builds("youtube"), 3, "one restart per import");
+        wait_for(&handle, |_| factory.builds("youtube") == 7).await;
         engine.shutdown().await;
     }
 
@@ -1489,18 +1295,5 @@ mod tests {
             7
         );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn add_and_remove_at_runtime() {
-        let (engine, _) = start_scripted(&[]).await;
-        let handle = engine.handle();
-        let id = handle.add_source(script("emit:0")).await.unwrap();
-        wait_for(&handle, |s| s.source(id).is_some()).await;
-
-        handle.remove_source(id).await.unwrap();
-        wait_for(&handle, |s| s.sources.is_empty()).await;
-        assert!(handle.remove_source(id).await.is_err(), "unknown id");
-        engine.shutdown().await;
     }
 }

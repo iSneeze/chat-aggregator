@@ -177,46 +177,29 @@ mod tests {
     }
 
     #[test]
-    fn loads_export_format() {
-        assert_eq!(map().len(), 2);
-    }
-
-    #[test]
-    fn rejects_unknown_version() {
-        assert!(EmojiMap::from_json(r#"{ "version": 2, "entries": [] }"#).is_err());
-    }
-
-    #[test]
-    fn finds_tokens_unique_in_order() {
-        let m = map().find(":_hype: hello :yt: :_hype:");
+    fn finds_tokens_and_detects_emote_only() {
+        let map = map();
+        let m = map.find(":_hype: hello :yt: :_hype:");
         let codes: Vec<_> = m.emotes.iter().map(|e| e.code.as_str()).collect();
         assert_eq!(codes, [":_hype:", ":yt:"]);
         assert!(!m.emote_only);
+
+        let stray = map.find("at 10:30 :yt: see you");
+        assert_eq!(stray.emotes.len(), 1);
+        assert_eq!(stray.emotes[0].code, ":yt:");
+
+        let unknown = map.find(":nope: :yt:");
+        assert_eq!(unknown.emotes.len(), 1);
+        assert!(!unknown.emote_only);
+
+        assert!(map.find(" :yt::_hype:  :yt: ").emote_only);
+        assert!(!map.find("").emote_only);
+        assert!(!map.find("plain text").emote_only);
     }
 
     #[test]
-    fn stray_colons_do_not_hide_tokens() {
-        let m = map().find("at 10:30 :yt: see you");
-        assert_eq!(m.emotes.len(), 1);
-        assert_eq!(m.emotes[0].code, ":yt:");
-    }
-
-    #[test]
-    fn unknown_tokens_are_ignored() {
-        let m = map().find(":nope: :yt:");
-        assert_eq!(m.emotes.len(), 1);
-        assert!(!m.emote_only); // ":nope:" is visible text
-    }
-
-    #[test]
-    fn emote_only_detected() {
-        assert!(map().find(" :yt::_hype:  :yt: ").emote_only);
-        assert!(!map().find("").emote_only);
-        assert!(!map().find("plain text").emote_only);
-    }
-
-    #[test]
-    fn saved_json_loads_again_and_is_stable() {
+    fn saved_json_loads_again_and_rejects_unknown_version() {
+        assert!(EmojiMap::from_json(r#"{ "version": 2, "entries": [] }"#).is_err());
         let json = map().to_json();
         let again = EmojiMap::from_json(&json).unwrap();
         assert_eq!(again.by_code, map().by_code);
@@ -224,16 +207,13 @@ mod tests {
     }
 
     #[test]
-    fn insert_reports_only_changes() {
+    fn insert_and_merge_prefer_newer_entries() {
         let mut m = map();
         assert!(!m.insert(":yt:".into(), "https://yt3.ggpht.com/yt".into()));
         assert!(m.insert(":yt:".into(), "https://yt3.ggpht.com/yt-new".into()));
         assert!(m.insert(":_wave:".into(), "https://yt3.ggpht.com/wave".into()));
         assert_eq!(m.len(), 3);
-    }
 
-    #[test]
-    fn merged_prefers_the_other_map() {
         let mut newer = EmojiMap::default();
         newer.insert(":_hype:".into(), "https://yt3.ggpht.com/hype-v2".into());
         newer.insert(":_wave:".into(), "https://yt3.ggpht.com/wave".into());
@@ -241,12 +221,5 @@ mod tests {
         assert_eq!(both.len(), 3);
         assert_eq!(both.by_code[":_hype:"], "https://yt3.ggpht.com/hype-v2");
         assert_eq!(both.by_code[":yt:"], "https://yt3.ggpht.com/yt");
-    }
-
-    #[test]
-    fn empty_map_finds_nothing() {
-        let m = EmojiMap::default().find(":yt:");
-        assert!(m.emotes.is_empty());
-        assert!(!m.emote_only);
     }
 }

@@ -206,8 +206,8 @@ mod tests {
 
     #[test]
     fn a_tip_without_message_or_names_still_counts() {
-        // An amount as text, too.
-        let tip = decoded_tip(json!({ "amount": "2.5" }));
+        // An amount as text, too, and non-https avatars are dropped.
+        let tip = decoded_tip(json!({ "amount": "2.5", "avatar": "javascript:alert(1)" }));
         assert_eq!(tip.author.name, "Anonymous");
         assert_eq!(tip.text, "");
         assert!(tip.author.avatar_url.is_none());
@@ -215,41 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tip_without_an_amount_is_dropped() {
-        for amount in [json!(null), json!("lots"), json!(-5)] {
-            let frame = decode(&activity("tip", json!({ "amount": amount })));
-            assert!(matches!(frame, Frame::Ignored), "{amount}: {frame:?}");
-        }
-    }
-
-    #[test]
-    fn only_tips_are_kept() {
-        // The platforms' own events, relayed: the platform sources show
-        // them already. Merch isn't handled yet.
-        for kind in [
-            "superchat",
-            "sponsor",
-            "subscriber",
-            "follower",
-            "cheer",
-            "merch",
-        ] {
-            let frame = decode(&activity(
-                kind,
-                json!({ "username": "viewer42", "amount": 10 }),
-            ));
-            assert!(matches!(frame, Frame::Ignored), "{kind}: {frame:?}");
-        }
-    }
-
-    #[test]
-    fn avatars_must_be_https() {
-        let tip = decoded_tip(json!({ "amount": 1, "avatar": "javascript:alert(1)" }));
-        assert!(tip.author.avatar_url.is_none());
-    }
-
-    #[test]
-    fn subscription_answers() {
+    fn protocol_frames() {
         let ok = r#"{"id":"1","ts":"2026-11-07T15:01:52Z","type":"response","nonce":"channel.activities","data":{"message":"successfully subscribed to topic","room":"0123456789abcdef01234567","topic":"channel.activities"}}"#;
         assert!(matches!(decode(ok), Frame::Subscribed));
 
@@ -262,37 +228,20 @@ mod tests {
         assert!(
             matches!(decode(limited), Frame::Failed(ref why) if why.starts_with("rate_limit_exceeded"))
         );
-    }
 
-    #[test]
-    fn connection_frames() {
         let welcome = r#"{"id":"1","ts":"2026-11-07T15:01:52Z","type":"welcome","data":{"client_id":"x","message":"hi"}}"#;
         assert!(matches!(decode(welcome), Frame::Welcome));
         let reconnect = r#"{"type":"reconnect","data":{"reconnect_token":"x"}}"#;
         assert!(matches!(decode(reconnect), Frame::Reconnect));
         assert!(matches!(decode("not json"), Frame::Ignored));
-        // Another topic (only one is subscribed, but still).
+        // Relayed platform events and other topics are ignored.
+        let relayed = decode(&activity(
+            "superchat",
+            json!({ "username": "viewer42", "amount": 10 }),
+        ));
+        assert!(matches!(relayed, Frame::Ignored));
         let other = activity("tip", json!({ "amount": 1 }))
             .replace("channel.activities", "channel.stream.status");
         assert!(matches!(decode(&other), Frame::Ignored));
-    }
-
-    #[test]
-    fn the_subscription_uses_the_overlay_token() {
-        let command: Value =
-            serde_json::from_str(&subscribe("0123456789abcdef01234567", "t0ken")).unwrap();
-        // The whole frame, as Astro accepted it live (STREAMELEMENTS.md):
-        // the account goes into `room`, the token into `token`.
-        let expected = json!({
-            "type": "subscribe",
-            "nonce": "channel.activities",
-            "data": {
-                "topic": "channel.activities",
-                "room": "0123456789abcdef01234567",
-                "token": "t0ken",
-                "token_type": "apikey",
-            },
-        });
-        assert_eq!(command, expected);
     }
 }

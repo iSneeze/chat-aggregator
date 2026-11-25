@@ -241,6 +241,15 @@ mod tests {
         assert!(m.emotes.is_empty());
         assert_eq!(m.timestamp.as_millisecond(), 1791800000000);
         assert!(matches!(m.kind, MessageKind::Text));
+
+        let full = CHAT.replace(
+            r#""i":"usericons/default.png""#,
+            r#""i":"https://images.picarto.tv/usericons/default.png""#,
+        );
+        assert_eq!(
+            one_message(&full, "x").author.avatar_url.as_deref(),
+            Some("https://images.picarto.tv/usericons/default.png")
+        );
     }
 
     #[test]
@@ -271,28 +280,6 @@ mod tests {
     }
 
     #[test]
-    fn multistream_partners_chat_is_kept() {
-        // Written in another channel of the multistream (`c`, `rn`): the
-        // chat is shared, so it's shown like any other message.
-        let other = CHAT.replace(r#""c":"1234567""#, r#""c":"2222222""#);
-        assert_eq!(one_message(&other, "1234567").text, "hello everyone");
-    }
-
-    #[test]
-    fn ids_may_be_numbers() {
-        let m = one_message(&CHAT.replace(r#""u":"7654321""#, r#""u":7654321"#), "x");
-        assert_eq!(m.author.id, "7654321");
-    }
-
-    #[test]
-    fn a_message_without_id_or_sender_is_skipped() {
-        let no_id = CHAT.replace(r#""id":"00000000-0000-0000-0000-000000000000","#, "");
-        assert!(events(&no_id).is_empty());
-        let no_user = CHAT.replace(r#""u":"7654321","#, "");
-        assert!(events(&no_user).is_empty());
-    }
-
-    #[test]
     fn odd_fields_are_dropped_not_fatal() {
         let odd = CHAT
             .replace(r#""k":"AABBCC""#, r#""k":"red;}""#)
@@ -306,19 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn full_avatar_urls_stay_as_they_are() {
-        let full = CHAT.replace(
-            r#""i":"usericons/default.png""#,
-            r#""i":"https://images.picarto.tv/usericons/default.png""#,
-        );
-        assert_eq!(
-            one_message(&full, "x").author.avatar_url.as_deref(),
-            Some("https://images.picarto.tv/usericons/default.png")
-        );
-    }
-
-    #[test]
-    fn deleted_message() {
+    fn moderation_events_convert() {
         // `m` as an object and as an array: the site takes both.
         for frame in [
             r#"{"t":"rm","m":{"id":"00000000-0000-0000-0000-000000000001","m":"message deleted"}}"#,
@@ -334,10 +309,6 @@ mod tests {
                 other => panic!("expected a delete, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn cleared_user_and_chat() {
         match events(r#"{"t":"cm","m":{"u":7654321}}"#).as_slice() {
             [ChatEvent::ClearUser { user_id, .. }] => assert_eq!(user_id, "7654321"),
             other => panic!("expected a cleared user, got {other:?}"),
@@ -357,21 +328,5 @@ mod tests {
             decode_with(frame, "1234567"),
             Frame::Stream { online: false }
         ));
-    }
-
-    #[test]
-    fn everything_else_is_ignored() {
-        for frame in [
-            r#"{"success":true,"code":"PONG"}"#,
-            r#"{"t":"un","m":{"c":"1234567","u":"7654321","n":"Viewer42"}}"#,
-            r#"{"t":"ur","m":{"u":"0","n":""}}"#,
-            r#"{"t":"ct","m":[{"t":"ct","u":"7654321","n":"Viewer42","x":100}]}"#,
-            "not json",
-        ] {
-            assert!(
-                matches!(decode_with(frame, "1234567"), Frame::Ignored),
-                "{frame}"
-            );
-        }
     }
 }

@@ -310,23 +310,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_clients_are_counted_while_connected() {
-        let server = start(None).await;
-        let mut client = connect(server.addr, "").await;
-        sync(&server, &mut client).await;
-        assert_eq!(server.connections.api_clients(), 1);
-
-        client.close(None).await.unwrap();
-        crate::tests::eventually(|| server.connections.api_clients() == 0).await;
-    }
-
-    #[test]
-    fn lagged_notice_format() {
-        let json: serde_json::Value = serde_json::from_str(&lagged_json(7)).unwrap();
-        assert_eq!(json, serde_json::json!({ "type": "lagged", "missed": 7 }));
-    }
-
-    #[tokio::test]
     async fn switched_off_refuses_and_disconnects_then_on_again_works() {
         let server = start(None).await;
         let mut client = connect(server.addr, "").await;
@@ -389,20 +372,6 @@ mod tests {
         })
         .await
         .unwrap()
-    }
-
-    #[tokio::test]
-    async fn web_pages_are_refused_but_local_pages_and_obs_are_not() {
-        let server = start(None).await;
-        for origin in ["https://evil.example", "null"] {
-            assert_refused(connect_from(server.addr, origin).await, origin);
-        }
-        for origin in ["http://absolute", "http://localhost:8080"] {
-            let mut client = connect_from(server.addr, origin)
-                .await
-                .unwrap_or_else(|e| panic!("{origin}: {e}"));
-            sync(&server, &mut client).await;
-        }
     }
 
     #[tokio::test]

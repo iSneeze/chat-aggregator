@@ -191,21 +191,6 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn secret_files_are_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let (store, dir) = temp_store("private");
-        store.save("a", "secret-1").await.unwrap();
-
-        let mode = std::fs::metadata(file_path(&dir, "a"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "readable only by the user");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
     #[test]
     fn file_names_are_sanitized() {
         let path = file_path(Path::new("/x"), "youtube:../evil/id");

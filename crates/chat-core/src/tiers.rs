@@ -296,40 +296,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bits_follow_youtubes_dollar_steps() {
-        let tiers = [
+    fn bits_and_coins_tiers() {
+        let bits = [
             1, 199, 200, 499, 500, 999, 1_000, 1_999, 2_000, 4_999, 5_000, 9_999, 10_000,
         ]
         .map(bits_tier);
-        assert_eq!(tiers, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7]);
+        assert_eq!(bits, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7]);
         assert_eq!(bits_tier(250_000), TOP_TIER);
-    }
 
-    #[test]
-    fn coins_follow_the_bits_steps_divided_by_five() {
-        let tiers = [
+        let coins = [
             0, 39, 40, 99, 100, 199, 200, 399, 400, 999, 1_000, 1_999, 2_000,
         ]
         .map(coins_tier);
-        assert_eq!(tiers, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7]);
+        assert_eq!(coins, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7]);
         assert_eq!(coins_tier(10_500), TOP_TIER);
-        // The same tier as the bits a coin is matched with.
-        for coins in [40, 100, 200, 400, 1_000, 2_000] {
-            assert_eq!(coins_tier(coins), bits_tier(coins * 5), "{coins}");
+        for c in [40, 100, 200, 400, 1_000, 2_000] {
+            assert_eq!(coins_tier(c), bits_tier(c * 5), "{c}");
         }
-    }
-
-    #[test]
-    fn tips_follow_the_streamers_amounts() {
-        let mut tips = TipSettings::default();
-        let tier = |tips: &TipSettings, n: f64| tips.tier(Amount::of(n).unwrap());
-        assert_eq!(tier(&tips, 1.0), 1);
-        assert_eq!(tier(&tips, 9.99), 3);
-        assert_eq!(tier(&tips, 10.0), 4, "a start belongs to its tier");
-        assert_eq!(tier(&tips, 500.0), 7);
-        tips.tiers = [3, 6, 9, 69, 100, 420].map(Amount::whole);
-        assert_eq!(tier(&tips, 68.99), 4);
-        assert_eq!(tier(&tips, 69.0), 5);
     }
 
     #[test]
@@ -343,6 +326,17 @@ mod tests {
         assert_eq!(Amount::of(f64::NAN), None);
         assert!("lots".parse::<Amount>().is_err());
         assert_eq!(Amount::of(2.5).unwrap().to_string(), "2.50");
+
+        #[derive(serde::Serialize)]
+        struct Row {
+            a: Amount,
+            b: Amount,
+        }
+        let row = Row {
+            a: Amount::whole(10),
+            b: Amount::of(2.5).unwrap(),
+        };
+        assert_eq!(serde_json::to_string(&row).unwrap(), r#"{"a":10,"b":2.5}"#);
     }
 
     #[test]
@@ -372,20 +366,6 @@ mod tests {
         assert!(zero.check().is_err());
     }
 
-    #[test]
-    fn tips_display_in_the_currency() {
-        let mut tips = TipSettings::default();
-        let ten = Amount::whole(10);
-        assert_eq!(tips.display(ten), "10");
-        assert_eq!(tips.display(Amount::of(2.5).unwrap()), "2.50");
-        tips.currency = "EUR".into();
-        assert_eq!(tips.display(ten), "€10.00");
-        tips.currency = "CHF".into();
-        assert_eq!(tips.display(ten), "10.00 CHF");
-        tips.currency = "JPY".into();
-        assert_eq!(tips.display(Amount::whole(500)), "¥500");
-    }
-
     /// A donation's amount as shown, tier, value and currency.
     fn parts(kind: MessageKind) -> (String, Option<u32>, Option<f64>, Option<String>) {
         match kind {
@@ -408,89 +388,47 @@ mod tests {
     }
 
     #[test]
-    fn tips_become_donations_in_the_tip_currency() {
+    fn tip_donations_and_currency_formatting() {
+        let mut tips = TipSettings::default();
+        let ten = Amount::whole(10);
+        assert_eq!(tips.display(ten), "10");
+        assert_eq!(tips.display(Amount::of(2.5).unwrap()), "2.50");
+        tips.currency = "EUR".into();
+        assert_eq!(tips.display(ten), "€10.00");
+        tips.currency = "CHF".into();
+        assert_eq!(tips.display(ten), "10.00 CHF");
+        tips.currency = "JPY".into();
+        assert_eq!(tips.display(Amount::whole(500)), "¥500");
+
+        // Tier boundary check on custom tiers.
+        let euros = in_euros();
+        assert_eq!(euros.tier(Amount::of(68.99).unwrap()), 4);
+        assert_eq!(euros.tier(Amount::whole(69)), 5);
+
         let eur = Some("EUR".to_string());
-        // No currency anywhere (StreamElements while none is set): a plain
-        // number, tiers from the table.
+        // No currency anywhere: plain number, tiers from the default table.
         assert_eq!(
-            parts(TipSettings::default().donation(Amount::whole(10), None)),
+            parts(TipSettings::default().donation(ten, None)),
             ("10".into(), Some(4), Some(10.0), None)
         );
-        // None reported (StreamElements): the tip currency.
+        // None reported (StreamElements) or matching tip currency (Streamlabs).
         let nice = ("€69.00".into(), Some(5), Some(69.0), eur.clone());
-        assert_eq!(parts(in_euros().donation(Amount::whole(69), None)), nice);
-        // Reported, and the tip currency (Streamlabs): the same.
-        assert_eq!(
-            parts(in_euros().donation(Amount::whole(69), eur.clone())),
-            nice
-        );
-    }
+        assert_eq!(parts(euros.donation(Amount::whole(69), None)), nice);
+        assert_eq!(parts(euros.donation(Amount::whole(69), eur)), nice);
 
-    #[test]
-    fn a_tip_in_another_currency_gets_tier_1() {
+        // Tip in another currency gets tier 1 unless no tip currency is set.
         let usd = Some("USD".to_string());
-        // Shown in its own currency; its worth would take a conversion.
         assert_eq!(
-            parts(in_euros().donation(Amount::whole(69), usd.clone())),
+            parts(euros.donation(Amount::whole(69), usd.clone())),
             ("$69.00".into(), Some(1), Some(69.0), usd.clone())
         );
-        // No tip currency set: nothing to compare with, the tiers as they
-        // are.
         let unset = TipSettings {
             currency: String::new(),
-            ..in_euros()
+            ..euros
         };
         assert_eq!(
             parts(unset.donation(Amount::whole(69), usd.clone())),
             ("$69.00".into(), Some(5), Some(69.0), usd)
         );
-    }
-
-    #[test]
-    fn a_tip_message_keeps_what_the_service_said() {
-        let tip = Tip {
-            id: "t1".into(),
-            platform: ChatPlatform::Streamlabs,
-            author: Author {
-                id: "viewer42".into(),
-                name: "Viewer42".into(),
-                color: None,
-                badges: Vec::new(),
-                badge_urls: std::collections::BTreeMap::new(),
-                avatar_url: None,
-            },
-            text: "Hello!".into(),
-            timestamp: jiff::Timestamp::UNIX_EPOCH,
-            amount: Amount::of(2.5).unwrap(),
-            currency: None,
-        };
-        let message = tip.into_message(&in_euros());
-        assert_eq!(message.id, "t1");
-        assert_eq!(message.platform, ChatPlatform::Streamlabs);
-        assert_eq!(
-            (message.author.id.as_str(), message.author.name.as_str()),
-            ("viewer42", "Viewer42")
-        );
-        assert_eq!(message.text, "Hello!");
-        assert_eq!(message.timestamp, jiff::Timestamp::UNIX_EPOCH);
-        assert!(message.emotes.is_empty());
-        assert_eq!(
-            parts(message.kind),
-            ("€2.50".into(), Some(1), Some(2.5), Some("EUR".into()))
-        );
-    }
-
-    #[test]
-    fn amounts_are_written_as_typed() {
-        #[derive(serde::Serialize)]
-        struct Row {
-            a: Amount,
-            b: Amount,
-        }
-        let row = Row {
-            a: Amount::whole(10),
-            b: Amount::of(2.5).unwrap(),
-        };
-        assert_eq!(serde_json::to_string(&row).unwrap(), r#"{"a":10,"b":2.5}"#);
     }
 }

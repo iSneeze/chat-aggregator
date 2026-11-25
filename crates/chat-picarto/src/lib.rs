@@ -166,7 +166,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn channel_names_and_links() {
+    fn channel_names_and_links_validate() {
         for input in [
             "your_channel",
             " your_channel ",
@@ -185,10 +185,6 @@ mod tests {
             normalize_channel("Your-Channel").as_deref(),
             Ok("Your-Channel")
         );
-    }
-
-    #[test]
-    fn invalid_names_are_rejected() {
         for input in ["", "has space", "../etc", "https://picarto.tv/", "name?x=1"] {
             assert!(normalize_channel(input).is_err(), "{input}");
         }

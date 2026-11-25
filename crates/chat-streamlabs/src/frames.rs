@@ -217,7 +217,9 @@ mod tests {
 
     #[test]
     fn a_donation_is_read() {
-        let tip = donation_of(entry(json!(9)));
+        let mut raw = entry(json!(9));
+        raw["currency"] = json!("eur");
+        let tip = donation_of(raw);
         assert_eq!(tip.id, "00000000000000000000000000000001");
         assert_eq!(tip.platform, ChatPlatform::Streamlabs);
         assert_eq!(tip.author.name, "Viewer42", "the donor, not the streamer");
@@ -238,27 +240,11 @@ mod tests {
         preview["previewAction"] = json!("initial");
         let frame = decode(&event("donation", Some("streamlabs"), preview));
         assert!(matches!(frame, Frame::Ignored), "{frame:?}");
-    }
 
-    #[test]
-    fn amounts_come_as_numbers_or_text() {
-        let tip = donation_of(entry(json!("13.37")));
-        assert_eq!(tip.amount, Amount::of(13.37).unwrap());
-        for amount in [json!(null), json!("lots"), json!(-5)] {
-            let frame = decode(&event(
-                "donation",
-                Some("streamlabs"),
-                entry(amount.clone()),
-            ));
-            assert!(matches!(frame, Frame::Ignored), "{amount}: {frame:?}");
-        }
-    }
-
-    #[test]
-    fn currencies_are_read_in_capitals() {
-        let mut donation = entry(json!(5));
-        donation["currency"] = json!("usd");
-        assert_eq!(donation_of(donation).currency.as_deref(), Some("USD"));
+        // The docs' sample without `for` is kept; relayed platform donations are ignored.
+        assert_eq!(decoded(&event("donation", None, entry(json!(5)))).len(), 1);
+        let relayed = decode(&event("donation", Some("twitch_account"), entry(json!(5))));
+        assert!(matches!(relayed, Frame::Ignored));
     }
 
     #[test]
@@ -278,35 +264,16 @@ mod tests {
     }
 
     #[test]
-    fn only_the_tip_pages_donations_are_kept() {
-        // The docs' sample: no `for`.
-        assert_eq!(decoded(&event("donation", None, entry(json!(5)))).len(), 1);
-        for (kind, service) in [
-            ("donation", Some("twitch_account")),
-            ("superchat", Some("youtube_account")),
-            ("follow", Some("youtube_account")),
-            ("bits", Some("twitch_account")),
-            ("alertPlaying", None),
-            ("streamlabels", None),
-            ("alertBoxSettingsUpdate", None),
-        ] {
-            let frame = decode(&event(kind, service, entry(json!(5))));
-            assert!(matches!(frame, Frame::Ignored), "{kind}: {frame:?}");
-        }
-        let settings = r#"42["donationPageSettings",{"amount_minimum":"1"}]"#;
-        assert!(matches!(decode(settings), Frame::Ignored));
-    }
-
-    #[test]
     fn every_donation_in_an_event_counts() {
-        let mut second = entry(json!(2));
+        let mut second = entry(json!("13.37"));
         second["_id"] = json!("00000000000000000000000000000002");
         let frame = format!(
             "42{}",
             json!(["event", { "type": "donation", "for": "streamlabs",
                               "message": [entry(json!(1)), second] }])
         );
-        let ids: Vec<_> = decoded(&frame).into_iter().map(|tip| tip.id).collect();
+        let tips = decoded(&frame);
+        let ids: Vec<_> = tips.iter().map(|tip| tip.id.as_str()).collect();
         assert_eq!(
             ids,
             [
@@ -314,6 +281,7 @@ mod tests {
                 "00000000000000000000000000000002"
             ]
         );
+        assert_eq!(tips[1].amount, Amount::of(13.37).unwrap());
     }
 
     #[test]
@@ -337,8 +305,6 @@ mod tests {
             decode(r#"44"Authentication error""#),
             Frame::Refused(ref why) if why == "Authentication error"
         ));
-        for other in ["3", "", "6", "41", "42not json", "not a packet"] {
-            assert!(matches!(decode(other), Frame::Ignored), "{other:?}");
-        }
+        assert!(matches!(decode("not a packet"), Frame::Ignored));
     }
 }

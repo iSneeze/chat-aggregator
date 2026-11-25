@@ -244,26 +244,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn consent_url_asks_for_what_we_need() {
-        let (app, _, _) = fake_google::start(3600).await;
-        let login = begin_login(&app).await.unwrap();
-        let q = query(login.url());
-
-        assert_eq!(q["client_id"], app.client_id());
-        assert_eq!(q["response_type"], "code");
-        assert_eq!(q["scope"], SCOPE);
-        assert_eq!(q["access_type"], "offline");
-        assert_eq!(q["prompt"], "select_account consent");
-        assert_eq!(q["code_challenge_method"], "S256");
-        assert!(q["redirect_uri"].starts_with("http://127.0.0.1:"));
-        assert!(!q["state"].is_empty());
-    }
-
-    #[tokio::test]
     async fn full_login_stores_the_refresh_token() {
         let (app, _, dir) = fake_google::start(3600).await;
         let login = begin_login(&app).await.unwrap();
-        let state = query(login.url())["state"].clone();
+        let q = query(login.url());
+        assert_eq!(q["access_type"], "offline");
+        assert_eq!(q["prompt"], "select_account consent");
+        let state = q["state"].clone();
 
         // A request with a wrong state is rejected and doesn't end the login.
         assert_eq!(

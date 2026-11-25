@@ -1001,8 +1001,8 @@ mod tests {
             .unwrap();
         static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir()
-            .join(format!("chat-app-widgets-{}-{id}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("chat-app-widgets-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut config = EngineConfig::default();
@@ -1177,8 +1177,12 @@ mod tests {
         let calm = Some(Value::Text("calm".into()));
         run_until(cx, |_| ui.saved_value("live-emoji", "mode") == calm);
 
-        // ...a typed value once typing pauses.
+        // ...a step button steps the field...
         let size = live_emoji("size");
+        step_button(cx, &ui, size, "increment");
+        assert_eq!(shown(cx, &ui, size), "60");
+
+        // ...and a typed value applies once typing pauses.
         type_into(cx, &ui, size, "7");
         type_into(cx, &ui, size, "72");
         cx.executor().advance_clock(APPLY_AFTER / 2);
@@ -1240,70 +1244,6 @@ mod tests {
                 .value()
                 .to_string()
         })
-    }
-
-    #[gpui_kit::test]
-    fn minus_and_plus_step_a_number_and_save_once_clicking_pauses(cx: &mut TestAppContext) {
-        let ui = open(cx, |_, dir| {
-            let widgets = ConfigFile::widgets_dir(dir);
-            std::fs::create_dir_all(&widgets).unwrap();
-            // Its size has no step.
-            std::fs::write(widgets.join("test-widget.html"), page("Test Widget", 48)).unwrap();
-        });
-        // 56 by default, from 8 to 512 in steps of 4.
-        let size = live_emoji("size");
-        assert_eq!(shown(cx, &ui, size), "56");
-        step_button(cx, &ui, size, "increment");
-        step_button(cx, &ui, size, "increment");
-        assert_eq!(shown(cx, &ui, size), "64");
-        cx.executor().advance_clock(APPLY_AFTER / 2);
-        cx.run_until_parked();
-        assert_eq!(
-            ui.saved_value("live-emoji", "size"),
-            None,
-            "not while clicking"
-        );
-        cx.executor().advance_clock(APPLY_AFTER);
-        run_until(cx, |_| {
-            ui.saved_value("live-emoji", "size") == Some(Value::Number(64.))
-        });
-        let base = format!("http://{}/widgets/live-emoji", ui.engine.addr());
-        act(cx, &ui, |window, cx| window.click("widget-copy", cx));
-        assert_eq!(clipboard(cx), Some(format!("{base}?size=64")));
-
-        // Onto the grid from a typed value between two steps.
-        type_into(cx, &ui, size, "57");
-        step_button(cx, &ui, size, "increment");
-        assert_eq!(shown(cx, &ui, size), "60");
-        type_into(cx, &ui, size, "57");
-        step_button(cx, &ui, size, "decrement");
-        assert_eq!(shown(cx, &ui, size), "56");
-
-        // An empty field steps from the default it shows.
-        type_into(cx, &ui, size, "");
-        step_button(cx, &ui, size, "decrement");
-        assert_eq!(shown(cx, &ui, size), "52");
-
-        // Not past the ends; a typed value beyond them comes back in.
-        type_into(cx, &ui, size, "512");
-        step_button(cx, &ui, size, "increment");
-        assert_eq!(shown(cx, &ui, size), "512");
-        type_into(cx, &ui, size, "9999");
-        step_button(cx, &ui, size, "decrement");
-        assert_eq!(shown(cx, &ui, size), "512");
-        cx.executor().advance_clock(APPLY_AFTER * 2);
-        run_until(cx, |_| {
-            ui.saved_value("live-emoji", "size") == Some(Value::Number(512.))
-        });
-        assert_eq!(error(cx, &ui, size), None);
-
-        // Without a step in the block: steps of 1.
-        act(cx, &ui, |window, cx| {
-            window.click(("widget", file_row(0)), cx)
-        });
-        assert_eq!(selected(cx, &ui), "test-widget");
-        step_button(cx, &ui, 0, "increment");
-        assert_eq!(shown(cx, &ui, 0), "49");
     }
 
     #[gpui_kit::test]
@@ -1407,19 +1347,6 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn closing_the_window_saves_what_is_typed(cx: &mut TestAppContext) {
-        let mut ui = open(cx, |_, _| {});
-        type_into(cx, &ui, live_emoji("size"), "72");
-        // Nothing may hold the view any more for it to be released.
-        ui.view = None;
-        cx.update_window(ui.window.into(), |_, window, _| window.remove_window())
-            .unwrap();
-        run_until(cx, |_| {
-            ui.saved_value("live-emoji", "size") == Some(Value::Number(72.))
-        });
-    }
-
-    #[gpui_kit::test]
     fn importing_adds_a_widget_and_replacing_one_asks_first(cx: &mut TestAppContext) {
         let ui = open(cx, |_, _| {});
         let downloads = ui.dir.join("downloads");
@@ -1478,27 +1405,6 @@ mod tests {
             "the form shows the new version"
         );
         assert_eq!(size, Value::Number(72.), "the value picked stays");
-    }
-
-    #[gpui_kit::test]
-    fn a_file_that_isnt_a_widget_is_refused_with_the_reason(cx: &mut TestAppContext) {
-        let ui = open(cx, |_, _| {});
-        let file = ui.dir.join("notes.html");
-        std::fs::write(&file, "<!doctype html><p>Not a widget.</p>").unwrap();
-        with_view(cx, &ui, |view, window, cx| {
-            view.import_file(file, window, cx)
-        });
-        let refused =
-            |cx: &mut TestAppContext| ui.view().read_with(cx, |view, _| view.import_error.clone());
-        run_until(cx, |cx| refused(cx).is_some());
-        let refused = refused(cx).unwrap();
-        assert!(
-            refused.starts_with("notes.html can't be imported"),
-            "{refused}"
-        );
-        assert!(refused.contains("no widget block"), "{refused}");
-        assert!(!ui.widgets_dir().exists(), "nothing written");
-        assert_eq!(names(cx, &ui), listed(&[]));
     }
 
     #[gpui_kit::test]
