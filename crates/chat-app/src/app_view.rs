@@ -864,7 +864,8 @@ mod tests {
         assert_eq!(
             items,
             [
-                "Default", "Minimal", "Bubbles", "Cozy", "Retro", "Neon", "studio",
+                "Default", "Minimal", "Bubbles", "Cozy", "Retro", "Neon", "Ornate", "Aero",
+                "studio",
             ],
             "built-in themes first"
         );

@@ -1,0 +1,346 @@
+# Customizable options for the Aero built-in overlay theme.
+
+[[options]]
+name = "accent_mode"
+label = "Accent style"
+group = "Colors"
+help = "By role colors the glass accent for members/subs, mods, and broadcaster; Chatter gives each chatter their own tint."
+type = "choice"
+default = "Custom"
+options = ["Custom", "By role", "Chatter", "Platform"]
+[options.class_values]
+Custom = ""
+"By role" = "chat--accent-role"
+Chatter = "chat--accent-chatter"
+Platform = "chat--accent-platform"
+
+[[options]]
+name = "accent_color"
+label = "Primary glass"
+group = "Colors"
+help = "Main glass rim, header tint, and speaker color in Custom mode (and for viewers in By role mode)."
+type = "color"
+default = "#0099f0"
+css_var = "--chat-accent"
+
+[[options]]
+name = "secondary_color"
+label = "Highlight tint"
+group = "Colors"
+help = "Secondary bokeh orb and lower refraction tint."
+type = "color"
+default = "#48d15c"
+css_var = "--chat-secondary"
+
+[[options]]
+name = "bg_color"
+label = "Surface color"
+group = "Colors"
+type = "color"
+default = "#eaf8ff"
+css_var = "--chat-bg-color"
+
+[[options]]
+name = "text_color"
+label = "Text color"
+group = "Colors"
+type = "color"
+default = "#0e2c44"
+css_var = "--chat-text"
+
+[[options]]
+name = "bg_opacity"
+label = "Glass opacity"
+group = "Colors"
+type = "number"
+default = 88
+min = 0
+max = 100
+step = 5
+unit = "%"
+css_var = "--chat-bg-opacity"
+
+[[options]]
+name = "member_color"
+label = "Member / sub"
+group = "Role colors"
+help = "Subscribers, members, and VIPs when Accent style is By role."
+type = "color"
+default = "#27b86a"
+css_var = "--role-member"
+
+[[options]]
+name = "moderator_color"
+label = "Moderator"
+group = "Role colors"
+type = "color"
+default = "#2979ff"
+css_var = "--role-moderator"
+
+[[options]]
+name = "owner_color"
+label = "Broadcaster"
+group = "Role colors"
+type = "color"
+default = "#e64072"
+css_var = "--role-owner"
+
+[[options]]
+name = "frame"
+label = "Glass style"
+group = "Aero style"
+type = "choice"
+default = "Aero Glass"
+options = ["Aero Glass", "Aqua Pill", "Wii Tile", "Y2K Chrome"]
+[options.class_values]
+"Aero Glass" = ""
+"Aqua Pill" = "chat--frame-aqua"
+"Wii Tile" = "chat--frame-wii"
+"Y2K Chrome" = "chat--frame-chrome"
+
+[[options]]
+name = "gloss"
+label = "Gloss level"
+group = "Aero style"
+type = "choice"
+default = "Glossy"
+options = ["Soft", "Glossy", "Crystal"]
+[options.class_values]
+Soft = "chat--gloss-soft"
+Glossy = ""
+Crystal = "chat--gloss-crystal"
+
+[[options]]
+name = "bokeh"
+label = "Bubble bokeh"
+group = "Aero style"
+help = "Soft luminous orbs and light flares inside the glass surface."
+type = "bool"
+default = true
+class_when_false = "chat--hide-bokeh"
+
+[[options]]
+name = "corners"
+label = "Corners"
+group = "Aero style"
+type = "choice"
+default = "Rounded"
+options = ["Crisp", "Rounded", "Bubble"]
+css_var = "--chat-radius"
+[options.css_values]
+Crisp = "8px"
+Rounded = "16px"
+Bubble = "24px"
+
+[[options]]
+name = "font"
+label = "Font"
+group = "Typography & layout"
+type = "choice"
+default = "Humanist"
+options = ["Humanist", "Rounded", "Sans", "Monospace"]
+css_var = "--chat-font"
+[options.css_values]
+Humanist = '"Segoe UI", "Frutiger", "Calibri", "Lucida Grande", "Inter", system-ui, sans-serif'
+Rounded = '"Nunito", "Quicksand", "Varela Round", ui-rounded, "Segoe UI", system-ui, sans-serif'
+Sans = '"Inter", "Segoe UI", system-ui, sans-serif'
+Monospace = '"JetBrains Mono", "Cascadia Code", ui-monospace, monospace'
+
+[[options]]
+name = "font_size"
+label = "Text size"
+group = "Typography & layout"
+type = "number"
+default = 19
+min = 12
+max = 42
+step = 1
+unit = "px"
+css_var = "--chat-font-size"
+
+[[options]]
+name = "spacing"
+label = "Spacing"
+group = "Typography & layout"
+type = "choice"
+default = "Cozy"
+options = ["Compact", "Cozy", "Airy"]
+css_var = "--chat-gap"
+[options.css_values]
+Compact = "6px"
+Cozy = "10px"
+Airy = "15px"
+[options.class_values]
+Compact = "chat--compact"
+Cozy = ""
+Airy = "chat--airy"
+
+[[options]]
+name = "animation"
+label = "Entrance"
+group = "Motion"
+type = "choice"
+default = "Bubble"
+options = ["Bubble", "Glide", "Fade", "None"]
+css_var = "--msg-enter"
+[options.css_values]
+Bubble = "msg-in-bubble 0.32s cubic-bezier(0.34, 1.48, 0.64, 1)"
+Glide = "msg-in-glide 0.26s cubic-bezier(0.22, 1, 0.36, 1)"
+Fade = "msg-in-fade 0.22s ease-out"
+None = "none"
+
+[[options]]
+name = "fade_after"
+label = "Fade out after"
+group = "Motion"
+help = "Hide older messages automatically after a while."
+type = "choice"
+default = "Never"
+options = ["Never", "15s", "30s", "60s"]
+css_var = "--msg-fade-delay"
+[options.css_values]
+Never = "0s"
+15s = "15s"
+30s = "30s"
+60s = "60s"
+[options.class_values]
+Never = ""
+15s = "chat--fade-out"
+30s = "chat--fade-out"
+60s = "chat--fade-out"
+
+[[options]]
+name = "show_timestamps"
+label = "Timestamps"
+group = "Elements"
+type = "bool"
+default = false
+class = "chat--show-time"
+
+[[options]]
+name = "show_avatars"
+label = "Avatars"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-avatars"
+
+[[options]]
+name = "show_badges"
+label = "Badges"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-badges"
+
+[[options]]
+name = "show_platform"
+label = "Platform orb"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-platform"
+
+[[options]]
+name = "max_messages"
+label = "Max messages"
+group = "Elements"
+help = "Older messages above this limit are removed."
+type = "number"
+default = 20
+min = 5
+max = 100
+step = 5
+css_var = "--max-messages"
+
+# 1-click curated palettes shown at the top of the Themes window.
+
+[[presets]]
+name = "Frutiger Sky"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#0099f0"
+secondary_color = "#48d15c"
+bg_color = "#eaf8ff"
+text_color = "#0e2c44"
+bg_opacity = 88
+frame = "Aero Glass"
+gloss = "Glossy"
+bokeh = true
+corners = "Rounded"
+font = "Humanist"
+
+[[presets]]
+name = "Aqua Reef"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#00a6b8"
+secondary_color = "#3be0c4"
+bg_color = "#e8fbfb"
+text_color = "#0a313a"
+bg_opacity = 88
+frame = "Aqua Pill"
+gloss = "Crystal"
+bokeh = true
+corners = "Bubble"
+font = "Humanist"
+
+[[presets]]
+name = "Wii Pearl"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#00a8e8"
+secondary_color = "#8fd8ff"
+bg_color = "#f6fbff"
+text_color = "#1c2f42"
+bg_opacity = 94
+frame = "Wii Tile"
+gloss = "Glossy"
+bokeh = false
+corners = "Rounded"
+font = "Rounded"
+
+[[presets]]
+name = "Citrus Gel"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#e87a14"
+secondary_color = "#6cc427"
+bg_color = "#fffaf0"
+text_color = "#3b2610"
+bg_opacity = 90
+frame = "Aqua Pill"
+gloss = "Crystal"
+bokeh = true
+corners = "Bubble"
+font = "Rounded"
+
+[[presets]]
+name = "Y2K Chrome"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#2e7dff"
+secondary_color = "#ff4fb8"
+bg_color = "#10192b"
+text_color = "#eef5ff"
+bg_opacity = 90
+frame = "Y2K Chrome"
+gloss = "Soft"
+bokeh = true
+corners = "Crisp"
+font = "Sans"
+
+[[presets]]
+name = "Aurora Dusk"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#33d6ff"
+secondary_color = "#7c6eff"
+bg_color = "#0b1c36"
+text_color = "#eef8ff"
+bg_opacity = 84
+frame = "Aero Glass"
+gloss = "Soft"
+bokeh = true
+corners = "Rounded"
+font = "Humanist"

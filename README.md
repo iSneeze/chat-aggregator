@@ -18,7 +18,7 @@ Website and guides: <https://isneeze.github.io/chat-aggregator/>
 - **One chat on your stream.** Messages from every platform appear in one
   chat box in OBS (or any streaming software that can show a web page),
   with emotes, badges, donations, subs and memberships.
-- **Your look.** Six built-in themes with presets, live color and layout
+- **Your look.** Eight built-in themes with presets, live color and layout
   customization, and palette matching from an image — or style the chat
   yourself with HTML and CSS.
 - **Moderation carries over.** A message deleted on a platform disappears

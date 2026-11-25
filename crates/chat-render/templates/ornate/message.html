@@ -1,0 +1,69 @@
+{#-
+  "Ornate" built-in theme: dark-fantasy and baroque gilded cards with double
+  hairline borders, inline-SVG filigree corners, tarot/cathedral/velvet frame
+  variations, optional centered title plaques, and persistent per-chatter
+  arcane crests.
+
+  Every chatter gets two stable values via `seed`:
+    --chatter-hue     0..359, used in "Chatter" accent mode when a platform
+                      doesn't supply an author colour
+    msg__crest--0..5  persistent decorative crest per chatter (north star,
+                      crescent, fleur-de-lis, diamond, rosette, or sunburst)
+
+  Keep the root element's "msg" class and its data-id / data-platform /
+  data-author attributes (the overlay script needs them), and never use
+  "| safe" on chat values.
+-#}
+{%- set role = "owner" if author.role == "broadcaster"
+    else "moderator" if author.role == "moderator"
+    else "member" if author.role in ["subscriber", "vip"]
+    else "viewer" -%}
+<article class="msg msg--{{ kind }} msg--{{ platform }} msg--role-{{ role }}{% if paid %} msg--paid{% endif %}{% if tier %} msg--tier-{{ tier }}{% endif %}" data-id="{{ id }}" data-platform="{{ platform }}" data-author="{{ author.id }}" style="--chatter-hue: {{ author.id | seed(360, 'hue') }}{% if author.color %}; --author-color: {{ author.color }}{% endif %}">
+  <div class="msg__frame">
+    {%- if kind != "notice" %}
+    <header class="msg__meta">
+      <span class="msg__platform" title="{{ platform }}"></span>
+      {%- if author.avatar_url %}
+      <img class="msg__avatar" src="{{ author.avatar_url }}" alt="">
+      {%- endif %}
+      <span class="msg__crest msg__crest--{{ author.id | seed(6, 'crest') }}" aria-hidden="true"></span>
+      <span class="msg__author">{{ author.name }}</span>
+      {%- for badge in author.badges %}
+      {%- if author.badge_urls[badge] %}
+      <img class="badge badge--icon badge--{{ badge }}" src="{{ author.badge_urls[badge] }}" alt="{{ badge }}" title="{{ badge }}">
+      {%- else %}
+      <span class="badge badge--{{ badge }}">{{ badge }}</span>
+      {%- endif %}
+      {%- endfor %}
+      <time class="msg__time" datetime="{{ timestamp }}">{{ time }}</time>
+    </header>
+    {%- endif %}
+    {%- if kind == "donation" %}
+    <p class="msg__event"><data class="msg__amount">{{ amount }}</data></p>
+    {%- elif kind == "gift" %}
+    <p class="msg__event">gifted <data class="msg__count" value="{{ count }}">{{ count }}</data> {{ "membership" if platform == "youtube" else "sub" }}{{ "s" if count != 1 }}</p>
+    {%- elif kind in ["membership", "notice"] and info %}
+    <p class="msg__event">{{ info }}</p>
+    {%- elif kind == "special" %}
+    <p class="msg__event">
+      {%- if amount %}<data class="msg__amount">{{ amount }}</data>{% endif %}
+      {%- if amount and info %} {% endif %}
+      {%- if info %}<span class="msg__info">{{ info }}</span>{% endif -%}
+    </p>
+    {%- if sticker_url %}
+    <img class="msg__sticker" src="{{ sticker_url }}" alt="{{ info }}">
+    {%- endif %}
+    {%- endif %}
+    {%- if body %}
+    <p class="msg__body">
+      {%- for part in body -%}
+        {%- if part.type == "emote" -%}
+          <img class="emote" src="{{ part.url }}" alt="{{ part.code }}" title="{{ part.code }}">
+        {%- else -%}
+          {{ part.text }}
+        {%- endif -%}
+      {%- endfor -%}
+    </p>
+    {%- endif %}
+  </div>
+</article>

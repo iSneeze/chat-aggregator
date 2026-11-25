@@ -26,9 +26,18 @@ you can edit with any text editor, share, and switch between in the app.
 - **Neon**: cybernetic HUD cards with 45° chamfered corners, dual-color neon
   accents, configurable glow intensity, and *Chamfered*, *Brackets*, *Neon
   Tube*, and *Cyber Slash* frame styles.
+- **Ornate**: gilded baroque and dark-fantasy cards with double hairline
+  borders, symmetric inline-SVG corner flourishes, *Filigree*, *Tarot*,
+  *Cathedral*, and *Velvet* frame styles, optional centered title plaques, and
+  persistent per-chatter arcane crests.
+- **Aero**: Frutiger Aero and early-2000s glossy glass panels with
+  self-contained specular sheen gradients, 3D glass platform orbs, subtle
+  seeded bokeh bubbles, and *Aero Glass*, *Aqua Pill*, *Wii Tile*, and *Y2K
+  Chrome* frame styles.
 
 Pick them in the app's theme list, or `theme = "minimal"` / `theme = "bubbles"`
-/ `theme = "cozy"` / `theme = "retro"` / `theme = "neon"` under `[overlay]` in a profile's file (`profiles/<name>.toml`). Each profile has
+/ `theme = "cozy"` / `theme = "retro"` / `theme = "neon"` / `theme = "ornate"`
+/ `theme = "aero"` under `[overlay]` in a profile's file (`profiles/<name>.toml`). Each profile has
 its own theme. They're built into the app and improve with its updates,
 so they can't be edited in place; open **Customize…** and use **New theme…**
 (or **Copy as custom…** on any built-in theme) to create an editable folder
@@ -45,8 +54,11 @@ Click **Customize…** next to the theme picker to open the **Themes** window:
   Chat* on Bubbles; *Strawberry Milk*, *Matcha Cream*, *Peach Tea*,
   *Blueberry Milk*, *Honey Journal*, *Evening Cocoa* on Cozy; *Classic JRPG*,
   *Win95*, *Handheld*, *Parchment*, *Arcade Dark*, *Amber CRT*, *8-Bit Crimson*
-  on Retro; or *Cyberpunk*, *Synthwave*, *Matrix*, *Tactical*, *Vaporwave*,
-  *Hyper Crimson* on Neon).
+  on Retro; *Cyberpunk*, *Synthwave*, *Matrix*, *Tactical*, *Vaporwave*,
+  *Hyper Crimson* on Neon; *Vampire Velvet*, *Obsidian Gold*, *Celestial
+  Tarot*, *Cathedral Rose*, *Cursed Emerald*, *Ivory Grimoire* on Ornate; or
+  *Frutiger Sky*, *Aqua Reef*, *Wii Pearl*, *Citrus Gel*, *Y2K Chrome*,
+  *Aurora Dusk* on Aero).
 - **Match image…** reads a screenshot of your OBS scene or character artwork
   and suggests three contrast-checked color palettes you can apply in one click.
 - **Colors, typography, motion, and elements** update connected OBS overlays
@@ -213,7 +225,7 @@ scene its own theme, add `?theme=` and the theme's name to its overlay URL:
 ```text
 http://127.0.0.1:7878/?theme=my-theme
 http://127.0.0.1:7878/?theme=my-theme&newest=top
-http://127.0.0.1:7878/?theme=cozy        a built-in theme (default, minimal, bubbles, cozy, retro, neon)
+http://127.0.0.1:7878/?theme=cozy        a built-in theme (default, minimal, bubbles, cozy, retro, neon, ornate, aero)
 http://127.0.0.1:7878/?theme=cozy&preset=Matcha%20Cream&max_messages=10
 ```
 

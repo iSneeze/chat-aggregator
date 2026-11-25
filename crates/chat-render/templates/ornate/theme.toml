@@ -1,0 +1,329 @@
+# Customizable options for the Ornate built-in overlay theme.
+
+[[options]]
+name = "accent_mode"
+label = "Accent style"
+group = "Colors"
+help = "By role colors the gilding for members/subs, mods, and broadcaster; Chatter gives each chatter their own tint."
+type = "choice"
+default = "Custom"
+options = ["Custom", "By role", "Chatter", "Platform"]
+[options.class_values]
+Custom = ""
+"By role" = "chat--accent-role"
+Chatter = "chat--accent-chatter"
+Platform = "chat--accent-platform"
+
+[[options]]
+name = "accent_color"
+label = "Gilding color"
+group = "Colors"
+help = "Frame filigree, crest, divider, and speaker name in Custom mode (and for viewers in By role mode)."
+type = "color"
+default = "#d8b268"
+css_var = "--chat-accent"
+
+[[options]]
+name = "secondary_color"
+label = "Gemstone tint"
+group = "Colors"
+help = "Subtle velvet and stained-glass glow blended into the card surface."
+type = "color"
+default = "#9e2a4b"
+css_var = "--chat-secondary"
+
+[[options]]
+name = "bg_color"
+label = "Card color"
+group = "Colors"
+type = "color"
+default = "#160d14"
+css_var = "--chat-bg-color"
+
+[[options]]
+name = "text_color"
+label = "Text color"
+group = "Colors"
+type = "color"
+default = "#f3eadb"
+css_var = "--chat-text"
+
+[[options]]
+name = "bg_opacity"
+label = "Card opacity"
+group = "Colors"
+type = "number"
+default = 92
+min = 0
+max = 100
+step = 5
+unit = "%"
+css_var = "--chat-bg-opacity"
+
+[[options]]
+name = "member_color"
+label = "Member / sub"
+group = "Role colors"
+help = "Subscribers, members, and VIPs when Accent style is By role."
+type = "color"
+default = "#52b788"
+css_var = "--role-member"
+
+[[options]]
+name = "moderator_color"
+label = "Moderator"
+group = "Role colors"
+type = "color"
+default = "#7c93e8"
+css_var = "--role-moderator"
+
+[[options]]
+name = "owner_color"
+label = "Broadcaster"
+group = "Role colors"
+type = "color"
+default = "#e05a7a"
+css_var = "--role-owner"
+
+[[options]]
+name = "frame"
+label = "Frame style"
+group = "Ornate style"
+type = "choice"
+default = "Filigree"
+options = ["Filigree", "Tarot", "Cathedral", "Velvet"]
+[options.class_values]
+Filigree = ""
+Tarot = "chat--frame-tarot"
+Cathedral = "chat--frame-cathedral"
+Velvet = "chat--frame-velvet"
+
+[[options]]
+name = "header_align"
+label = "Header layout"
+group = "Ornate style"
+help = "Centered frames the speaker name between flanking gilded rules like a title plaque."
+type = "choice"
+default = "Left"
+options = ["Left", "Centered"]
+[options.class_values]
+Left = ""
+Centered = "chat--header-center"
+
+[[options]]
+name = "show_ornaments"
+label = "Corner flourishes"
+group = "Ornate style"
+type = "bool"
+default = true
+class_when_false = "chat--hide-ornaments"
+
+[[options]]
+name = "font"
+label = "Font"
+group = "Typography & layout"
+type = "choice"
+default = "Serif"
+options = ["Serif", "Classic", "Sans", "Monospace"]
+css_var = "--chat-font"
+[options.css_values]
+Serif = '"Palatino Linotype", "Book Antiqua", "Iowan Old Style", "Georgia", ui-serif, serif'
+Classic = '"Cinzel", "Cormorant Garamond", "Garamond", "Baskerville", "Georgia", ui-serif, serif'
+Sans = '"Inter", "Segoe UI", system-ui, sans-serif'
+Monospace = '"JetBrains Mono", "Cascadia Code", ui-monospace, monospace'
+
+[[options]]
+name = "font_size"
+label = "Text size"
+group = "Typography & layout"
+type = "number"
+default = 19
+min = 12
+max = 42
+step = 1
+unit = "px"
+css_var = "--chat-font-size"
+
+[[options]]
+name = "spacing"
+label = "Spacing"
+group = "Typography & layout"
+type = "choice"
+default = "Cozy"
+options = ["Compact", "Cozy", "Airy"]
+css_var = "--chat-gap"
+[options.css_values]
+Compact = "7px"
+Cozy = "11px"
+Airy = "16px"
+[options.class_values]
+Compact = "chat--compact"
+Cozy = ""
+Airy = "chat--airy"
+
+[[options]]
+name = "animation"
+label = "Entrance"
+group = "Motion"
+type = "choice"
+default = "Unfurl"
+options = ["Unfurl", "Fade", "Slide", "None"]
+css_var = "--msg-enter"
+[options.css_values]
+Unfurl = "msg-in-unfurl 0.36s cubic-bezier(0.22, 1, 0.36, 1)"
+Fade = "msg-in-fade 0.28s ease-out"
+Slide = "msg-in-slide 0.28s cubic-bezier(0.22, 1, 0.36, 1)"
+None = "none"
+
+[[options]]
+name = "fade_after"
+label = "Fade out after"
+group = "Motion"
+help = "Hide older messages automatically after a while."
+type = "choice"
+default = "Never"
+options = ["Never", "15s", "30s", "60s"]
+css_var = "--msg-fade-delay"
+[options.css_values]
+Never = "0s"
+15s = "15s"
+30s = "30s"
+60s = "60s"
+[options.class_values]
+Never = ""
+15s = "chat--fade-out"
+30s = "chat--fade-out"
+60s = "chat--fade-out"
+
+[[options]]
+name = "show_crests"
+label = "Chatter crests"
+group = "Elements"
+help = "A persistent star, crescent, fleur, diamond, rosette, or sun per chatter."
+type = "bool"
+default = true
+class_when_false = "chat--hide-crests"
+
+[[options]]
+name = "show_timestamps"
+label = "Timestamps"
+group = "Elements"
+type = "bool"
+default = false
+class = "chat--show-time"
+
+[[options]]
+name = "show_avatars"
+label = "Avatars"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-avatars"
+
+[[options]]
+name = "show_badges"
+label = "Badges"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-badges"
+
+[[options]]
+name = "show_platform"
+label = "Platform gem"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-platform"
+
+[[options]]
+name = "max_messages"
+label = "Max messages"
+group = "Elements"
+help = "Older messages above this limit are removed."
+type = "number"
+default = 20
+min = 5
+max = 100
+step = 5
+css_var = "--max-messages"
+
+# 1-click curated palettes shown at the top of the Themes window.
+
+[[presets]]
+name = "Vampire Velvet"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#d8b268"
+secondary_color = "#9e2a4b"
+bg_color = "#160d14"
+text_color = "#f3eadb"
+bg_opacity = 92
+frame = "Filigree"
+header_align = "Left"
+font = "Serif"
+
+[[presets]]
+name = "Obsidian Gold"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#e6c26e"
+secondary_color = "#8a6d3b"
+bg_color = "#0f1014"
+text_color = "#f5f1e6"
+bg_opacity = 92
+frame = "Velvet"
+header_align = "Left"
+font = "Serif"
+
+[[presets]]
+name = "Celestial Tarot"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#e4ca82"
+secondary_color = "#7a68e0"
+bg_color = "#0e1226"
+text_color = "#eef0fc"
+bg_opacity = 92
+frame = "Tarot"
+header_align = "Centered"
+font = "Classic"
+
+[[presets]]
+name = "Cathedral Rose"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#e39bb5"
+secondary_color = "#8f3b6e"
+bg_color = "#1a101d"
+text_color = "#faeff4"
+bg_opacity = 92
+frame = "Cathedral"
+header_align = "Left"
+font = "Serif"
+
+[[presets]]
+name = "Cursed Emerald"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#52c48c"
+secondary_color = "#c7a24c"
+bg_color = "#0b1915"
+text_color = "#eaf6ef"
+bg_opacity = 92
+frame = "Filigree"
+header_align = "Left"
+font = "Serif"
+
+[[presets]]
+name = "Ivory Grimoire"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#8c302c"
+secondary_color = "#a87a38"
+bg_color = "#f6eedc"
+text_color = "#2c1e18"
+bg_opacity = 96
+frame = "Tarot"
+header_align = "Centered"
+font = "Serif"

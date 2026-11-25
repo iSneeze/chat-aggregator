@@ -1,0 +1,670 @@
+/*
+ * "Aero" built-in theme: Frutiger Aero and early-2000s glossy gel panels with
+ * self-contained specular sheen gradients, 3D glass platform orbs, seeded bokeh
+ * orbs, and Aero Glass / Aqua Pill / Wii Tile / Y2K Chrome frame styles.
+ *
+ * All glass sheen and specular reflections are drawn purely with CSS gradients
+ * so the look holds up identically inside OBS's transparent Browser Source
+ * without relying on backdrop-filter.
+ *
+ * Most restyling only needs the variables below (or the options in theme.toml).
+ * Every message is an <article class="msg"> with modifier classes:
+ *   .msg--twitch / .msg--youtube / .msg--picarto    platform
+ *   / .msg--rplay / .msg--streamelements / .msg--streamlabs
+ *   .msg--role-viewer / -member / -moderator / -owner
+ *   .msg--bokeh-0 … -3                              per-message bokeh layout
+ *   .msg--text / --emote-only / --donation / --special
+ *   .msg--membership / --gift / --notice            kind
+ *   .msg--paid, .msg--tier-1 … -7                   donations and their tier
+ *   .msg--deleted                                   removed by a moderator
+ */
+
+:root {
+  /* text */
+  --chat-font: "Segoe UI", "Frutiger", "Calibri", "Lucida Grande", "Inter", system-ui, sans-serif;
+  --chat-font-size: 19px;
+  --chat-text: #0e2c44;
+  --chat-muted: color-mix(in srgb, var(--chat-text) 56%, transparent);
+
+  /* Frutiger Aero glass palette */
+  --chat-accent: #0099f0;
+  --chat-secondary: #48d15c;
+  --chat-bg-color: #eaf8ff;
+  --chat-bg-opacity: 88%;
+  --chat-bg: color-mix(in srgb, var(--chat-bg-color) var(--chat-bg-opacity), transparent);
+  --chat-radius: 16px;
+  --chat-gap: 10px;
+  --pad-y: 0.56em;
+  --pad-x: 0.92em;
+
+  /* gloss intensity (driven by the "Gloss level" option) */
+  --sheen-top: 0.46;
+  --sheen-mid: 0.14;
+  --rim-white: 0.78;
+  --bokeh-alpha: 0.34;
+
+  /* motion */
+  --msg-enter: msg-in-bubble 0.32s cubic-bezier(0.34, 1.48, 0.64, 1);
+  --msg-fade-delay: 0s;
+
+  /* platform & event colours */
+  --twitch: #8f48f5;
+  --youtube: #f02944;
+  --picarto: #29b578;
+  --rplay: #00a8f0;
+  --streamelements: #4e73f5;
+  --streamlabs: #1ec2a2;
+  --paid: #e69d00;
+  --membership: #22b56e;
+  --notice: #1994eb;
+
+  /* role accent colours (used in "By role" accent style) */
+  --role-member: #27b86a;
+  --role-moderator: #2979ff;
+  --role-owner: #e64072;
+
+  /* donation tier colours (YouTube scale; Twitch cheer below) */
+  --paid-youtube-1: #1d86e5;
+  --paid-youtube-2: #00b0c7;
+  --paid-youtube-3: #00bd9c;
+  --paid-youtube-4: #e5a300;
+  --paid-youtube-5: #f07600;
+  --paid-youtube-6: #e6296b;
+  --paid-youtube-7: #e0342f;
+  --paid-twitch-1: #7b889c;
+  --paid-twitch-2: #9842e8;
+  --paid-twitch-3: #10ab9e;
+  --paid-twitch-4: #008ce8;
+  --paid-twitch-5: #e63829;
+
+  /* sizes */
+  --emote-size: 1.55em;
+  --emote-only-size: 2.8em;
+  --avatar-size: 1.55em;
+
+  /* overlay behavior (read by the overlay script) */
+  --max-messages: 20;  /* older messages are removed from the page */
+  --delete-delay: 0s;  /* time for a .msg--deleted transition before removal */
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent; /* OBS composites the page over the scene */
+}
+
+/* ---- message list ---- */
+
+.chat {
+  box-sizing: border-box;
+  height: 100vh;
+  /* Extra horizontal air so glossy halos and drop shadows never clip. */
+  padding: var(--chat-gap) 14px;
+  display: flex;
+  flex-direction: column;
+  /* Newest at the bottom, old ones leave at the top. With the newest at the
+     top, the overlay flips this to column-reverse. */
+  justify-content: flex-end;
+  gap: var(--chat-gap);
+  overflow: hidden;
+  font-family: var(--chat-font);
+  font-size: var(--chat-font-size);
+  line-height: 1.4;
+  color: var(--chat-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.chat--compact {
+  --pad-y: 0.4em;
+  --pad-x: 0.74em;
+}
+
+.chat--airy {
+  --pad-y: 0.76em;
+  --pad-x: 1.12em;
+}
+
+/* ---- gloss intensity levels ---- */
+
+.chat--gloss-soft {
+  --sheen-top: 0.22;
+  --sheen-mid: 0.06;
+  --rim-white: 0.48;
+  --bokeh-alpha: 0.24;
+}
+
+.chat--gloss-crystal {
+  --sheen-top: 0.64;
+  --sheen-mid: 0.22;
+  --rim-white: 0.92;
+  --bokeh-alpha: 0.44;
+}
+
+.chat--hide-bokeh {
+  --bokeh-alpha: 0;
+}
+
+/* ---- seeded per-message bokeh positions ---- */
+
+.msg--bokeh-0 { --orb-a-x: 88%; --orb-a-y: 18%; --orb-b-x: 74%; --orb-b-y: 86%; }
+.msg--bokeh-1 { --orb-a-x: 82%; --orb-a-y: 82%; --orb-b-x: 92%; --orb-b-y: 26%; }
+.msg--bokeh-2 { --orb-a-x: 14%; --orb-a-y: 84%; --orb-b-x: 88%; --orb-b-y: 22%; }
+.msg--bokeh-3 { --orb-a-x: 78%; --orb-a-y: 22%; --orb-b-x: 22%; --orb-b-y: 86%; }
+
+/* ---- one glossy Aero message ---- */
+
+.msg {
+  --platform-color: var(--chat-accent);
+  --accent: var(--chat-accent);
+  --secondary: var(--chat-secondary);
+  --paid-color: var(--paid);
+  --panel-surface: var(--chat-bg);
+  --glass-border: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--accent) 76%, var(--chat-text)) calc(var(--chat-bg-opacity) * 0.62),
+    transparent
+  );
+  --glass-shadow: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--accent) 34%, #041224) calc(var(--chat-bg-opacity) * 0.34),
+    transparent
+  );
+  --author-ink: color-mix(in srgb, var(--accent) 56%, var(--chat-text));
+  flex-shrink: 0;
+  animation: var(--msg-enter);
+}
+
+.chat--accent-platform .msg {
+  --accent: var(--platform-color);
+}
+
+.chat--accent-chatter .msg {
+  --accent: var(--author-color, hsl(var(--chatter-hue, 200) 82% 48%));
+}
+
+.chat--accent-role .msg--role-member    { --accent: var(--role-member); }
+.chat--accent-role .msg--role-moderator { --accent: var(--role-moderator); }
+.chat--accent-role .msg--role-owner     { --accent: var(--role-owner); }
+
+.msg--twitch         { --platform-color: var(--twitch); }
+.msg--youtube        { --platform-color: var(--youtube); }
+.msg--picarto        { --platform-color: var(--picarto); }
+.msg--rplay          { --platform-color: var(--rplay); }
+.msg--streamelements { --platform-color: var(--streamelements); }
+.msg--streamlabs     { --platform-color: var(--streamlabs); }
+
+/* ---- animations ---- */
+
+.chat--newest-top { --msg-enter-offset: -0.55em; }
+
+@keyframes msg-in-bubble {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.55em)) scale(0.92);
+  }
+}
+
+@keyframes msg-in-glide {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.55em));
+  }
+}
+
+@keyframes msg-in-fade {
+  from { opacity: 0; }
+}
+
+.chat--fade-out .msg {
+  animation: var(--msg-enter), msg-out 0.6s ease-in var(--msg-fade-delay) forwards;
+}
+
+@keyframes msg-out {
+  to { opacity: 0; }
+}
+
+/* ---- default "Aero Glass" glossy panel ---- */
+
+.msg__glass {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--chat-radius);
+  border: 1px solid var(--glass-border);
+  background:
+    /* soft luminous bokeh orbs (repositioned per message via seed) */
+    radial-gradient(
+      circle 54px at var(--orb-a-x, 86%) var(--orb-a-y, 20%),
+      color-mix(in srgb, var(--secondary) calc(var(--bokeh-alpha) * 85%), transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      circle 42px at var(--orb-b-x, 76%) var(--orb-b-y, 84%),
+      color-mix(in srgb, var(--accent) calc(var(--bokeh-alpha) * 75%), transparent) 0%,
+      transparent 72%
+    ),
+    /* subtle sky-to-tint glass wash */
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.14), transparent) 0%,
+      transparent 52%,
+      color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.14), transparent) 100%
+    ),
+    var(--panel-surface);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / var(--rim-white)),
+    inset 0 0 0 1px rgb(255 255 255 / calc(var(--rim-white) * 0.42)),
+    inset 0 -8px 16px color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.16), transparent),
+    0 6px 16px var(--glass-shadow);
+}
+
+/* Curved top specular glass reflection band (signature Frutiger Aero shine).
+   Capped at 2.65em so tall multi-line messages keep the gloss horizon right
+   along the header rather than cutting through the body text. */
+.msg__glass::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: min(48%, 2.65em);
+  background: linear-gradient(
+    180deg,
+    rgb(255 255 255 / var(--sheen-top)) 0%,
+    rgb(255 255 255 / var(--sheen-mid)) 92%,
+    rgb(255 255 255 / 0) 100%
+  );
+  border-radius: calc(var(--chat-radius) - 1px) calc(var(--chat-radius) - 1px) 50% 50% / 14px 14px 12px 12px;
+  pointer-events: none;
+}
+
+/* Subtle bottom glossy bubble edge shimmer. */
+.msg__glass::after {
+  content: "";
+  position: absolute;
+  inset: auto 10% 2px 10%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / calc(var(--rim-white) * 0.65)),
+    transparent
+  );
+  pointer-events: none;
+}
+
+/* ---- header & body inside the glass panel ---- */
+
+.msg__meta {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.42em;
+  min-width: 0;
+  padding: calc(var(--pad-y) * 0.84) var(--pad-x) calc(var(--pad-y) * 0.62);
+}
+
+.msg__meta:not(:last-child) {
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.24), transparent);
+  box-shadow: 0 1px 0 rgb(255 255 255 / calc(var(--rim-white) * 0.36));
+}
+
+.msg__content {
+  position: relative;
+  z-index: 1;
+  padding: calc(var(--pad-y) * 0.72) var(--pad-x) var(--pad-y);
+}
+
+.msg__content:first-child {
+  padding-top: var(--pad-y);
+}
+
+.msg__content:empty {
+  display: none;
+}
+
+/* ---- frame style variations ---- */
+
+/* Aqua Pill: vibrant liquid-gel capsule titlebar atop a translucent glass body. */
+.chat--frame-aqua .msg__glass::before {
+  height: 36%;
+  opacity: 0.45;
+}
+
+.chat--frame-aqua .msg__meta {
+  padding: calc(var(--pad-y) * 0.62) var(--pad-x);
+  background:
+    linear-gradient(
+      180deg,
+      rgb(255 255 255 / calc(var(--sheen-top) * 0.92)) 0%,
+      rgb(255 255 255 / calc(var(--sheen-mid) * 1.15)) 48%,
+      rgb(0 0 0 / 0.08) 51%,
+      rgb(0 0 0 / 0.16) 100%
+    ),
+    linear-gradient(
+      90deg,
+      var(--accent) 0%,
+      color-mix(in srgb, var(--accent) 76%, var(--secondary)) 100%
+    );
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 62%, #000000);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.78);
+  color: #ffffff;
+}
+
+.chat--frame-aqua .msg__author {
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.42);
+}
+
+.chat--frame-aqua .msg__time {
+  color: rgb(255 255 255 / 0.88);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.32);
+}
+
+.chat--frame-aqua .badge {
+  border-color: rgb(255 255 255 / 0.62);
+  background: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.38) 0%,
+    rgb(255 255 255 / 0.14) 52%,
+    rgb(0 0 0 / 0.1) 100%
+  );
+  color: #ffffff;
+  text-shadow: 0 1px 1px rgb(0 0 0 / 0.34);
+}
+
+/* Wii Tile: pearlescent soft-beveled channel tile with sky-blue outer halo. */
+.chat--frame-wii .msg__glass {
+  border: 2px solid color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.68), #ffffff);
+  background:
+    /* subtle horizontal Wii channel pinstripe sheen */
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 4px,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.045), transparent) 4px 5px
+    ),
+    radial-gradient(
+      circle 52px at var(--orb-a-x, 86%) var(--orb-a-y, 20%),
+      color-mix(in srgb, var(--secondary) calc(var(--bokeh-alpha) * 65%), transparent) 0%,
+      transparent 70%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, #ffffff calc(var(--chat-bg-opacity) * 0.35), transparent) 0%,
+      transparent 48%,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.12), transparent) 100%
+    ),
+    var(--panel-surface);
+  box-shadow:
+    inset 0 2px 0 rgb(255 255 255 / var(--rim-white)),
+    inset 0 -3px 6px color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.14), transparent),
+    0 0 12px color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.32), transparent),
+    0 4px 10px rgb(10 24 44 / 0.14);
+}
+
+.chat--frame-wii .msg__meta:not(:last-child) {
+  border-bottom-color: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.28), transparent);
+}
+
+/* Y2K Chrome: brushed metallic silver outer bezel around a glossy gel display. */
+.chat--frame-chrome .msg {
+  padding: 4px;
+  border-radius: calc(var(--chat-radius) + 3px);
+  background: linear-gradient(
+    145deg,
+    #ffffff 0%,
+    #bac6d6 22%,
+    #f2f6fb 46%,
+    #7f8fa4 74%,
+    #dce4ef 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.95),
+    inset 0 -1px 0 rgb(30 42 58 / 0.42),
+    0 5px 14px rgb(0 8 20 / 0.36);
+}
+
+.chat--frame-chrome .msg__glass {
+  border-radius: max(4px, calc(var(--chat-radius) - 1px));
+  border-color: color-mix(in srgb, var(--accent) 68%, #202c3d);
+  box-shadow:
+    inset 0 2px 5px rgb(0 0 0 / 0.28),
+    inset 0 0 0 1px rgb(255 255 255 / calc(var(--rim-white) * 0.45)),
+    inset 0 -8px 14px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* ---- 3D glass platform orb, glossy avatar, badges, author ---- */
+
+.msg__platform {
+  flex-shrink: 0;
+  width: 0.62em;
+  height: 0.62em;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 32% 28%,
+    #ffffff 0%,
+    color-mix(in srgb, var(--platform-color) 65%, #ffffff) 26%,
+    var(--platform-color) 56%,
+    color-mix(in srgb, var(--platform-color) 62%, #000000) 100%
+  );
+  box-shadow:
+    0 1px 3px rgb(0 0 0 / 0.28),
+    0 0 0 1px rgb(255 255 255 / 0.72);
+}
+
+.chat--hide-platform .msg__platform {
+  display: none;
+}
+
+.msg__avatar {
+  flex-shrink: 0;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow:
+    0 0 0 1.5px rgb(255 255 255 / 0.9),
+    0 0 0 2.5px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 2px 5px rgb(0 20 40 / 0.22);
+}
+
+.chat--hide-avatars .msg__avatar {
+  display: none;
+}
+
+.msg__author {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0.12em 2px 0.12em 0;
+  margin: -0.12em -2px -0.12em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  color: var(--author-ink);
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--chat-bg-color) 72%, transparent);
+}
+
+/* Glossy jelly capsule badges (adaptive backing + subtle specular top edge so
+   text stays sharp on both bright Frutiger Sky and dark Aurora/Chrome glass). */
+.badge {
+  flex-shrink: 0;
+  white-space: nowrap;
+  --badge-color: var(--accent);
+  --badge-ink: color-mix(in srgb, var(--badge-color) 46%, var(--chat-text));
+  padding: 0.08em 0.52em;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--badge-ink) 52%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      rgb(255 255 255 / calc(var(--sheen-top) * 0.48)) 0%,
+      rgb(255 255 255 / calc(var(--sheen-mid) * 0.4)) 48%,
+      transparent 52%
+    ),
+    color-mix(in srgb, var(--badge-color) 26%, color-mix(in srgb, var(--chat-bg-color) 52%, transparent));
+  color: var(--badge-ink);
+  font-size: 0.54em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.38;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / calc(var(--rim-white) * 0.65));
+  text-shadow: 0 1px 1px color-mix(in srgb, var(--chat-bg-color) 65%, transparent);
+}
+
+.chat--hide-badges .badge {
+  display: none;
+}
+
+.badge--broadcaster,
+.badge--owner     { --badge-color: #e64072; }
+.badge--moderator { --badge-color: #20a868; }
+.badge--vip       { --badge-color: #bd40d9; }
+.badge--verified  { --badge-color: #5c708a; }
+.badge--subscriber,
+.badge--member    { --badge-color: var(--membership); }
+
+.chat .badge.badge--icon {
+  flex-shrink: 0;
+  width: 1.02em;
+  height: 1.02em;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 1em;
+  object-fit: contain;
+  vertical-align: middle;
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.22));
+}
+
+.msg__time {
+  display: none;
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin-left: auto;
+  color: var(--chat-muted);
+  font-size: 0.68em;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat--show-time .msg__time {
+  display: inline;
+}
+
+/* ---- event banner & body ---- */
+
+.msg__event {
+  margin: 0;
+  padding: 0.16em 0.68em;
+  display: inline-block;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--author-ink) 46%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      rgb(255 255 255 / calc(var(--sheen-top) * 0.52)) 0%,
+      transparent 52%
+    ),
+    color-mix(in srgb, var(--accent) 22%, color-mix(in srgb, var(--chat-bg-color) 42%, transparent));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / calc(var(--rim-white) * 0.65));
+  font-size: 0.88em;
+  font-weight: 700;
+  color: var(--author-ink);
+  text-shadow: 0 1px 1px color-mix(in srgb, var(--chat-bg-color) 65%, transparent);
+}
+
+.msg__event + .msg__body {
+  margin-top: 0.34em;
+}
+
+.msg__body {
+  margin: 0;
+  overflow-wrap: anywhere; /* long spam without spaces must not overflow */
+}
+
+.emote {
+  height: var(--emote-size);
+  vertical-align: middle;
+  margin: -0.2em 0.05em;
+}
+
+.msg__info {
+  font-weight: 500;
+  color: var(--chat-text);
+}
+
+.msg__sticker {
+  display: block;
+  height: 4em;
+  margin-top: 0.35em;
+}
+
+/* ---- message kinds & paid tiers ---- */
+
+.msg--emote-only .emote {
+  height: var(--emote-only-size);
+  margin: 0.08em 0.05em;
+}
+
+/* Paid messages, memberships, gifts, and notices tint the glossy gel cleanly
+   in every accent mode. */
+.chat .msg--paid {
+  --accent: var(--paid-color);
+  --secondary: var(--paid-color);
+  --panel-surface: color-mix(in srgb, var(--paid-color) 14%, var(--chat-bg));
+}
+
+.chat .msg--membership,
+.chat .msg--gift {
+  --accent: var(--membership);
+  --secondary: var(--membership);
+  --panel-surface: color-mix(in srgb, var(--membership) 12%, var(--chat-bg));
+}
+
+.chat .msg--notice {
+  --accent: var(--notice);
+  --secondary: var(--notice);
+  --panel-surface: color-mix(in srgb, var(--notice) 14%, var(--chat-bg));
+  text-align: center;
+  font-style: italic;
+}
+
+.msg--notice .msg__event {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Donation tier colours. */
+.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
+.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
+.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
+.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
+.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
+.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
+.msg--tier-7 { --paid-color: var(--paid-youtube-7); }
+.msg--youtube[class*="msg--tier-"]:not(.msg--tier-1, .msg--tier-2, .msg--tier-3,
+  .msg--tier-4, .msg--tier-5, .msg--tier-6) { --paid-color: var(--paid-youtube-7); }
+
+.msg--twitch.msg--tier-1 { --paid-color: var(--paid-twitch-1); }
+.msg--twitch.msg--tier-2,
+.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-2); }
+.msg--twitch.msg--tier-4,
+.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-3); }
+.msg--twitch.msg--tier-6 { --paid-color: var(--paid-twitch-4); }
+.msg--twitch.msg--tier-7 { --paid-color: var(--paid-twitch-5); }
+
+/* ---- moderation ---- */
+
+/* Deleted messages vanish at once by default. For a fade instead:
+   .msg--deleted { opacity: 0; transition: opacity 0.3s; }
+   and set --delete-delay: 0.3s above. */
+.msg--deleted {
+  display: none;
+}

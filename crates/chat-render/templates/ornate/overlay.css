@@ -1,0 +1,682 @@
+/*
+ * "Ornate" built-in theme: baroque and dark-fantasy gilded cards with double
+ * hairline borders, inline-SVG corner flourishes, Tarot / Cathedral / Velvet
+ * frame styles, optional centered plaques, and per-chatter arcane crests.
+ *
+ * Most restyling only needs the variables below (or the options in theme.toml).
+ * Every message is an <article class="msg"> with modifier classes:
+ *   .msg--twitch / .msg--youtube / .msg--picarto    platform
+ *   / .msg--rplay / .msg--streamelements / .msg--streamlabs
+ *   .msg--role-viewer / -member / -moderator / -owner
+ *   .msg--text / --emote-only / --donation / --special
+ *   .msg--membership / --gift / --notice            kind
+ *   .msg--paid, .msg--tier-1 … -7                   donations and their tier
+ *   .msg--deleted                                   removed by a moderator
+ */
+
+:root {
+  /* text */
+  --chat-font: "Palatino Linotype", "Book Antiqua", "Iowan Old Style", "Georgia", ui-serif, serif;
+  --chat-font-size: 19px;
+  --chat-text: #f3eadb;
+  --chat-muted: color-mix(in srgb, var(--chat-text) 66%, transparent);
+
+  /* gilded velvet palette & frame */
+  --chat-accent: #d8b268;
+  --chat-secondary: #9e2a4b;
+  --chat-bg-color: #160d14;
+  --chat-bg-opacity: 92%;
+  --chat-bg: color-mix(in srgb, var(--chat-bg-color) var(--chat-bg-opacity), transparent);
+  --chat-gap: 11px;
+  --chat-padding: 0.7em 0.96em;
+
+  /* motion */
+  --msg-enter: msg-in-unfurl 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+  --msg-fade-delay: 0s;
+
+  /* platform & event colours (rich jewel tones tuned to adapt cleanly on both
+     dark velvet cards and light parchment grimoire presets) */
+  --twitch: #9b66e8;
+  --youtube: #d93b52;
+  --picarto: #32a877;
+  --rplay: #2b9ad6;
+  --streamelements: #5d7be0;
+  --streamlabs: #2aa88e;
+  --paid: #cf9624;
+  --membership: #3aa374;
+  --notice: #5492d6;
+
+  /* role accent colours (used in "By role" accent style) */
+  --role-member: #52b788;
+  --role-moderator: #7c93e8;
+  --role-owner: #e05a7a;
+
+  /* donation tier colours (jewel-toned YouTube scale; Twitch cheer below) */
+  --paid-youtube-1: #3c82d6;
+  --paid-youtube-2: #22a3b8;
+  --paid-youtube-3: #2ca889;
+  --paid-youtube-4: #d49b1e;
+  --paid-youtube-5: #de7026;
+  --paid-youtube-6: #d63c78;
+  --paid-youtube-7: #d63e3e;
+  --paid-twitch-1: #8c95a6;
+  --paid-twitch-2: #9b52e0;
+  --paid-twitch-3: #22a398;
+  --paid-twitch-4: #2c88db;
+  --paid-twitch-5: #d9483b;
+
+  /* sizes */
+  --emote-size: 1.55em;
+  --emote-only-size: 2.8em;
+  --avatar-size: 1.42em;
+
+  /* overlay behavior (read by the overlay script) */
+  --max-messages: 20;  /* older messages are removed from the page */
+  --delete-delay: 0s;  /* time for a .msg--deleted transition before removal */
+
+  /* 4-way symmetric baroque corner filigree (recoloured via mask) */
+  --filigree-tl: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M1 19V1h18v1.5H2.5V19H1zM2.5 11.4Q9.2 9.2 11.4 2.5H9.8Q7.6 7.6 2.5 9.8v1.6zM5.3 3.3L6.6 5.3 5.3 7.3 4 5.3z'/%3E%3Ccircle cx='18.5' cy='1.75' r='1.1'/%3E%3Ccircle cx='1.75' cy='18.5' r='1.1'/%3E%3C/svg%3E");
+  --filigree-tr: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(20,0) scale(-1,1)'%3E%3Cpath d='M1 19V1h18v1.5H2.5V19H1zM2.5 11.4Q9.2 9.2 11.4 2.5H9.8Q7.6 7.6 2.5 9.8v1.6zM5.3 3.3L6.6 5.3 5.3 7.3 4 5.3z'/%3E%3Ccircle cx='18.5' cy='1.75' r='1.1'/%3E%3Ccircle cx='1.75' cy='18.5' r='1.1'/%3E%3C/g%3E%3C/svg%3E");
+  --filigree-bl: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(0,20) scale(1,-1)'%3E%3Cpath d='M1 19V1h18v1.5H2.5V19H1zM2.5 11.4Q9.2 9.2 11.4 2.5H9.8Q7.6 7.6 2.5 9.8v1.6zM5.3 3.3L6.6 5.3 5.3 7.3 4 5.3z'/%3E%3Ccircle cx='18.5' cy='1.75' r='1.1'/%3E%3Ccircle cx='1.75' cy='18.5' r='1.1'/%3E%3C/g%3E%3C/svg%3E");
+  --filigree-br: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(20,20) scale(-1,-1)'%3E%3Cpath d='M1 19V1h18v1.5H2.5V19H1zM2.5 11.4Q9.2 9.2 11.4 2.5H9.8Q7.6 7.6 2.5 9.8v1.6zM5.3 3.3L6.6 5.3 5.3 7.3 4 5.3z'/%3E%3Ccircle cx='18.5' cy='1.75' r='1.1'/%3E%3Ccircle cx='1.75' cy='18.5' r='1.1'/%3E%3C/g%3E%3C/svg%3E");
+
+  /* 4-way symmetric celestial tarot star-brackets */
+  --tarot-tl: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M6 1L10.5 5.5 6 10 1.5 5.5zM6 3.1L3.6 5.5 6 7.9 8.4 5.5zM1 18v-6.5h1.4V18H1zm10.5-17H18v1.4h-6.5V1z'/%3E%3Ccircle cx='6' cy='5.5' r='1.1'/%3E%3C/svg%3E");
+  --tarot-tr: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(20,0) scale(-1,1)'%3E%3Cpath d='M6 1L10.5 5.5 6 10 1.5 5.5zM6 3.1L3.6 5.5 6 7.9 8.4 5.5zM1 18v-6.5h1.4V18H1zm10.5-17H18v1.4h-6.5V1z'/%3E%3Ccircle cx='6' cy='5.5' r='1.1'/%3E%3C/g%3E%3C/svg%3E");
+  --tarot-bl: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(0,20) scale(1,-1)'%3E%3Cpath d='M6 1L10.5 5.5 6 10 1.5 5.5zM6 3.1L3.6 5.5 6 7.9 8.4 5.5zM1 18v-6.5h1.4V18H1zm10.5-17H18v1.4h-6.5V1z'/%3E%3Ccircle cx='6' cy='5.5' r='1.1'/%3E%3C/g%3E%3C/svg%3E");
+  --tarot-br: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(20,20) scale(-1,-1)'%3E%3Cpath d='M6 1L10.5 5.5 6 10 1.5 5.5zM6 3.1L3.6 5.5 6 7.9 8.4 5.5zM1 18v-6.5h1.4V18H1zm10.5-17H18v1.4h-6.5V1z'/%3E%3Ccircle cx='6' cy='5.5' r='1.1'/%3E%3C/g%3E%3C/svg%3E");
+
+  /* 4-way symmetric gothic lancet corner studs (Cathedral) */
+  --gothic-tl: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M1 18V1h17v1.5H5.5L2.5 5.5V18H1zM8.4 3.5L10 6.8 8.4 10.1 6.8 6.8z'/%3E%3C/svg%3E");
+  --gothic-tr: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(20,0) scale(-1,1)'%3E%3Cpath d='M1 18V1h17v1.5H5.5L2.5 5.5V18H1zM8.4 3.5L10 6.8 8.4 10.1 6.8 6.8z'/%3E%3C/g%3E%3C/svg%3E");
+  --gothic-bl: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(0,20) scale(1,-1)'%3E%3Cpath d='M1 18V1h17v1.5H5.5L2.5 5.5V18H1zM8.4 3.5L10 6.8 8.4 10.1 6.8 6.8z'/%3E%3C/g%3E%3C/svg%3E");
+  --gothic-br: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cg transform='translate(20,20) scale(-1,-1)'%3E%3Cpath d='M1 18V1h17v1.5H5.5L2.5 5.5V18H1zM8.4 3.5L10 6.8 8.4 10.1 6.8 6.8z'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent; /* OBS composites the page over the scene */
+}
+
+/* ---- message list ---- */
+
+.chat {
+  box-sizing: border-box;
+  height: 100vh;
+  /* Extra horizontal air so drop shadows never clip on the viewport edge. */
+  padding: var(--chat-gap) 14px;
+  display: flex;
+  flex-direction: column;
+  /* Newest at the bottom, old ones leave at the top. With the newest at the
+     top, the overlay flips this to column-reverse. */
+  justify-content: flex-end;
+  gap: var(--chat-gap);
+  overflow: hidden;
+  font-family: var(--chat-font);
+  font-size: var(--chat-font-size);
+  line-height: 1.44;
+  color: var(--chat-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.chat--compact { --chat-padding: 0.5em 0.84em; }
+.chat--airy    { --chat-padding: 0.9em 1.18em; }
+
+/* ---- one gilded card ---- */
+
+.msg {
+  --platform-color: var(--chat-accent);
+  --accent: var(--chat-accent);
+  --secondary: var(--chat-secondary);
+  --paid-color: var(--paid);
+  --card-surface: var(--chat-bg);
+  --frame-outer: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.62), transparent);
+  --frame-inner: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.34), transparent);
+  --ornament-color: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.88), transparent);
+  --rule-color: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.36), transparent);
+  --rule-strong: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.56), transparent);
+  --card-shadow: color-mix(in srgb, #050208 calc(var(--chat-bg-opacity) * 0.44), transparent);
+  flex-shrink: 0;
+  filter: drop-shadow(0 5px 12px var(--card-shadow));
+  animation: var(--msg-enter);
+}
+
+.chat--accent-platform .msg {
+  --accent: color-mix(in srgb, var(--platform-color) 68%, var(--chat-text));
+}
+
+.chat--accent-chatter .msg {
+  --accent: color-mix(
+    in srgb,
+    var(--author-color, hsl(var(--chatter-hue, 42) 62% 54%)) 68%,
+    var(--chat-text)
+  );
+}
+
+.chat--accent-role .msg--role-member    { --accent: var(--role-member); }
+.chat--accent-role .msg--role-moderator { --accent: var(--role-moderator); }
+.chat--accent-role .msg--role-owner     { --accent: var(--role-owner); }
+
+.msg--twitch         { --platform-color: var(--twitch); }
+.msg--youtube        { --platform-color: var(--youtube); }
+.msg--picarto        { --platform-color: var(--picarto); }
+.msg--rplay          { --platform-color: var(--rplay); }
+.msg--streamelements { --platform-color: var(--streamelements); }
+.msg--streamlabs     { --platform-color: var(--streamlabs); }
+
+/* ---- animations ---- */
+
+.chat--newest-top { --msg-enter-offset: -0.55em; }
+
+@keyframes msg-in-unfurl {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.55em)) scale(0.975);
+  }
+}
+
+@keyframes msg-in-slide {
+  from {
+    opacity: 0;
+    transform: translateY(var(--msg-enter-offset, 0.55em));
+  }
+}
+
+@keyframes msg-in-fade {
+  from { opacity: 0; }
+}
+
+.chat--fade-out .msg {
+  animation: var(--msg-enter), msg-out 0.65s ease-in var(--msg-fade-delay) forwards;
+}
+
+@keyframes msg-out {
+  to { opacity: 0; }
+}
+
+/* ---- ornate frame (default "Filigree" style) ---- */
+
+.msg__frame {
+  position: relative;
+  padding: var(--chat-padding);
+  overflow: hidden;
+  border-radius: 3px;
+  background:
+    radial-gradient(
+      120% 95% at 50% 0%,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.13), transparent) 0%,
+      transparent 58%
+    ),
+    radial-gradient(
+      90% 90% at 100% 100%,
+      color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.16), transparent) 0%,
+      transparent 62%
+    ),
+    var(--card-surface);
+  box-shadow:
+    inset 0 0 0 1.5px var(--frame-outer),
+    inset 0 1px 0 color-mix(in srgb, #ffffff calc(var(--chat-bg-opacity) * 0.12), transparent);
+}
+
+/* Inset secondary hairline frame. */
+.msg__frame::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border: 1px solid var(--frame-inner);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+/* Four symmetric SVG filigree corner ornaments tinted dynamically by --accent. */
+.msg__frame::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  background: var(--ornament-color);
+  -webkit-mask-image: var(--filigree-tl), var(--filigree-tr), var(--filigree-bl), var(--filigree-br);
+  -webkit-mask-position: top left, top right, bottom left, bottom right;
+  -webkit-mask-size: 16px 16px;
+  -webkit-mask-repeat: no-repeat;
+  mask-image: var(--filigree-tl), var(--filigree-tr), var(--filigree-bl), var(--filigree-br);
+  mask-position: top left, top right, bottom left, bottom right;
+  mask-size: 16px 16px;
+  mask-repeat: no-repeat;
+  pointer-events: none;
+}
+
+.chat--hide-ornaments .msg__frame::after {
+  display: none;
+}
+
+/* ---- frame style variations ---- */
+
+/* Tarot: notched octagonal occult card with celestial diamond corner markers. */
+.chat--frame-tarot .msg__frame {
+  border-radius: 0;
+  padding-left: 1.08em;
+  padding-right: 1.08em;
+  clip-path: polygon(
+    9px 0, calc(100% - 9px) 0,
+    100% 9px, 100% calc(100% - 9px),
+    calc(100% - 9px) 100%, 9px 100%,
+    0 calc(100% - 9px), 0 9px
+  );
+  background:
+    /* crisp 1.5px gilded bevels along all four notched corners */
+    linear-gradient(135deg, var(--frame-outer) 0 7.6px, transparent 8.1px),
+    linear-gradient(225deg, var(--frame-outer) 0 7.6px, transparent 8.1px),
+    linear-gradient(45deg, var(--frame-outer) 0 7.6px, transparent 8.1px),
+    linear-gradient(315deg, var(--frame-outer) 0 7.6px, transparent 8.1px),
+    radial-gradient(
+      95% 85% at 50% 0%,
+      color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.22), transparent) 0%,
+      transparent 65%
+    ),
+    radial-gradient(
+      95% 85% at 50% 100%,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.12), transparent) 0%,
+      transparent 65%
+    ),
+    var(--card-surface);
+  box-shadow: inset 0 0 0 1.5px var(--frame-outer);
+}
+
+.chat--frame-tarot .msg__frame::before {
+  inset: 6px;
+  border-style: double;
+  border-width: 3px;
+  border-color: var(--frame-inner);
+}
+
+.chat--frame-tarot .msg__frame::after {
+  inset: 5px;
+  -webkit-mask-image: var(--tarot-tl), var(--tarot-tr), var(--tarot-bl), var(--tarot-br);
+  -webkit-mask-size: 15px 15px;
+  mask-image: var(--tarot-tl), var(--tarot-tr), var(--tarot-bl), var(--tarot-br);
+  mask-size: 15px 15px;
+}
+
+/* Cathedral: gothic lancet top crown bar, stained-glass wash, ironwork trim. */
+.chat--frame-cathedral .msg__frame {
+  border-radius: 2px;
+  border-top: 3px solid var(--accent);
+  background:
+    /* stained-glass vertical lancet tint */
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.28), transparent) 0%,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.08), transparent) 46%,
+      transparent 100%
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.11), transparent) 0%,
+      transparent 18%,
+      transparent 82%,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.11), transparent) 100%
+    ),
+    var(--card-surface);
+  box-shadow:
+    inset 0 0 0 1px var(--frame-outer),
+    inset 0 -2px 0 color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.55), transparent);
+}
+
+.chat--frame-cathedral .msg__frame::before {
+  inset: 5px 6px;
+  border-width: 0 1px;
+  border-color: var(--frame-inner);
+}
+
+.chat--frame-cathedral .msg__frame::after {
+  inset: 3px;
+  -webkit-mask-image: var(--gothic-tl), var(--gothic-tr), var(--gothic-bl), var(--gothic-br);
+  -webkit-mask-size: 15px 15px;
+  mask-image: var(--gothic-tl), var(--gothic-tr), var(--gothic-bl), var(--gothic-br);
+  mask-size: 15px 15px;
+}
+
+/* Velvet: restrained royal medallion card with soft rounded corners and gold trim. */
+.chat--frame-velvet .msg__frame {
+  border-radius: 10px;
+  background:
+    radial-gradient(
+      110% 100% at 15% 0%,
+      color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.24), transparent) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      100% 100% at 85% 100%,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.14), transparent) 0%,
+      transparent 60%
+    ),
+    var(--card-surface);
+  box-shadow:
+    inset 0 0 0 1.5px var(--frame-outer),
+    inset 0 0 18px color-mix(in srgb, #000000 calc(var(--chat-bg-opacity) * 0.26), transparent);
+}
+
+.chat--frame-velvet .msg__frame::before {
+  inset: 4px;
+  border-radius: 7px;
+  border-color: var(--frame-inner);
+}
+
+.chat--frame-velvet .msg__frame::after {
+  inset: 9px;
+  background:
+    radial-gradient(circle, var(--ornament-color) 0 2px, transparent 2.5px) top left / 6px 6px no-repeat,
+    radial-gradient(circle, var(--ornament-color) 0 2px, transparent 2.5px) top right / 6px 6px no-repeat,
+    radial-gradient(circle, var(--ornament-color) 0 2px, transparent 2.5px) bottom left / 6px 6px no-repeat,
+    radial-gradient(circle, var(--ornament-color) 0 2px, transparent 2.5px) bottom right / 6px 6px no-repeat;
+  -webkit-mask: none;
+  mask: none;
+}
+
+/* ---- header: platform gem, cameo avatar, crest, name, badges, time ---- */
+
+.msg__meta {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.34em;
+  min-width: 0;
+}
+
+.msg__meta:not(:last-child) {
+  padding-bottom: 0.36em;
+  margin-bottom: 0.38em;
+  border-bottom: 1px solid transparent;
+  border-image: linear-gradient(
+    90deg,
+    var(--rule-strong) 0%,
+    var(--rule-color) 60%,
+    transparent 100%
+  ) 1;
+}
+
+/* Centered plaque header (flanked by delicate gilded hairlines that collapse
+   cleanly to zero on narrow overlays so long names keep maximum room). */
+.chat--header-center .msg__meta {
+  justify-content: center;
+}
+
+.chat--header-center .msg__meta::before,
+.chat--header-center .msg__meta::after {
+  content: "";
+  flex: 1 1 0;
+  min-width: 0;
+  height: 1px;
+}
+
+.chat--header-center .msg__meta::before {
+  background: linear-gradient(90deg, transparent, var(--rule-strong));
+}
+
+.chat--header-center .msg__meta::after {
+  background: linear-gradient(270deg, transparent, var(--rule-strong));
+}
+
+.chat--header-center .msg__meta:not(:last-child) {
+  border-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--rule-strong) 22%,
+    var(--rule-strong) 78%,
+    transparent 100%
+  ) 1;
+}
+
+.chat--header-center .msg__time {
+  margin-left: 0;
+}
+
+/* Platform gem: a tiny rotated diamond set in a gilded bevel. */
+.msg__platform {
+  flex-shrink: 0;
+  width: 0.42em;
+  height: 0.42em;
+  margin: 0 0.08em;
+  transform: rotate(45deg);
+  background: var(--platform-color);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.chat--hide-platform .msg__platform {
+  display: none;
+}
+
+/* Cameo portrait avatar framed in a gilded locket ring. */
+.msg__avatar {
+  flex-shrink: 0;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow:
+    0 0 0 1.5px var(--accent),
+    0 0 0 3px color-mix(in srgb, var(--chat-bg-color) 85%, transparent);
+}
+
+.chat--hide-avatars .msg__avatar {
+  display: none;
+}
+
+/* Persistent per-chatter arcane crest driven by `author.id | seed(6, 'crest')`. */
+.msg__crest {
+  flex-shrink: 0;
+  display: inline-block;
+  width: 0.88em;
+  height: 0.88em;
+  background: var(--accent);
+  -webkit-mask: var(--crest-svg) center / contain no-repeat;
+  mask: var(--crest-svg) center / contain no-repeat;
+}
+
+/* 0: North star */
+.msg__crest--0 {
+  --crest-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 1.5L14.2 9.8 22.5 12l-8.3 2.2L12 22.5 9.8 14.2 1.5 12l8.3-2.2z'/%3E%3C/svg%3E");
+}
+/* 1: Crescent moon */
+.msg__crest--1 {
+  --crest-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M19.8 14.7A8.3 8.3 0 0 1 9.3 4.2a8.4 8.4 0 1 0 10.5 10.5z'/%3E%3C/svg%3E");
+}
+/* 2: Fleur-de-lis */
+.msg__crest--2 {
+  --crest-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2c2.2 2.8 2.8 6 1.6 9.5 1.8-2.2 4.6-2.5 6.4-.8 1.5 1.4 1.3 4-1 5.2-1.7.9-3.6.2-4.8-.9v1.5h2.6v2h-2.6c-.3 1.4-1 2.6-2.2 3.5-1.2-.9-1.9-2.1-2.2-3.5H7.2v-2h2.6V15c-1.2 1.1-3.1 1.8-4.8.9-2.3-1.2-2.5-3.8-1-5.2 1.8-1.7 4.6-1.4 6.4.8C9.2 8 9.8 4.8 12 2z'/%3E%3C/svg%3E");
+}
+/* 3: Gothic diamond jewel */
+.msg__crest--3 {
+  --crest-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' d='M12 2l8.5 10L12 22 3.5 12 12 2zm0 3.8L6.8 12 12 18.2 17.2 12 12 5.8z'/%3E%3Ccircle cx='12' cy='12' r='2.4'/%3E%3C/svg%3E");
+}
+/* 4: Gothic quatrefoil rosette */
+.msg__crest--4 {
+  --crest-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='7' r='4.6'/%3E%3Ccircle cx='17' cy='12' r='4.6'/%3E%3Ccircle cx='12' cy='17' r='4.6'/%3E%3Ccircle cx='7' cy='12' r='4.6'/%3E%3C/svg%3E");
+}
+/* 5: Celestial sunburst */
+.msg__crest--5 {
+  --crest-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='4.2'/%3E%3Cpath d='M12 1.5l1.5 4.8h-3L12 1.5zm0 21l-1.5-4.8h3L12 22.5zM1.5 12l4.8-1.5v3L1.5 12zm21 0l-4.8 1.5v-3L22.5 12zM4.6 4.6l4.4 2.4-2 2-2.4-4.4zm14.8 14.8l-4.4-2.4 2-2 2.4 4.4zm0-14.8l-2.4 4.4-2-2 4.4-2.4zM4.6 19.4l2.4-4.4 2 2-4.4 2.4z'/%3E%3C/svg%3E");
+}
+
+.chat--hide-crests .msg__crest {
+  display: none;
+}
+
+.msg__author {
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Extra padding box (compensated by negative margin) so overflow: hidden
+     truncates horizontally with an ellipsis without clipping descenders. */
+  padding: 0.14em 2px 0.14em 0;
+  margin: -0.14em -2px -0.14em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+}
+
+.badge {
+  flex-shrink: 0;
+  white-space: nowrap;
+  --badge-color: var(--accent);
+  --badge-ink: color-mix(in srgb, var(--badge-color) 62%, var(--chat-text));
+  padding: 0.05em 0.4em;
+  border: 1px solid color-mix(in srgb, var(--badge-ink) 48%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--badge-color) 16%, transparent);
+  color: var(--badge-ink);
+  font-size: 0.52em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.4;
+}
+
+.chat--hide-badges .badge {
+  display: none;
+}
+
+.badge--broadcaster,
+.badge--owner     { --badge-color: #d94173; }
+.badge--moderator { --badge-color: #2c9c6b; }
+.badge--vip       { --badge-color: #b452d6; }
+.badge--verified  { --badge-color: #7c8aa6; }
+.badge--subscriber,
+.badge--member    { --badge-color: var(--membership); }
+
+.badge.badge--icon {
+  flex-shrink: 0;
+  width: 1em;
+  height: 1em;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  font-size: 1em;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+.msg__time {
+  display: none;
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin-left: auto;
+  color: var(--chat-muted);
+  font-size: 0.68em;
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat--show-time .msg__time {
+  display: inline;
+}
+
+/* ---- event banner and body ---- */
+
+.msg__event {
+  margin: 0;
+  padding: 0.16em 0.65em;
+  display: inline-block;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 44%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 44%, transparent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  font-size: 0.88em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.msg__event + .msg__body {
+  margin-top: 0.36em;
+}
+
+.msg__body {
+  margin: 0;
+  overflow-wrap: anywhere; /* long spam without spaces must not overflow */
+}
+
+.emote {
+  height: var(--emote-size);
+  vertical-align: middle;
+  margin: -0.2em 0.05em;
+}
+
+.msg__info {
+  font-weight: 500;
+  color: var(--chat-text);
+}
+
+.msg__sticker {
+  display: block;
+  height: 4em;
+  margin-top: 0.35em;
+}
+
+/* ---- message kinds & paid tiers ---- */
+
+.msg--emote-only .emote {
+  height: var(--emote-only-size);
+  margin: 0.08em 0.05em;
+}
+
+/* Paid messages, memberships, gifts, and notices adapt cleanly on both dark
+   velvet and light vellum presets by blending event hues with --chat-text. */
+.chat .msg--paid {
+  --accent: color-mix(in srgb, var(--paid-color) 62%, var(--chat-text));
+  --secondary: var(--paid-color);
+  --card-surface: color-mix(in srgb, var(--paid-color) 12%, var(--chat-bg));
+}
+
+.chat .msg--membership,
+.chat .msg--gift {
+  --accent: color-mix(in srgb, var(--membership) 62%, var(--chat-text));
+  --secondary: var(--membership);
+  --card-surface: color-mix(in srgb, var(--membership) 10%, var(--chat-bg));
+}
+
+.chat .msg--notice {
+  --accent: color-mix(in srgb, var(--notice) 62%, var(--chat-text));
+  --secondary: var(--notice);
+  --card-surface: color-mix(in srgb, var(--notice) 12%, var(--chat-bg));
+  text-align: center;
+  font-style: italic;
+}
+
+.msg--notice .msg__event {
+  border-top: none;
+  border-bottom: none;
+  background: transparent;
+  padding: 0;
+}
+
+/* Donation tier colours. */
+.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
+.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
+.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
+.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
+.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
+.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
+.msg--tier-7 { --paid-color: var(--paid-youtube-7); }
+.msg--youtube[class*="msg--tier-"]:not(.msg--tier-1, .msg--tier-2, .msg--tier-3,
+  .msg--tier-4, .msg--tier-5, .msg--tier-6) { --paid-color: var(--paid-youtube-7); }
+
+.msg--twitch.msg--tier-1 { --paid-color: var(--paid-twitch-1); }
+.msg--twitch.msg--tier-2,
+.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-2); }
+.msg--twitch.msg--tier-4,
+.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-3); }
+.msg--twitch.msg--tier-6 { --paid-color: var(--paid-twitch-4); }
+.msg--twitch.msg--tier-7 { --paid-color: var(--paid-twitch-5); }
+
+/* ---- moderation ---- */
+
+/* Deleted messages vanish at once by default. For a fade instead:
+   .msg--deleted { opacity: 0; transition: opacity 0.3s; }
+   and set --delete-delay: 0.3s above. */
+.msg--deleted {
+  display: none;
+}

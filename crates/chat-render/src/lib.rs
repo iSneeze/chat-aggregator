@@ -34,6 +34,10 @@ static BUILTIN_RETRO: LazyLock<Arc<Theme>> =
     LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Retro)));
 static BUILTIN_NEON: LazyLock<Arc<Theme>> =
     LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Neon)));
+static BUILTIN_ORNATE: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Ornate)));
+static BUILTIN_AERO: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Aero)));
 static BUILTIN_DEFAULT_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
     options::ThemeManifest::parse(DEFAULT_MANIFEST).expect("built-in Default theme.toml is valid")
 });
@@ -51,6 +55,12 @@ static BUILTIN_RETRO_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(
 });
 static BUILTIN_NEON_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
     options::ThemeManifest::parse(NEON_MANIFEST).expect("built-in Neon theme.toml is valid")
+});
+static BUILTIN_ORNATE_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(ORNATE_MANIFEST).expect("built-in Ornate theme.toml is valid")
+});
+static BUILTIN_AERO_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(AERO_MANIFEST).expect("built-in Aero theme.toml is valid")
 });
 
 pub mod options;
@@ -76,6 +86,12 @@ const RETRO_MANIFEST: &str = include_str!("../templates/retro/theme.toml");
 const NEON_MESSAGE_TEMPLATE: &str = include_str!("../templates/neon/message.html");
 const NEON_CSS: &str = include_str!("../templates/neon/overlay.css");
 const NEON_MANIFEST: &str = include_str!("../templates/neon/theme.toml");
+const ORNATE_MESSAGE_TEMPLATE: &str = include_str!("../templates/ornate/message.html");
+const ORNATE_CSS: &str = include_str!("../templates/ornate/overlay.css");
+const ORNATE_MANIFEST: &str = include_str!("../templates/ornate/theme.toml");
+const AERO_MESSAGE_TEMPLATE: &str = include_str!("../templates/aero/message.html");
+const AERO_CSS: &str = include_str!("../templates/aero/overlay.css");
+const AERO_MANIFEST: &str = include_str!("../templates/aero/theme.toml");
 
 pub const MESSAGE_FILE: &str = "message.html";
 pub const CSS_FILE: &str = "overlay.css";
@@ -97,16 +113,22 @@ pub enum Builtin {
     Retro,
     /// Cybernetic HUD cards with chamfered corners and dual-color neon accents.
     Neon,
+    /// Gilded baroque & dark-fantasy cards with filigree corners and arcane crests.
+    Ornate,
+    /// Frutiger Aero glossy glass panels with specular sheen and seeded bokeh orbs.
+    Aero,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 6] = [
+    pub const ALL: [Builtin; 8] = [
         Builtin::Default,
         Builtin::Minimal,
         Builtin::Bubbles,
         Builtin::Cozy,
         Builtin::Retro,
         Builtin::Neon,
+        Builtin::Ornate,
+        Builtin::Aero,
     ];
 
     /// Its name in `config.toml` and in overlay URLs (`?theme=minimal`).
@@ -119,6 +141,8 @@ impl Builtin {
             Builtin::Cozy => "cozy",
             Builtin::Retro => "retro",
             Builtin::Neon => "neon",
+            Builtin::Ornate => "ornate",
+            Builtin::Aero => "aero",
         }
     }
 
@@ -131,6 +155,8 @@ impl Builtin {
             Builtin::Cozy => "Cozy",
             Builtin::Retro => "Retro",
             Builtin::Neon => "Neon",
+            Builtin::Ornate => "Ornate",
+            Builtin::Aero => "Aero",
         }
     }
 
@@ -149,6 +175,8 @@ impl Builtin {
             Builtin::Cozy => COZY_MESSAGE_TEMPLATE,
             Builtin::Retro => RETRO_MESSAGE_TEMPLATE,
             Builtin::Neon => NEON_MESSAGE_TEMPLATE,
+            Builtin::Ornate => ORNATE_MESSAGE_TEMPLATE,
+            Builtin::Aero => AERO_MESSAGE_TEMPLATE,
         }
     }
 
@@ -160,6 +188,8 @@ impl Builtin {
             Builtin::Cozy => COZY_CSS,
             Builtin::Retro => RETRO_CSS,
             Builtin::Neon => NEON_CSS,
+            Builtin::Ornate => ORNATE_CSS,
+            Builtin::Aero => AERO_CSS,
         }
     }
 
@@ -172,6 +202,8 @@ impl Builtin {
             Builtin::Cozy => COZY_MANIFEST,
             Builtin::Retro => RETRO_MANIFEST,
             Builtin::Neon => NEON_MANIFEST,
+            Builtin::Ornate => ORNATE_MANIFEST,
+            Builtin::Aero => AERO_MANIFEST,
         }
     }
 
@@ -184,6 +216,8 @@ impl Builtin {
             Builtin::Cozy => &BUILTIN_COZY_MANIFEST,
             Builtin::Retro => &BUILTIN_RETRO_MANIFEST,
             Builtin::Neon => &BUILTIN_NEON_MANIFEST,
+            Builtin::Ornate => &BUILTIN_ORNATE_MANIFEST,
+            Builtin::Aero => &BUILTIN_AERO_MANIFEST,
         }
     }
 }
@@ -316,6 +350,8 @@ impl Theme {
             Builtin::Cozy => Arc::clone(&BUILTIN_COZY),
             Builtin::Retro => Arc::clone(&BUILTIN_RETRO),
             Builtin::Neon => Arc::clone(&BUILTIN_NEON),
+            Builtin::Ornate => Arc::clone(&BUILTIN_ORNATE),
+            Builtin::Aero => Arc::clone(&BUILTIN_AERO),
         }
     }
 
@@ -536,6 +572,8 @@ mod tests {
         assert_eq!(Builtin::from_name("Cozy"), Some(Builtin::Cozy));
         assert_eq!(Builtin::from_name("RETRO"), Some(Builtin::Retro));
         assert_eq!(Builtin::from_name("Neon"), Some(Builtin::Neon));
+        assert_eq!(Builtin::from_name("ORNATE"), Some(Builtin::Ornate));
+        assert_eq!(Builtin::from_name("Aero"), Some(Builtin::Aero));
         assert_eq!(Builtin::from_name("studio"), None);
         let themes = Path::new("/themes");
         assert_eq!(
@@ -557,6 +595,14 @@ mod tests {
         assert_eq!(
             ThemeSource::named(themes, "neon"),
             ThemeSource::Builtin(Builtin::Neon)
+        );
+        assert_eq!(
+            ThemeSource::named(themes, "ornate"),
+            ThemeSource::Builtin(Builtin::Ornate)
+        );
+        assert_eq!(
+            ThemeSource::named(themes, "aero"),
+            ThemeSource::Builtin(Builtin::Aero)
         );
         assert_eq!(
             ThemeSource::named(themes, "studio"),
@@ -695,6 +741,8 @@ mod tests {
             Builtin::Cozy,
             Builtin::Retro,
             Builtin::Neon,
+            Builtin::Ornate,
+            Builtin::Aero,
         ] {
             let html = Theme::from_builtin(builtin).render(&msg).unwrap();
             assert!(
