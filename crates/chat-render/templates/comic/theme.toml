@@ -1,0 +1,344 @@
+# Customizable options for the Comic built-in overlay theme.
+
+[[options]]
+name = "accent_mode"
+label = "Accent style"
+group = "Colors"
+help = "By role colors the nameplate and shadow for members/subs, mods, and broadcaster; Chatter gives each chatter their own ink."
+type = "choice"
+default = "Custom"
+options = ["Custom", "By role", "Chatter", "Platform"]
+[options.class_values]
+Custom = ""
+"By role" = "chat--accent-role"
+Chatter = "chat--accent-chatter"
+Platform = "chat--accent-platform"
+
+[[options]]
+name = "accent_color"
+label = "Nameplate / ink"
+group = "Colors"
+help = "Speaker tag, slash, star, and offset shadow in Custom mode (and for viewers in By role mode)."
+type = "color"
+default = "#b50c00"
+css_var = "--chat-accent"
+
+[[options]]
+name = "secondary_color"
+label = "Highlight pop"
+group = "Colors"
+help = "Halftone burst, corner accent, and Zine shadow tint."
+type = "color"
+default = "#ffffff"
+css_var = "--chat-secondary"
+
+[[options]]
+name = "bg_color"
+label = "Panel color"
+group = "Colors"
+type = "color"
+default = "#0c0c0e"
+css_var = "--chat-bg-color"
+
+[[options]]
+name = "text_color"
+label = "Text color"
+group = "Colors"
+type = "color"
+default = "#ffffff"
+css_var = "--chat-text"
+
+[[options]]
+name = "tag_text_color"
+label = "Name tag text"
+group = "Colors"
+help = "Text color inside the breakout speaker nameplate (or floating name in Pulp)."
+type = "color"
+default = "#ffffff"
+css_var = "--tag-text"
+
+[[options]]
+name = "bg_opacity"
+label = "Panel opacity"
+group = "Colors"
+type = "number"
+default = 96
+min = 0
+max = 100
+step = 5
+unit = "%"
+css_var = "--chat-bg-opacity"
+
+[[options]]
+name = "member_color"
+label = "Member / sub"
+group = "Role colors"
+help = "Subscribers, members, and VIPs when Accent style is By role."
+type = "color"
+default = "#1db974"
+css_var = "--role-member"
+
+[[options]]
+name = "moderator_color"
+label = "Moderator"
+group = "Role colors"
+type = "color"
+default = "#3b7cff"
+css_var = "--role-moderator"
+
+[[options]]
+name = "owner_color"
+label = "Broadcaster"
+group = "Role colors"
+type = "color"
+default = "#e6192e"
+css_var = "--role-owner"
+
+[[options]]
+name = "frame"
+label = "Panel style"
+group = "Comic style"
+type = "choice"
+default = "Phantom"
+options = ["Phantom", "Manga", "Pulp", "Zine"]
+[options.class_values]
+Phantom = ""
+Manga = "chat--frame-manga"
+Pulp = "chat--frame-pulp"
+Zine = "chat--frame-zine"
+
+[[options]]
+name = "halftone"
+label = "Halftone dots"
+group = "Comic style"
+help = "Adds Ben-Day screentone dots in the corner of each panel."
+type = "bool"
+default = true
+class_when_false = "chat--hide-halftone"
+
+[[options]]
+name = "tilt"
+label = "Dynamic tilt"
+group = "Comic style"
+help = "Adds a playful graphic angle to panels and speaker ribbons."
+type = "choice"
+default = "Subtle"
+options = ["Off", "Subtle", "Bold"]
+[options.class_values]
+Off = "chat--tilt-off"
+Subtle = ""
+Bold = "chat--tilt-bold"
+
+[[options]]
+name = "font"
+label = "Font"
+group = "Typography & layout"
+type = "choice"
+default = "Impact"
+options = ["Impact", "Sans", "Editorial", "Monospace"]
+css_var = "--chat-font"
+[options.css_values]
+Impact = '"Bahnschrift", "DIN Alternate", "Franklin Gothic Medium", "Inter", "Segoe UI", system-ui, sans-serif'
+Sans = '"Inter", "Segoe UI", system-ui, sans-serif'
+Editorial = '"Georgia", "Palatino Linotype", "Book Antiqua", ui-serif, serif'
+Monospace = '"JetBrains Mono", "Cascadia Code", ui-monospace, monospace'
+
+[[options]]
+name = "font_size"
+label = "Text size"
+group = "Typography & layout"
+type = "number"
+default = 19
+min = 12
+max = 42
+step = 1
+unit = "px"
+css_var = "--chat-font-size"
+
+[[options]]
+name = "spacing"
+label = "Spacing"
+group = "Typography & layout"
+type = "choice"
+default = "Cozy"
+options = ["Compact", "Cozy", "Airy"]
+css_var = "--chat-gap"
+[options.css_values]
+Compact = "8px"
+Cozy = "13px"
+Airy = "18px"
+[options.class_values]
+Compact = "chat--compact"
+Cozy = ""
+Airy = "chat--airy"
+
+[[options]]
+name = "animation"
+label = "Entrance"
+group = "Motion"
+type = "choice"
+default = "Slam"
+options = ["Slam", "Slash", "Pop", "Fade", "None"]
+css_var = "--msg-enter"
+[options.css_values]
+Slam = "msg-in-slam 0.26s cubic-bezier(0.18, 1.32, 0.36, 1)"
+Slash = "msg-in-slash 0.22s cubic-bezier(0.22, 1, 0.36, 1)"
+Pop = "msg-in-pop 0.26s cubic-bezier(0.34, 1.56, 0.64, 1)"
+Fade = "msg-in-fade 0.2s ease-out"
+None = "none"
+
+[[options]]
+name = "fade_after"
+label = "Fade out after"
+group = "Motion"
+help = "Hide older messages automatically after a while."
+type = "choice"
+default = "Never"
+options = ["Never", "15s", "30s", "60s"]
+css_var = "--msg-fade-delay"
+[options.css_values]
+Never = "0s"
+15s = "15s"
+30s = "30s"
+60s = "60s"
+[options.class_values]
+Never = ""
+15s = "chat--fade-out"
+30s = "chat--fade-out"
+60s = "chat--fade-out"
+
+[[options]]
+name = "show_timestamps"
+label = "Timestamps"
+group = "Elements"
+type = "bool"
+default = false
+class = "chat--show-time"
+
+[[options]]
+name = "show_avatars"
+label = "Portraits"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-avatars"
+
+[[options]]
+name = "show_badges"
+label = "Badges"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-badges"
+
+[[options]]
+name = "show_platform"
+label = "Platform mark"
+group = "Elements"
+type = "bool"
+default = true
+class_when_false = "chat--hide-platform"
+
+[[options]]
+name = "max_messages"
+label = "Max messages"
+group = "Elements"
+help = "Older messages above this limit are removed."
+type = "number"
+default = 20
+min = 5
+max = 100
+step = 5
+css_var = "--max-messages"
+
+# 1-click curated palettes shown at the top of the Themes window.
+
+[[presets]]
+name = "Phantom Thief"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#b50c00"
+secondary_color = "#ffffff"
+bg_color = "#0c0c0e"
+text_color = "#ffffff"
+tag_text_color = "#ffffff"
+bg_opacity = 96
+frame = "Phantom"
+halftone = true
+tilt = "Subtle"
+font = "Impact"
+
+[[presets]]
+name = "Cursed Apple"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#a83222"
+secondary_color = "#c9973b"
+bg_color = "#ede2c7"
+text_color = "#1b1613"
+tag_text_color = "#f2e7ce"
+bg_opacity = 100
+frame = "Pulp"
+halftone = true
+tilt = "Subtle"
+font = "Editorial"
+
+[[presets]]
+name = "Noir Patron"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#d6a446"
+secondary_color = "#3da388"
+bg_color = "#181513"
+text_color = "#f0e5ce"
+tag_text_color = "#e6bc67"
+bg_opacity = 100
+frame = "Pulp"
+halftone = true
+tilt = "Subtle"
+font = "Editorial"
+
+[[presets]]
+name = "Shonen Ink"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#141418"
+secondary_color = "#b50c00"
+bg_color = "#faf9f5"
+text_color = "#141418"
+tag_text_color = "#ffffff"
+bg_opacity = 98
+frame = "Manga"
+halftone = true
+tilt = "Off"
+font = "Impact"
+
+[[presets]]
+name = "Noir Manga"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#f5b82e"
+secondary_color = "#d92638"
+bg_color = "#141418"
+text_color = "#f5f5f7"
+tag_text_color = "#111114"
+bg_opacity = 96
+frame = "Manga"
+halftone = true
+tilt = "Off"
+font = "Impact"
+
+[[presets]]
+name = "Risograph"
+[presets.values]
+accent_mode = "Custom"
+accent_color = "#1d44b8"
+secondary_color = "#ff4f5e"
+bg_color = "#fbf4e9"
+text_color = "#161c36"
+tag_text_color = "#fffaf2"
+bg_opacity = 96
+frame = "Zine"
+halftone = true
+tilt = "Subtle"
+font = "Impact"

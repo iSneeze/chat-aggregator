@@ -38,6 +38,8 @@ static BUILTIN_ORNATE: LazyLock<Arc<Theme>> =
     LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Ornate)));
 static BUILTIN_AERO: LazyLock<Arc<Theme>> =
     LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Aero)));
+static BUILTIN_COMIC: LazyLock<Arc<Theme>> =
+    LazyLock::new(|| Arc::new(Theme::from_builtin(Builtin::Comic)));
 static BUILTIN_DEFAULT_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
     options::ThemeManifest::parse(DEFAULT_MANIFEST).expect("built-in Default theme.toml is valid")
 });
@@ -61,6 +63,9 @@ static BUILTIN_ORNATE_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new
 });
 static BUILTIN_AERO_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
     options::ThemeManifest::parse(AERO_MANIFEST).expect("built-in Aero theme.toml is valid")
+});
+static BUILTIN_COMIC_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(|| {
+    options::ThemeManifest::parse(COMIC_MANIFEST).expect("built-in Comic theme.toml is valid")
 });
 
 pub mod options;
@@ -92,6 +97,9 @@ const ORNATE_MANIFEST: &str = include_str!("../templates/ornate/theme.toml");
 const AERO_MESSAGE_TEMPLATE: &str = include_str!("../templates/aero/message.html");
 const AERO_CSS: &str = include_str!("../templates/aero/overlay.css");
 const AERO_MANIFEST: &str = include_str!("../templates/aero/theme.toml");
+const COMIC_MESSAGE_TEMPLATE: &str = include_str!("../templates/comic/message.html");
+const COMIC_CSS: &str = include_str!("../templates/comic/overlay.css");
+const COMIC_MANIFEST: &str = include_str!("../templates/comic/theme.toml");
 
 pub const MESSAGE_FILE: &str = "message.html";
 pub const CSS_FILE: &str = "overlay.css";
@@ -117,10 +125,12 @@ pub enum Builtin {
     Ornate,
     /// Frutiger Aero glossy glass panels with specular sheen and seeded bokeh orbs.
     Aero,
+    /// Bold graphic-print panels spanning Persona-style jagged cards, manga ink, and pulp noir posters.
+    Comic,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 8] = [
+    pub const ALL: [Builtin; 9] = [
         Builtin::Default,
         Builtin::Minimal,
         Builtin::Bubbles,
@@ -129,6 +139,7 @@ impl Builtin {
         Builtin::Neon,
         Builtin::Ornate,
         Builtin::Aero,
+        Builtin::Comic,
     ];
 
     /// Its name in `config.toml` and in overlay URLs (`?theme=minimal`).
@@ -143,6 +154,7 @@ impl Builtin {
             Builtin::Neon => "neon",
             Builtin::Ornate => "ornate",
             Builtin::Aero => "aero",
+            Builtin::Comic => "comic",
         }
     }
 
@@ -157,6 +169,7 @@ impl Builtin {
             Builtin::Neon => "Neon",
             Builtin::Ornate => "Ornate",
             Builtin::Aero => "Aero",
+            Builtin::Comic => "Comic",
         }
     }
 
@@ -177,6 +190,7 @@ impl Builtin {
             Builtin::Neon => NEON_MESSAGE_TEMPLATE,
             Builtin::Ornate => ORNATE_MESSAGE_TEMPLATE,
             Builtin::Aero => AERO_MESSAGE_TEMPLATE,
+            Builtin::Comic => COMIC_MESSAGE_TEMPLATE,
         }
     }
 
@@ -190,6 +204,7 @@ impl Builtin {
             Builtin::Neon => NEON_CSS,
             Builtin::Ornate => ORNATE_CSS,
             Builtin::Aero => AERO_CSS,
+            Builtin::Comic => COMIC_CSS,
         }
     }
 
@@ -204,6 +219,7 @@ impl Builtin {
             Builtin::Neon => NEON_MANIFEST,
             Builtin::Ornate => ORNATE_MANIFEST,
             Builtin::Aero => AERO_MANIFEST,
+            Builtin::Comic => COMIC_MANIFEST,
         }
     }
 
@@ -218,6 +234,7 @@ impl Builtin {
             Builtin::Neon => &BUILTIN_NEON_MANIFEST,
             Builtin::Ornate => &BUILTIN_ORNATE_MANIFEST,
             Builtin::Aero => &BUILTIN_AERO_MANIFEST,
+            Builtin::Comic => &BUILTIN_COMIC_MANIFEST,
         }
     }
 }
@@ -352,6 +369,7 @@ impl Theme {
             Builtin::Neon => Arc::clone(&BUILTIN_NEON),
             Builtin::Ornate => Arc::clone(&BUILTIN_ORNATE),
             Builtin::Aero => Arc::clone(&BUILTIN_AERO),
+            Builtin::Comic => Arc::clone(&BUILTIN_COMIC),
         }
     }
 
@@ -574,6 +592,7 @@ mod tests {
         assert_eq!(Builtin::from_name("Neon"), Some(Builtin::Neon));
         assert_eq!(Builtin::from_name("ORNATE"), Some(Builtin::Ornate));
         assert_eq!(Builtin::from_name("Aero"), Some(Builtin::Aero));
+        assert_eq!(Builtin::from_name("COMIC"), Some(Builtin::Comic));
         assert_eq!(Builtin::from_name("studio"), None);
         let themes = Path::new("/themes");
         assert_eq!(
@@ -603,6 +622,10 @@ mod tests {
         assert_eq!(
             ThemeSource::named(themes, "aero"),
             ThemeSource::Builtin(Builtin::Aero)
+        );
+        assert_eq!(
+            ThemeSource::named(themes, "comic"),
+            ThemeSource::Builtin(Builtin::Comic)
         );
         assert_eq!(
             ThemeSource::named(themes, "studio"),
@@ -743,6 +766,7 @@ mod tests {
             Builtin::Neon,
             Builtin::Ornate,
             Builtin::Aero,
+            Builtin::Comic,
         ] {
             let html = Theme::from_builtin(builtin).render(&msg).unwrap();
             assert!(

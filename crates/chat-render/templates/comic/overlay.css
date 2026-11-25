@@ -1,0 +1,901 @@
+/*
+ * "Comic" built-in theme: bold graphic-print chat panels with thick ink
+ * outlines, hard unblurred offset shadows, Ben-Day halftone screentone dots,
+ * per-message chaotic jagged polygons, and four distinct silhouettes:
+ *   - Phantom (default): Persona 5-inspired wacky red/black/white jagged panels
+ *   - Manga: crisp black-ink comic panels with screentone & narration captions
+ *   - Pulp: Deadlock-inspired stylized angled speech cards with perched
+ *     portraits, floating outlined names, curved upward tails & staggered flow
+ *   - Zine: chunky neo-brutalist / risograph cutouts with playful stamp tilt
+ *
+ * Most restyling only needs the variables below (or the options in theme.toml).
+ * Every message is an <article class="msg"> with modifier classes:
+ *   .msg--twitch / .msg--youtube / .msg--picarto    platform
+ *   / .msg--rplay / .msg--streamelements / .msg--streamlabs
+ *   .msg--role-viewer / -member / -moderator / -owner
+ *   .msg--cut-0 … -3                                per-message polygon cut
+ *   .msg--tilt-0 … -4                               per-message angle seed
+ *   .msg--side-0 / -1                               per-chatter stagger side
+ *   .msg--text / --emote-only / --donation / --special
+ *   .msg--membership / --gift / --notice            kind
+ *   .msg--paid, .msg--tier-1 … -7                   donations and their tier
+ *   .msg--deleted                                   removed by a moderator
+ */
+
+:root {
+  /* text */
+  --chat-font: "Bahnschrift", "DIN Alternate", "Franklin Gothic Medium", "Inter", "Segoe UI", system-ui, sans-serif;
+  --chat-font-size: 19px;
+  --chat-text: #ffffff;
+  --tag-text: #ffffff;
+  --chat-muted: color-mix(in srgb, var(--tag-text) 78%, transparent);
+
+  /* Phantom Thief palette (stark Persona 5 deep crimson, jet black & chalk white) */
+  --chat-accent: #b50c00;
+  --chat-secondary: #ffffff;
+  --chat-bg-color: #0c0c0e;
+  --chat-bg-opacity: 96%;
+  --chat-bg: color-mix(in srgb, var(--chat-bg-color) var(--chat-bg-opacity), transparent);
+  --chat-gap: 13px;
+  --box-pad-top: 1.08em;
+  --box-pad-x: 1.08em;
+  --box-pad-bottom: 0.76em;
+  --tilt-scale: 1;
+  --halftone-alpha: 0.34;
+
+  /* default asymmetric jagged polygon (varied per message by .msg--cut-0..3) */
+  --panel-clip: polygon(0 8px, 100% 0, calc(100% - 11px) 100%, 4px calc(100% - 4px));
+
+  /* bold 5-point Persona comic star motif (tinted via mask) */
+  --star-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M34 3l7.8 18.6L62 24.4 46.8 37.8l4.4 20.2L33 47.4 14.6 57.6l4.6-20.2L4 23.8l20.2-2.4z'/%3E%3C/svg%3E");
+
+  /* curved upward comic speech tail for Pulp (Deadlock) cards */
+  --pulp-tail: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 14'%3E%3Cpath d='M0 14Q4 9 5 0Q11 11 24 14Z'/%3E%3C/svg%3E");
+
+  /* motion */
+  --msg-enter: msg-in-slam 0.26s cubic-bezier(0.18, 1.32, 0.36, 1);
+  --msg-fade-delay: 0s;
+
+  /* platform & event colours */
+  --twitch: #9146ff;
+  --youtube: #e6192e;
+  --picarto: #24a86e;
+  --rplay: #00a2eb;
+  --streamelements: #4e6ef2;
+  --streamlabs: #1db396;
+  --paid: #e6a800;
+  --membership: #1db974;
+  --notice: #2d8ceb;
+
+  /* role accent colours (used in "By role" accent style) */
+  --role-member: #1db974;
+  --role-moderator: #3b7cff;
+  --role-owner: #e6192e;
+
+  /* donation tier colours (YouTube scale; Twitch cheer below) */
+  --paid-youtube-1: #1e7be0;
+  --paid-youtube-2: #00a5bd;
+  --paid-youtube-3: #0fb38d;
+  --paid-youtube-4: #e0a300;
+  --paid-youtube-5: #e86c14;
+  --paid-youtube-6: #de286b;
+  --paid-youtube-7: #db2c2c;
+  --paid-twitch-1: #7b8496;
+  --paid-twitch-2: #923ce6;
+  --paid-twitch-3: #12a396;
+  --paid-twitch-4: #1486e6;
+  --paid-twitch-5: #e03426;
+
+  /* sizes */
+  --emote-size: 1.55em;
+  --emote-only-size: 2.8em;
+  --avatar-size: 2.2em;
+
+  /* overlay behavior (read by the overlay script) */
+  --max-messages: 20;  /* older messages are removed from the page */
+  --delete-delay: 0s;  /* time for a .msg--deleted transition before removal */
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent; /* OBS composites the page over the scene */
+}
+
+/* ---- message list ---- */
+
+.chat {
+  box-sizing: border-box;
+  height: 100vh;
+  /* Extra horizontal room so hard offset shadows & chaotic tilted tags never clip. */
+  padding: var(--chat-gap) 18px;
+  display: flex;
+  flex-direction: column;
+  /* Newest at the bottom, old ones leave at the top. With the newest at the
+     top, the overlay flips this to column-reverse. */
+  justify-content: flex-end;
+  gap: var(--chat-gap);
+  overflow: hidden;
+  font-family: var(--chat-font);
+  font-size: var(--chat-font-size);
+  line-height: 1.4;
+  color: var(--chat-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.chat--compact {
+  --box-pad-top: 0.9em;
+  --box-pad-x: 0.88em;
+  --box-pad-bottom: 0.58em;
+}
+
+.chat--airy {
+  --box-pad-top: 1.26em;
+  --box-pad-x: 1.28em;
+  --box-pad-bottom: 0.94em;
+}
+
+/* ---- dynamic tilt & chaotic per-message polygon seeds ---- */
+
+.chat--tilt-off  { --tilt-scale: 0; }
+.chat--tilt-bold { --tilt-scale: 1.65; }
+
+.msg--tilt-0 { --tilt-base: -0.9deg; }
+.msg--tilt-1 { --tilt-base: -0.4deg; }
+.msg--tilt-2 { --tilt-base: 0.15deg; }
+.msg--tilt-3 { --tilt-base: 0.55deg; }
+.msg--tilt-4 { --tilt-base: 0.95deg; }
+
+/* Four wacky asymmetric Phantom cuts + alternating tag slant/offset per message. */
+.msg--cut-0 {
+  --panel-clip: polygon(0 8px, 100% 0, calc(100% - 11px) 100%, 4px calc(100% - 4px));
+  --tag-angle: -2.4deg;
+  --tag-shift: 0.45em;
+  --slash-deg: 112deg;
+}
+.msg--cut-1 {
+  --panel-clip: polygon(6px 0, 100% 7px, calc(100% - 4px) calc(100% - 4px), 10px 100%);
+  --tag-angle: 1.7deg;
+  --tag-shift: 1.05em;
+  --slash-deg: 102deg;
+}
+.msg--cut-2 {
+  --panel-clip: polygon(11px 3px, 100% 0, calc(100% - 9px) calc(100% - 6px), 0 100%);
+  --tag-angle: -1.6deg;
+  --tag-shift: 0.65em;
+  --slash-deg: 118deg;
+}
+.msg--cut-3 {
+  --panel-clip: polygon(0 4px, calc(100% - 6px) 0, 100% calc(100% - 8px), 8px 100%);
+  --tag-angle: 2.1deg;
+  --tag-shift: 0.38em;
+  --slash-deg: 106deg;
+}
+
+.chat--hide-halftone {
+  --halftone-alpha: 0;
+}
+
+/* ---- one graphic panel ---- */
+
+.msg {
+  --platform-color: var(--chat-accent);
+  --accent: var(--chat-accent);
+  --secondary: var(--chat-secondary);
+  --paid-color: var(--paid);
+  --panel-surface: var(--chat-bg);
+  --tag-bg: var(--accent);
+  /* Adapts automatically to light paper (jet ink outline) & dark cards (chalk white outline). */
+  --ink-outline: color-mix(in srgb, var(--chat-text) calc(var(--chat-bg-opacity) * 0.98), transparent);
+  --shadow-color: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.98), transparent);
+  --card-tilt: calc(var(--tilt-base, 0deg) * var(--tilt-scale));
+  --tag-tilt: calc(var(--tag-angle, -2deg) * var(--tilt-scale));
+  --tag-skew: calc(-7.5deg * min(1, var(--tilt-scale)));
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  transform: rotate(var(--card-tilt));
+  animation: var(--msg-enter);
+}
+
+.chat--accent-platform .msg {
+  --accent: var(--platform-color);
+}
+
+.chat--accent-chatter .msg {
+  --accent: var(--author-color, hsl(var(--chatter-hue, 4) 84% 44%));
+}
+
+.chat--accent-role .msg--role-member    { --accent: var(--role-member); }
+.chat--accent-role .msg--role-moderator { --accent: var(--role-moderator); }
+.chat--accent-role .msg--role-owner     { --accent: var(--role-owner); }
+
+.msg--twitch         { --platform-color: var(--twitch); }
+.msg--youtube        { --platform-color: var(--youtube); }
+.msg--picarto        { --platform-color: var(--picarto); }
+.msg--rplay          { --platform-color: var(--rplay); }
+.msg--streamelements { --platform-color: var(--streamelements); }
+.msg--streamlabs     { --platform-color: var(--streamlabs); }
+
+/* ---- animations ---- */
+
+.chat--newest-top { --msg-enter-offset: -0.65em; }
+
+@keyframes msg-in-slam {
+  0% {
+    opacity: 0;
+    transform: translate(-18px, var(--msg-enter-offset, 0.45em)) skewX(-10deg) scale(0.93) rotate(var(--card-tilt));
+  }
+  70% {
+    opacity: 1;
+    transform: translate(3px, 0) skewX(2deg) scale(1.01) rotate(var(--card-tilt));
+  }
+  100% {
+    opacity: 1;
+    transform: rotate(var(--card-tilt));
+  }
+}
+
+@keyframes msg-in-slash {
+  from {
+    opacity: 0;
+    transform: translateX(-24px) skewX(-12deg) rotate(var(--card-tilt));
+  }
+  to {
+    opacity: 1;
+    transform: rotate(var(--card-tilt));
+  }
+}
+
+@keyframes msg-in-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.86) rotate(var(--card-tilt));
+  }
+  to {
+    opacity: 1;
+    transform: rotate(var(--card-tilt));
+  }
+}
+
+@keyframes msg-in-fade {
+  from { opacity: 0; }
+}
+
+.chat--fade-out .msg {
+  animation: var(--msg-enter), msg-out 0.55s ease-in var(--msg-fade-delay) forwards;
+}
+
+@keyframes msg-out {
+  to { opacity: 0; }
+}
+
+/* ---- top row: perched cutout portrait + breakout speaker ribbon ---- */
+
+.msg__top {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.42em;
+  min-width: 0;
+  margin: 0 0 -0.78em var(--tag-shift, 0.45em);
+  max-width: calc(100% - 1.1em);
+}
+
+.msg__avatar {
+  flex-shrink: 0;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  margin-bottom: -0.18em;
+  border: 2.5px solid var(--ink-outline);
+  object-fit: cover;
+  transform: rotate(calc(-5deg * min(1, var(--tilt-scale))));
+  box-shadow: 3.5px 3.5px 0 var(--accent);
+}
+
+.chat--hide-avatars .msg__avatar {
+  display: none;
+}
+
+.msg__meta {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.36em;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.16em 0.76em 0.16em 0.64em;
+  overflow: hidden;
+  background: var(--tag-bg);
+  color: var(--tag-text);
+  border: 2.5px solid var(--ink-outline);
+  box-shadow: 4px 4px 0 color-mix(in srgb, #050507 calc(var(--chat-bg-opacity) * 0.94), transparent);
+  transform: rotate(var(--tag-tilt)) skewX(var(--tag-skew));
+  transform-origin: left bottom;
+  line-height: 1.22;
+}
+
+.msg__platform {
+  flex-shrink: 0;
+  width: 0.44em;
+  height: 0.44em;
+  background: var(--platform-color);
+  border: 1.5px solid var(--tag-text);
+  transform: rotate(45deg);
+}
+
+.chat--hide-platform .msg__platform {
+  display: none;
+}
+
+.msg__author {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0.12em 2px 0.12em 0;
+  margin: -0.12em -2px -0.12em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86em;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.badge {
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 0.04em 0.4em;
+  border: 1.5px solid color-mix(in srgb, var(--tag-text) 82%, transparent);
+  background: color-mix(in srgb, var(--tag-text) 16%, transparent);
+  color: var(--tag-text);
+  font-size: 0.52em;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+
+.chat--hide-badges .badge {
+  display: none;
+}
+
+.chat .badge.badge--icon {
+  flex-shrink: 0;
+  width: 0.98em;
+  height: 0.98em;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 1em;
+  object-fit: contain;
+  vertical-align: middle;
+  filter: drop-shadow(1px 1px 0 rgb(0 0 0 / 0.55));
+}
+
+.msg__time {
+  display: none;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 0.64em;
+  font-weight: 700;
+  color: var(--chat-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat--show-time .msg__time {
+  display: inline;
+}
+
+/* ---- jagged outer shell & inner panel (default "Phantom" Persona 5 look) ---- */
+
+.msg__shell {
+  position: relative;
+  /* Chunky zero-blur offset shadow following each message's chaotic polygon cut. */
+  filter: drop-shadow(6px 6px 0 var(--shadow-color));
+}
+
+.msg__shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--ink-outline);
+  clip-path: var(--panel-clip);
+  pointer-events: none;
+}
+
+.msg__panel {
+  position: relative;
+  margin: 3.5px;
+  padding: var(--box-pad-top) var(--box-pad-x) var(--box-pad-bottom);
+  overflow: hidden;
+  clip-path: var(--panel-clip);
+  background:
+    /* bold Persona diagonal rebel slash on the right edge */
+    linear-gradient(
+      var(--slash-deg, 112deg),
+      transparent 0 82%,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.42), transparent) 82.4% 91.5%,
+      color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.14), transparent) 91.9% 100%
+    ),
+    var(--panel-surface);
+}
+
+/* Tilted Persona comic 5-point star peeking into the bottom-right corner. */
+.msg__panel::before {
+  content: "";
+  position: absolute;
+  right: -0.45em;
+  bottom: -0.55em;
+  width: 3.1em;
+  height: 3.1em;
+  background: color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.52), transparent);
+  -webkit-mask: var(--star-svg) center / contain no-repeat;
+  mask: var(--star-svg) center / contain no-repeat;
+  transform: rotate(-16deg);
+  pointer-events: none;
+}
+
+/* Chunky high-contrast Ben-Day halftone screentone corner burst. */
+.msg__panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--secondary) calc(var(--halftone-alpha) * 100%), transparent) 1.7px,
+    transparent 1.95px
+  );
+  background-size: 8px 8px;
+  -webkit-mask-image: radial-gradient(
+    circle at 96% 94%,
+    #000000 0%,
+    rgb(0 0 0 / 0.62) 26%,
+    transparent 56%
+  );
+  mask-image: radial-gradient(
+    circle at 96% 94%,
+    #000000 0%,
+    rgb(0 0 0 / 0.62) 26%,
+    transparent 56%
+  );
+  pointer-events: none;
+}
+
+.msg__content {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+/* ---- event callout & body ---- */
+
+.msg__event {
+  margin: 0;
+  padding: 0.14em 0.62em;
+  display: inline-block;
+  border: 2px solid var(--ink-outline);
+  background: var(--tag-bg);
+  color: var(--tag-text);
+  font-size: 0.86em;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  box-shadow: 3.5px 3.5px 0 color-mix(in srgb, #050507 calc(var(--chat-bg-opacity) * 0.9), transparent);
+  transform: skewX(var(--tag-skew));
+}
+
+.msg__event + .msg__body {
+  margin-top: 0.42em;
+}
+
+.msg__body {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere; /* long spam without spaces must not overflow */
+}
+
+.emote {
+  height: var(--emote-size);
+  vertical-align: middle;
+  margin: -0.2em 0.05em;
+}
+
+.msg__info {
+  font-weight: 700;
+  text-transform: none;
+}
+
+.msg__sticker {
+  display: block;
+  height: 4em;
+  margin-top: 0.35em;
+}
+
+/* ---- frame style variations ---- */
+
+/* Manga: crisp ink-bordered rectangular comic panel with screentone fade
+   and clean boxed narration caption header. */
+.chat--frame-manga .msg__top {
+  margin: 0 0 -0.64em 0.6em;
+  max-width: calc(100% - 1.2em);
+}
+
+.chat--frame-manga .msg__avatar {
+  transform: none;
+  margin-bottom: -0.1em;
+  border-width: 2.5px;
+  box-shadow: 2.5px 2.5px 0 var(--ink-outline);
+}
+
+.chat--frame-manga .msg__meta {
+  transform: none;
+  border-width: 2.5px;
+  box-shadow: 2.5px 2.5px 0 var(--ink-outline);
+}
+
+.chat--frame-manga .msg__shell {
+  filter: none;
+  box-shadow: 4px 4px 0 var(--shadow-color);
+}
+
+.chat--frame-manga .msg__shell::before,
+.chat--frame-manga .msg__panel::before {
+  display: none;
+}
+
+.chat--frame-manga .msg__panel {
+  margin: 0;
+  clip-path: none;
+  border: 3px solid var(--ink-outline);
+  background: var(--panel-surface);
+}
+
+.chat--frame-manga .msg__panel::after {
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--chat-text) calc(var(--halftone-alpha) * 78%), transparent) 1.35px,
+    transparent 1.6px
+  );
+  background-size: 6px 6px;
+  -webkit-mask-image: linear-gradient(
+    315deg,
+    #000000 0%,
+    rgb(0 0 0 / 0.5) 26%,
+    transparent 56%
+  );
+  mask-image: linear-gradient(
+    315deg,
+    #000000 0%,
+    rgb(0 0 0 / 0.5) 26%,
+    transparent 56%
+  );
+}
+
+.chat--frame-manga .msg__event {
+  transform: none;
+  box-shadow: 2.5px 2.5px 0 var(--ink-outline);
+}
+
+/* Pulp (Deadlock-inspired): stylized exaggerated angled speech cards in aged
+   parchment or smoked charcoal, with perched portrait & floating outlined
+   speaker name above a seamless curved speech tail and staggered conversation
+   flow. */
+.chat--frame-pulp .msg {
+  --pulp-rim: color-mix(in srgb, var(--chat-text) 28%, var(--accent));
+  --pulp-shadow: color-mix(in srgb, #080605 calc(var(--chat-bg-opacity) * 0.72), transparent);
+  align-self: flex-start;
+  width: fit-content;
+  min-width: 48%;
+  max-width: 92%;
+}
+
+/* Stable per-chatter right-side stagger (matching Deadlock's playful chat flow). */
+.chat--frame-pulp .msg--side-1:not(.msg--notice) {
+  align-self: flex-end;
+}
+
+.chat--frame-pulp .msg--notice {
+  align-self: center;
+  min-width: 64%;
+  max-width: 96%;
+}
+
+/* Exaggerated angular Deadlock silhouettes with a flat top landing zone so
+   the curved upward speech tail joins flush at every opacity. */
+.chat--frame-pulp .msg--cut-0 {
+  --pulp-clip: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 4px calc(100% - 5px));
+}
+.chat--frame-pulp .msg--cut-1 {
+  --pulp-clip: polygon(4px 0, 100% 0, calc(100% - 4px) calc(100% - 6px), 10px 100%);
+}
+.chat--frame-pulp .msg--cut-2 {
+  --pulp-clip: polygon(8px 0, 100% 0, calc(100% - 12px) calc(100% - 3px), 0 100%);
+}
+.chat--frame-pulp .msg--cut-3 {
+  --pulp-clip: polygon(0 0, calc(100% - 6px) 0, 100% calc(100% - 7px), 8px 100%);
+}
+
+.chat--frame-pulp .msg__top {
+  margin: 0 0 0.24em 0;
+  padding: 0 0.55em;
+  max-width: 100%;
+  gap: 0.42em;
+  align-items: flex-end;
+}
+
+.chat--frame-pulp .msg--side-1:not(.msg--notice) .msg__top {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+}
+
+.chat--frame-pulp .msg__avatar {
+  width: 2.25em;
+  height: 2.25em;
+  margin-bottom: -0.34em;
+  border-radius: 6px;
+  border: 2px solid color-mix(in srgb, var(--accent) 55%, var(--tag-text));
+  transform: rotate(calc(-3deg * min(1, var(--tilt-scale))));
+  box-shadow: 0 3px 8px rgb(0 0 0 / 0.52);
+}
+
+.chat--frame-pulp .msg--side-1:not(.msg--notice) .msg__avatar {
+  transform: rotate(calc(3deg * min(1, var(--tilt-scale))));
+}
+
+/* Floating Deadlock speaker header perched above the bubble (no heavy box!). */
+.chat--frame-pulp .msg__meta {
+  padding: 0.06em 0.15em;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  color: var(--tag-text);
+  text-shadow:
+    -1.2px -1.2px 0 rgb(14 11 9 / 0.92),
+    1.2px -1.2px 0 rgb(14 11 9 / 0.92),
+    -1.2px 1.2px 0 rgb(14 11 9 / 0.92),
+    1.2px 1.2px 0 rgb(14 11 9 / 0.92),
+    0 2px 6px rgb(0 0 0 / 0.85);
+}
+
+.chat--frame-pulp .msg__author {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 0.84em;
+  font-weight: 800;
+}
+
+.chat--frame-pulp .msg__platform {
+  border-color: rgb(14 11 9 / 0.85);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.35);
+}
+
+.chat--frame-pulp .badge {
+  border-color: color-mix(in srgb, var(--tag-text) 55%, transparent);
+  background: rgb(18 14 12 / 0.78);
+  color: var(--tag-text);
+  text-shadow: none;
+}
+
+.chat--frame-pulp .msg__shell {
+  /* Unified outline + bold Deadlock poster drop shadow tracing BOTH the
+     exaggerated polygon card and its seamless curved upward speech tail. */
+  filter:
+    drop-shadow(0 0 1.2px var(--pulp-rim))
+    drop-shadow(5px 5px 0 var(--pulp-shadow));
+}
+
+.chat--frame-pulp .msg__shell::before {
+  display: none;
+}
+
+/* Seamless curved upward speech tail pointing straight at the perched portrait/name. */
+.chat--frame-pulp .msg:not(.msg--notice) .msg__shell::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 2.35em;
+  width: 22px;
+  height: 13px;
+  background: var(--panel-surface);
+  -webkit-mask: var(--pulp-tail) center / 100% 100% no-repeat;
+  mask: var(--pulp-tail) center / 100% 100% no-repeat;
+  pointer-events: none;
+}
+
+.chat--frame-pulp .msg--side-1:not(.msg--notice) .msg__shell::after {
+  left: auto;
+  right: 2.35em;
+  transform: scaleX(-1);
+}
+
+.chat--frame-pulp .msg__panel {
+  margin: 0;
+  padding: 0.66em 1.04em 0.74em;
+  clip-path: var(--pulp-clip);
+  background:
+    /* subtle occult corner accent wedge */
+    linear-gradient(
+      118deg,
+      transparent 0 88%,
+      color-mix(in srgb, var(--accent) calc(var(--chat-bg-opacity) * 0.24), transparent) 88.5% 100%
+    ),
+    var(--panel-surface);
+}
+
+.chat--frame-pulp .msg__panel::before {
+  display: none;
+}
+
+.chat--frame-pulp .msg__panel::after {
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--chat-text) calc(var(--halftone-alpha) * 42%), transparent) 1.2px,
+    transparent 1.45px
+  );
+  background-size: 6px 6px;
+}
+
+.chat--frame-pulp .msg__body {
+  font-weight: 500;
+}
+
+.chat--frame-pulp .msg__event {
+  transform: none;
+  border-color: color-mix(in srgb, var(--chat-text) 72%, transparent);
+  box-shadow: 2.5px 2.5px 0 color-mix(in srgb, var(--chat-text) 65%, transparent);
+}
+
+/* Zine: chunky neo-brutalist / risograph cutout card with vivid offset shadow. */
+.chat--frame-zine .msg {
+  --shadow-color: color-mix(in srgb, var(--secondary) calc(var(--chat-bg-opacity) * 0.96), transparent);
+}
+
+.chat--frame-zine .msg__top {
+  margin: 0 0 -0.68em 0.55em;
+  max-width: calc(100% - 1.1em);
+}
+
+.chat--frame-zine .msg__avatar {
+  border-radius: 3px;
+  box-shadow: 3px 3px 0 var(--secondary);
+}
+
+.chat--frame-zine .msg__meta {
+  transform: rotate(calc(1.1deg * var(--tilt-scale)));
+  border-radius: 3px;
+  box-shadow: 3px 3px 0 var(--ink-outline);
+}
+
+.chat--frame-zine .msg__shell {
+  filter: none;
+  border-radius: 5px;
+  box-shadow: 5px 5px 0 var(--shadow-color);
+}
+
+.chat--frame-zine .msg__shell::before,
+.chat--frame-zine .msg__panel::before {
+  display: none;
+}
+
+.chat--frame-zine .msg__panel {
+  margin: 0;
+  clip-path: none;
+  border-radius: 5px;
+  border: 3px solid var(--ink-outline);
+  background: var(--panel-surface);
+}
+
+.chat--frame-zine .msg__panel::after {
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--chat-text) calc(var(--halftone-alpha) * 70%), transparent) 1.4px,
+    transparent 1.65px
+  );
+}
+
+/* ---- message kinds & paid tiers ---- */
+
+.msg--emote-only .emote {
+  height: var(--emote-only-size);
+  margin: 0.08em 0.05em;
+}
+
+/* Special events flip the graphic accent & hard shadow cleanly in every mode;
+   slightly deepened tag backing + crisp dark outline keep white text sharp
+   across all paid tier colours (including bright cyan & yellow). */
+.chat .msg--paid {
+  --accent: var(--paid-color);
+  --secondary: var(--paid-color);
+  --tag-bg: color-mix(in srgb, var(--paid-color) 80%, #000000);
+  --tag-text: #ffffff;
+  --panel-surface: color-mix(in srgb, var(--paid-color) 16%, var(--chat-bg));
+}
+
+.chat .msg--membership,
+.chat .msg--gift {
+  --accent: var(--membership);
+  --secondary: var(--membership);
+  --tag-bg: color-mix(in srgb, var(--membership) 80%, #000000);
+  --tag-text: #ffffff;
+  --panel-surface: color-mix(in srgb, var(--membership) 14%, var(--chat-bg));
+}
+
+.chat .msg--notice {
+  --accent: var(--notice);
+  --secondary: var(--notice);
+  --panel-surface: color-mix(in srgb, var(--notice) 16%, var(--chat-bg));
+  text-align: center;
+}
+
+.chat .msg--paid .msg__meta,
+.chat .msg--membership .msg__meta,
+.chat .msg--gift .msg__meta {
+  color: #ffffff;
+  text-shadow:
+    -1px -1px 0 rgb(0 0 0 / 0.78),
+    1px -1px 0 rgb(0 0 0 / 0.78),
+    -1px 1px 0 rgb(0 0 0 / 0.78),
+    1px 1px 0 rgb(0 0 0 / 0.78);
+}
+
+.chat .msg--paid .msg__event,
+.chat .msg--membership .msg__event,
+.chat .msg--gift .msg__event {
+  background: var(--tag-bg);
+  color: #ffffff;
+  text-shadow:
+    -1px -1px 0 rgb(0 0 0 / 0.78),
+    1px -1px 0 rgb(0 0 0 / 0.78),
+    -1px 1px 0 rgb(0 0 0 / 0.78),
+    1px 1px 0 rgb(0 0 0 / 0.78);
+  box-shadow: 3px 3px 0 var(--ink-outline);
+}
+
+.msg--notice .msg__panel {
+  padding: var(--box-pad-bottom) var(--box-pad-x);
+  justify-content: center;
+}
+
+.msg--notice .msg__event {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  padding: 0;
+  color: color-mix(in srgb, var(--notice) 46%, var(--chat-text));
+  text-transform: none;
+  font-style: italic;
+}
+
+/* Donation tier colours. */
+.msg--tier-1 { --paid-color: var(--paid-youtube-1); }
+.msg--tier-2 { --paid-color: var(--paid-youtube-2); }
+.msg--tier-3 { --paid-color: var(--paid-youtube-3); }
+.msg--tier-4 { --paid-color: var(--paid-youtube-4); }
+.msg--tier-5 { --paid-color: var(--paid-youtube-5); }
+.msg--tier-6 { --paid-color: var(--paid-youtube-6); }
+.msg--tier-7 { --paid-color: var(--paid-youtube-7); }
+.msg--youtube[class*="msg--tier-"]:not(.msg--tier-1, .msg--tier-2, .msg--tier-3,
+  .msg--tier-4, .msg--tier-5, .msg--tier-6) { --paid-color: var(--paid-youtube-7); }
+
+.msg--twitch.msg--tier-1 { --paid-color: var(--paid-twitch-1); }
+.msg--twitch.msg--tier-2,
+.msg--twitch.msg--tier-3 { --paid-color: var(--paid-twitch-2); }
+.msg--twitch.msg--tier-4,
+.msg--twitch.msg--tier-5 { --paid-color: var(--paid-twitch-3); }
+.msg--twitch.msg--tier-6 { --paid-color: var(--paid-twitch-4); }
+.msg--twitch.msg--tier-7 { --paid-color: var(--paid-twitch-5); }
+
+/* ---- moderation ---- */
+
+/* Deleted messages vanish at once by default. For a fade instead:
+   .msg--deleted { opacity: 0; transition: opacity 0.3s; }
+   and set --delete-delay: 0.3s above. */
+.msg--deleted {
+  display: none;
+}

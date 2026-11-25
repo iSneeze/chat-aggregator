@@ -196,6 +196,7 @@ mod tests {
         assert!(validate_name("Neon").is_err(), "built-in names are taken");
         assert!(validate_name("Ornate").is_err(), "built-in names are taken");
         assert!(validate_name("Aero").is_err(), "built-in names are taken");
+        assert!(validate_name("Comic").is_err(), "built-in names are taken");
         assert!(validate_name("../escape").is_err());
         assert!(validate_name("a/b").is_err());
         assert!(validate_name(&"x".repeat(41)).is_err());

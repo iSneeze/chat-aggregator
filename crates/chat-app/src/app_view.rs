@@ -865,7 +865,7 @@ mod tests {
             items,
             [
                 "Default", "Minimal", "Bubbles", "Cozy", "Retro", "Neon", "Ornate", "Aero",
-                "studio",
+                "Comic", "studio",
             ],
             "built-in themes first"
         );

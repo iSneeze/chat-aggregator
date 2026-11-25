@@ -34,10 +34,13 @@ you can edit with any text editor, share, and switch between in the app.
   self-contained specular sheen gradients, 3D glass platform orbs, subtle
   seeded bokeh bubbles, and *Aero Glass*, *Aqua Pill*, *Wii Tile*, and *Y2K
   Chrome* frame styles.
+- **Comic**: bold graphic-print panels with thick ink outlines, hard offset
+  shadows, Ben-Day halftone screentone dots, breakout speaker ribbons, and
+  *Phantom*, *Manga*, *Pulp*, and *Zine* panel styles.
 
 Pick them in the app's theme list, or `theme = "minimal"` / `theme = "bubbles"`
 / `theme = "cozy"` / `theme = "retro"` / `theme = "neon"` / `theme = "ornate"`
-/ `theme = "aero"` under `[overlay]` in a profile's file (`profiles/<name>.toml`). Each profile has
+/ `theme = "aero"` / `theme = "comic"` under `[overlay]` in a profile's file (`profiles/<name>.toml`). Each profile has
 its own theme. They're built into the app and improve with its updates,
 so they can't be edited in place; open **Customize…** and use **New theme…**
 (or **Copy as custom…** on any built-in theme) to create an editable folder
@@ -56,9 +59,10 @@ Click **Customize…** next to the theme picker to open the **Themes** window:
   *Win95*, *Handheld*, *Parchment*, *Arcade Dark*, *Amber CRT*, *8-Bit Crimson*
   on Retro; *Cyberpunk*, *Synthwave*, *Matrix*, *Tactical*, *Vaporwave*,
   *Hyper Crimson* on Neon; *Vampire Velvet*, *Obsidian Gold*, *Celestial
-  Tarot*, *Cathedral Rose*, *Cursed Emerald*, *Ivory Grimoire* on Ornate; or
+  Tarot*, *Cathedral Rose*, *Cursed Emerald*, *Ivory Grimoire* on Ornate;
   *Frutiger Sky*, *Aqua Reef*, *Wii Pearl*, *Citrus Gel*, *Y2K Chrome*,
-  *Aurora Dusk* on Aero).
+  *Aurora Dusk* on Aero; or *Phantom Thief*, *Cursed Apple*, *Noir Patron*,
+  *Shonen Ink*, *Noir Manga*, *Risograph* on Comic).
 - **Match image…** reads a screenshot of your OBS scene or character artwork
   and suggests three contrast-checked color palettes you can apply in one click.
 - **Colors, typography, motion, and elements** update connected OBS overlays
@@ -225,7 +229,7 @@ scene its own theme, add `?theme=` and the theme's name to its overlay URL:
 ```text
 http://127.0.0.1:7878/?theme=my-theme
 http://127.0.0.1:7878/?theme=my-theme&newest=top
-http://127.0.0.1:7878/?theme=cozy        a built-in theme (default, minimal, bubbles, cozy, retro, neon, ornate, aero)
+http://127.0.0.1:7878/?theme=cozy        a built-in theme (default, minimal, bubbles, cozy, retro, neon, ornate, aero, comic)
 http://127.0.0.1:7878/?theme=cozy&preset=Matcha%20Cream&max_messages=10
 ```
 
