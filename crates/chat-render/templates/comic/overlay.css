@@ -5,7 +5,7 @@
  *   - Phantom (default): Persona 5-inspired wacky red/black/white jagged panels
  *   - Manga: crisp black-ink comic panels with screentone & narration captions
  *   - Pulp: Deadlock-inspired stylized angled speech cards with perched
- *     portraits, floating outlined names, curved upward tails & staggered flow
+ *     portraits, smoked-ink speaker nameplates, curved upward tails & staggered flow
  *   - Zine: chunky neo-brutalist / risograph cutouts with playful stamp tilt
  *
  * Most restyling only needs the variables below (or the options in theme.toml).
@@ -334,8 +334,8 @@ body {
 .msg__author {
   flex: 0 1 auto;
   min-width: 0;
-  padding: 0.12em 2px 0.12em 0;
-  margin: -0.12em -2px -0.12em 0;
+  padding: 0.12em 2px 0.12em 1px;
+  margin: -0.12em -2px -0.12em -1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -581,12 +581,14 @@ body {
 }
 
 /* Pulp (Deadlock-inspired): stylized exaggerated angled speech cards in aged
-   parchment or smoked charcoal, with perched portrait & floating outlined
-   speaker name above a seamless curved speech tail and staggered conversation
+   parchment or smoked charcoal, with perched portrait & smoked-ink speaker
+   nameplate above a seamless curved speech tail and staggered conversation
    flow. */
 .chat--frame-pulp .msg {
   --pulp-rim: color-mix(in srgb, var(--chat-text) 28%, var(--accent));
   --pulp-shadow: color-mix(in srgb, #080605 calc(var(--chat-bg-opacity) * 0.72), transparent);
+  --pulp-plaque: color-mix(in srgb, #161210 calc(var(--chat-bg-opacity) * 0.92), transparent);
+  --pulp-plaque-border: color-mix(in srgb, var(--accent) 55%, var(--tag-text));
   align-self: flex-start;
   width: fit-content;
   min-width: 48%;
@@ -620,7 +622,7 @@ body {
 }
 
 .chat--frame-pulp .msg__top {
-  margin: 0 0 0.24em 0;
+  margin: 0 0 0.34em 0;
   padding: 0 0.55em;
   max-width: 100%;
   gap: 0.42em;
@@ -635,9 +637,9 @@ body {
 .chat--frame-pulp .msg__avatar {
   width: 2.25em;
   height: 2.25em;
-  margin-bottom: -0.34em;
+  margin-bottom: -0.44em;
   border-radius: 6px;
-  border: 2px solid color-mix(in srgb, var(--accent) 55%, var(--tag-text));
+  border: 2px solid var(--pulp-plaque-border);
   transform: rotate(calc(-3deg * min(1, var(--tilt-scale))));
   box-shadow: 0 3px 8px rgb(0 0 0 / 0.52);
 }
@@ -646,37 +648,36 @@ body {
   transform: rotate(calc(3deg * min(1, var(--tilt-scale))));
 }
 
-/* Floating Deadlock speaker header perched above the bubble (no heavy box!). */
+/* Smoked-ink Deadlock speaker plaque perched above the speech card so cream
+   and gold editorial lettering reads crisply over any stream backdrop without
+   jagged text-shadow outlines. */
 .chat--frame-pulp .msg__meta {
-  padding: 0.06em 0.15em;
-  border: none;
-  background: transparent;
-  box-shadow: none;
+  padding: 0.18em 0.62em 0.18em 0.52em;
+  border-radius: 4px;
+  border: 1.5px solid var(--pulp-plaque-border);
+  background: var(--pulp-plaque);
+  box-shadow: 3px 3px 0 var(--pulp-shadow);
   transform: none;
   color: var(--tag-text);
-  text-shadow:
-    -1.2px -1.2px 0 rgb(14 11 9 / 0.92),
-    1.2px -1.2px 0 rgb(14 11 9 / 0.92),
-    -1.2px 1.2px 0 rgb(14 11 9 / 0.92),
-    1.2px 1.2px 0 rgb(14 11 9 / 0.92),
-    0 2px 6px rgb(0 0 0 / 0.85);
+  text-shadow: none;
 }
 
 .chat--frame-pulp .msg__author {
   text-transform: none;
   letter-spacing: 0.02em;
   font-size: 0.84em;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .chat--frame-pulp .msg__platform {
-  border-color: rgb(14 11 9 / 0.85);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.35);
+  border-color: color-mix(in srgb, var(--tag-text) 78%, transparent);
+  box-shadow: none;
 }
 
 .chat--frame-pulp .badge {
-  border-color: color-mix(in srgb, var(--tag-text) 55%, transparent);
-  background: rgb(18 14 12 / 0.78);
+  border: 1px solid color-mix(in srgb, var(--tag-text) 48%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--tag-text) 14%, transparent);
   color: var(--tag-text);
   text-shadow: none;
 }
@@ -806,12 +807,12 @@ body {
 }
 
 /* Special events flip the graphic accent & hard shadow cleanly in every mode;
-   slightly deepened tag backing + crisp dark outline keep white text sharp
+   slightly deepened tag backing + soft drop shadow keep white text sharp
    across all paid tier colours (including bright cyan & yellow). */
 .chat .msg--paid {
   --accent: var(--paid-color);
   --secondary: var(--paid-color);
-  --tag-bg: color-mix(in srgb, var(--paid-color) 80%, #000000);
+  --tag-bg: color-mix(in srgb, var(--paid-color) 76%, #000000);
   --tag-text: #ffffff;
   --panel-surface: color-mix(in srgb, var(--paid-color) 16%, var(--chat-bg));
 }
@@ -820,7 +821,7 @@ body {
 .chat .msg--gift {
   --accent: var(--membership);
   --secondary: var(--membership);
-  --tag-bg: color-mix(in srgb, var(--membership) 80%, #000000);
+  --tag-bg: color-mix(in srgb, var(--membership) 76%, #000000);
   --tag-text: #ffffff;
   --panel-surface: color-mix(in srgb, var(--membership) 14%, var(--chat-bg));
 }
@@ -836,11 +837,19 @@ body {
 .chat .msg--membership .msg__meta,
 .chat .msg--gift .msg__meta {
   color: #ffffff;
-  text-shadow:
-    -1px -1px 0 rgb(0 0 0 / 0.78),
-    1px -1px 0 rgb(0 0 0 / 0.78),
-    -1px 1px 0 rgb(0 0 0 / 0.78),
-    1px 1px 0 rgb(0 0 0 / 0.78);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.48);
+}
+
+.chat--frame-pulp .msg--paid .msg__meta,
+.chat--frame-pulp .msg--membership .msg__meta,
+.chat--frame-pulp .msg--gift .msg__meta {
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--accent) 24%, #161210) calc(var(--chat-bg-opacity) * 0.94),
+    transparent
+  );
+  border-color: color-mix(in srgb, var(--accent) 78%, #ffffff);
+  text-shadow: none;
 }
 
 .chat .msg--paid .msg__event,
@@ -848,11 +857,7 @@ body {
 .chat .msg--gift .msg__event {
   background: var(--tag-bg);
   color: #ffffff;
-  text-shadow:
-    -1px -1px 0 rgb(0 0 0 / 0.78),
-    1px -1px 0 rgb(0 0 0 / 0.78),
-    -1px 1px 0 rgb(0 0 0 / 0.78),
-    1px 1px 0 rgb(0 0 0 / 0.78);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.48);
   box-shadow: 3px 3px 0 var(--ink-outline);
 }
 
