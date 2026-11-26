@@ -4,13 +4,19 @@
 //! themes and custom theme folders get color pickers, number steppers,
 //! switches, and segmented choices without hardcoded per-theme UI code.
 
+use std::collections::HashMap;
+
 use chat_engine::theme_options::{
     OptionKind, ThemeManifest, ThemeOption, ThemeValue, ThemeValues, normalize_hex_color,
 };
+use chat_render::fonts::{self, FontSelection};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState, ColorSelect};
 use gpui_kit::component::input::{
     InputEvent, InputState, MaskPattern, NumberInput, NumberInputEvent, NumberStep,
+};
+use gpui_kit::component::select::{
+    SearchableVec, Select, SelectEvent, SelectGroup, SelectItem, SelectState,
 };
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, StyledExt, h_flex, v_flex};
@@ -24,6 +30,106 @@ use crate::ui::{choice, parse_number, segmented};
 /// Fixed label column width so controls align vertically down the form.
 const LABEL_WIDTH: Pixels = px(136.);
 
+/// One installed or imported font item in a `type = "font"` searchable picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FontItem {
+    pub(super) title: SharedString,
+    pub(super) value: String,
+}
+
+impl SelectItem for FontItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.title.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+}
+
+pub(super) type FontSelectDelegate = SearchableVec<SelectGroup<FontItem>>;
+
+/// Builds the grouped searchable font list (`Imported fonts` + `Installed fonts`),
+/// preserving `selected` as a fallback entry if a saved font isn't currently on
+/// disk or installed on this machine.
+pub(super) fn build_font_groups(
+    system_fonts: &[String],
+    imported_fonts: &[String],
+    selected: Option<&str>,
+) -> FontSelectDelegate {
+    let mut groups = Vec::new();
+
+    // Disambiguate imported files that share a stem (e.g. Foo.ttf + Foo.woff2).
+    let mut stem_counts: HashMap<String, usize> = HashMap::new();
+    for file in imported_fonts {
+        *stem_counts
+            .entry(fonts::display_name(file).to_lowercase())
+            .or_insert(0) += 1;
+    }
+
+    let mut imported_items: Vec<FontItem> = imported_fonts
+        .iter()
+        .map(|file| {
+            let stem = fonts::display_name(file);
+            let title = if stem_counts.get(&stem.to_lowercase()).copied().unwrap_or(0) > 1 {
+                file.clone()
+            } else {
+                stem
+            };
+            FontItem {
+                title: title.into(),
+                value: fonts::format_file_value(file),
+            }
+        })
+        .collect();
+
+    if let Some(raw) = selected
+        && let FontSelection::File(file) = fonts::parse_selection(raw)
+        && !imported_fonts.iter().any(|f| f == file)
+    {
+        imported_items.insert(
+            0,
+            FontItem {
+                title: format!("{} (missing)", fonts::display_name(file)).into(),
+                value: fonts::format_file_value(file),
+            },
+        );
+    }
+
+    if !imported_items.is_empty() {
+        groups.push(SelectGroup::new("Imported fonts").items(imported_items));
+    }
+
+    let mut system_items: Vec<FontItem> = system_fonts
+        .iter()
+        .map(|family| FontItem {
+            title: family.clone().into(),
+            value: fonts::format_system_value(family),
+        })
+        .collect();
+
+    if let Some(raw) = selected
+        && let FontSelection::System(family) = fonts::parse_selection(raw)
+        && !system_fonts.iter().any(|f| f == family)
+    {
+        system_items.insert(
+            0,
+            FontItem {
+                title: format!("{family} (not installed)").into(),
+                value: fonts::format_system_value(family),
+            },
+        );
+    }
+
+    if !system_items.is_empty() {
+        groups.push(SelectGroup::new("Installed fonts").items(system_items));
+    }
+
+    SearchableVec::new(groups)
+}
+
 /// The live customization form for one theme.
 pub(super) struct Form {
     pub(super) theme_key: String,
@@ -34,6 +140,8 @@ pub(super) struct Form {
     pub(super) number_fields: Vec<Option<Entity<InputState>>>,
     /// Color picker state per option index (`None` for non-color options).
     pub(super) color_pickers: Vec<Option<Entity<ColorPickerState>>>,
+    /// Searchable font picker state per option index (`None` for non-font options).
+    pub(super) font_selects: Vec<Option<Entity<SelectState<FontSelectDelegate>>>>,
     /// Validation error per option index.
     pub(super) errors: Vec<Option<String>>,
     _subscriptions: Vec<Subscription>,
@@ -44,6 +152,8 @@ impl Form {
         theme_key: String,
         manifest: ThemeManifest,
         saved: &ThemeValues,
+        system_fonts: &[String],
+        imported_fonts: &[String],
         window: &mut Window,
         cx: &mut Context<ThemesWindow>,
     ) -> Self {
@@ -60,6 +170,7 @@ impl Form {
         let mut subscriptions = Vec::new();
         let mut number_fields = Vec::with_capacity(manifest.options.len());
         let mut color_pickers = Vec::with_capacity(manifest.options.len());
+        let mut font_selects = Vec::with_capacity(manifest.options.len());
 
         for (i, opt) in manifest.options.iter().enumerate() {
             let current = values
@@ -92,6 +203,7 @@ impl Form {
                     ));
                     number_fields.push(Some(input));
                     color_pickers.push(None);
+                    font_selects.push(None);
                 }
                 (OptionKind::Color { .. }, ThemeValue::Text(hex)) => {
                     let initial = hex_to_hsla(&hex);
@@ -112,10 +224,45 @@ impl Form {
                     ));
                     number_fields.push(None);
                     color_pickers.push(Some(picker));
+                    font_selects.push(None);
+                }
+                (OptionKind::Font { .. }, ThemeValue::Text(current_font)) => {
+                    let custom = matches!(
+                        fonts::parse_selection(&current_font),
+                        FontSelection::System(_) | FontSelection::File(_)
+                    )
+                    .then_some(current_font.as_str());
+                    let groups = build_font_groups(system_fonts, imported_fonts, custom);
+                    let select = cx.new(|cx| {
+                        let mut state = SelectState::new(groups, None, window, cx).searchable(true);
+                        if let Some(val) = custom {
+                            state.set_selected_value(&val.to_string(), window, cx);
+                        }
+                        state
+                    });
+                    subscriptions.push(cx.subscribe_in(
+                        &select,
+                        window,
+                        move |this, _, event: &SelectEvent<FontSelectDelegate>, window, cx| {
+                            let SelectEvent::Confirm(picked) = event;
+                            match picked {
+                                Some(value) => {
+                                    this.pick(i, ThemeValue::Text(value.clone()), cx);
+                                }
+                                None => {
+                                    this.reset_font_option(i, window, cx);
+                                }
+                            }
+                        },
+                    ));
+                    number_fields.push(None);
+                    color_pickers.push(None);
+                    font_selects.push(Some(select));
                 }
                 _ => {
                     number_fields.push(None);
                     color_pickers.push(None);
+                    font_selects.push(None);
                 }
             }
         }
@@ -127,6 +274,7 @@ impl Form {
             values,
             number_fields,
             color_pickers,
+            font_selects,
             _subscriptions: subscriptions,
         }
     }
@@ -159,11 +307,17 @@ impl Form {
             .any(|o| matches!(o.kind, OptionKind::Color { .. }))
     }
 
-    /// Pushes `self.values` back into every `ColorPickerState` and number
-    /// `InputState` without emitting change events (used after applying a
-    /// 1-click preset or image palette so controls stay in sync without
-    /// rebuilding the form or losing scroll position).
-    pub(super) fn sync_controls(&mut self, window: &mut Window, cx: &mut App) {
+    /// Pushes `self.values` back into every `ColorPickerState`, number
+    /// `InputState`, and font `SelectState` without emitting change events
+    /// (used after applying a 1-click preset or image palette so controls stay
+    /// in sync without rebuilding the form or losing scroll position).
+    pub(super) fn sync_controls(
+        &mut self,
+        system_fonts: &[String],
+        imported_fonts: &[String],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         for (i, opt) in self.manifest.options.iter().enumerate() {
             self.errors[i] = None;
             let current = self.current(opt);
@@ -181,7 +335,31 @@ impl Form {
                         });
                     }
                 }
+                (OptionKind::Font { .. }, ThemeValue::Text(font)) => {
+                    if let Some(select) = &self.font_selects[i] {
+                        sync_font_select(select, &font, system_fonts, imported_fonts, window, cx);
+                    }
+                }
                 _ => {}
+            }
+        }
+    }
+
+    /// Refreshes the item list of every font picker after `fonts/` is rescanned
+    /// or a new font file is imported, keeping current selections intact.
+    pub(super) fn refresh_fonts(
+        &self,
+        system_fonts: &[String],
+        imported_fonts: &[String],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        for (i, opt) in self.manifest.options.iter().enumerate() {
+            let Some(select) = self.font_selects.get(i).and_then(Option::as_ref) else {
+                continue;
+            };
+            if let ThemeValue::Text(font) = self.current(opt) {
+                sync_font_select(select, &font, system_fonts, imported_fonts, window, cx);
             }
         }
     }
@@ -192,6 +370,31 @@ impl Form {
             .cloned()
             .unwrap_or_else(|| opt.default_value())
     }
+}
+
+/// Updates a font picker's items and selection for `current_font` without
+/// emitting a `Confirm` event.
+fn sync_font_select(
+    select: &Entity<SelectState<FontSelectDelegate>>,
+    current_font: &str,
+    system_fonts: &[String],
+    imported_fonts: &[String],
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let custom = matches!(
+        fonts::parse_selection(current_font),
+        FontSelection::System(_) | FontSelection::File(_)
+    )
+    .then_some(current_font);
+    let groups = build_font_groups(system_fonts, imported_fonts, custom);
+    select.update(cx, |state, cx| {
+        state.set_items(groups, window, cx);
+        match custom {
+            Some(val) => state.set_selected_value(&val.to_string(), window, cx),
+            None => state.set_selected_index(None, window, cx),
+        }
+    });
 }
 
 /// Inserts `value` for `opt`, or removes it if it equals the option's default.
@@ -502,6 +705,66 @@ impl ThemesWindow {
                     }),
                 )
                 .into_any_element()
+            }
+            OptionKind::Font { options, .. } => {
+                let picked = match form.current(opt) {
+                    ThemeValue::Text(s) => s,
+                    _ => String::new(),
+                };
+                let id = SharedString::from(format!("theme-choice-{i}"));
+                let presets = segmented(
+                    cx,
+                    options.iter().enumerate().map(|(n, label)| {
+                        let value = ThemeValue::Text(label.clone());
+                        choice((id.clone(), n), label.clone(), *label == picked).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.pick_font_preset(i, value.clone(), window, cx);
+                            }),
+                        )
+                    }),
+                );
+                let custom_row = form.font_selects.get(i).cloned().flatten().map(|select| {
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .child(
+                            div().flex_1().min_w_0().max_w(px(260.)).child(
+                                Select::new(&select)
+                                    .id(("theme-font", i))
+                                    .small()
+                                    .cleanable(true)
+                                    .placeholder("Installed or imported font…")
+                                    .search_placeholder("Search fonts…")
+                                    .highlight_matches(true)
+                                    .menu_width(px(280.))
+                                    .accessibility_label(format!("{} custom font", opt.label)),
+                            ),
+                        )
+                        .child(
+                            Button::new(("theme-font-import", i))
+                                .label("Import…")
+                                .small()
+                                .tooltip("Import a .ttf, .otf, .woff2, or .woff font file")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.import_font_for_option(i, window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new(("theme-font-folder", i))
+                                .icon(IconName::FolderOpen)
+                                .small()
+                                .ghost()
+                                .tooltip("Open imported fonts folder")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_fonts_folder(window, cx);
+                                })),
+                        )
+                });
+                v_flex()
+                    .gap_1p5()
+                    .child(presets)
+                    .children(custom_row)
+                    .into_any_element()
             }
         };
 

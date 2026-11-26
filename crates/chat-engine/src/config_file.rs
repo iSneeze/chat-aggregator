@@ -535,6 +535,12 @@ impl ConfigFile {
         settings_dir.join("widgets")
     }
 
+    /// The folder with imported font files, next to the config file in
+    /// `settings_dir`.
+    pub fn fonts_dir(settings_dir: &Path) -> PathBuf {
+        settings_dir.join("fonts")
+    }
+
     /// The folder with the profiles' files, next to the config file in
     /// `settings_dir`.
     pub fn profiles_dir(settings_dir: &Path) -> PathBuf {
@@ -570,6 +576,7 @@ impl Loaded {
             old_layout,
             themes_dir: Some(ConfigFile::themes_dir(settings_dir)),
             widgets_dir: Some(ConfigFile::widgets_dir(settings_dir)),
+            fonts_dir: Some(ConfigFile::fonts_dir(settings_dir)),
             // Unlike `config.toml`, written in headless mode too: it's
             // data the sources collect, not a file you edit.
             emoji_cache_dir: Some(settings_dir.join("youtube-emojis")),

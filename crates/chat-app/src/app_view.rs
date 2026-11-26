@@ -817,6 +817,7 @@ mod tests {
         engine.settings.server.port = 0; // the OS picks a free one
         engine.themes_dir = Some(ConfigFile::themes_dir(&settings_dir));
         engine.widgets_dir = Some(ConfigFile::widgets_dir(&settings_dir));
+        engine.fonts_dir = Some(ConfigFile::fonts_dir(&settings_dir));
         engine.save_to = Some(settings_dir.join("config.toml"));
         let engine = runtime.block_on(Engine::start(engine)).unwrap();
         let handle = engine.handle();

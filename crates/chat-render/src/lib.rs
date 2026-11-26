@@ -68,6 +68,7 @@ static BUILTIN_COMIC_MANIFEST: LazyLock<options::ThemeManifest> = LazyLock::new(
     options::ThemeManifest::parse(COMIC_MANIFEST).expect("built-in Comic theme.toml is valid")
 });
 
+pub mod fonts;
 pub mod options;
 mod seed;
 pub mod themes;

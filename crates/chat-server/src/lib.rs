@@ -184,6 +184,10 @@ pub struct ServerState {
     /// served at `/widgets/<name>` after the built-in ones. Fixed for the
     /// server's lifetime; `None`: only the built-in widgets.
     pub widgets_dir: Option<PathBuf>,
+    /// The folder of imported font files (`fonts/` next to `config.toml`),
+    /// served at `/fonts/<file>` for `type = "font"` theme options. Fixed for
+    /// the server's lifetime; `None`: no imported font files served.
+    pub fonts_dir: Option<PathBuf>,
     pub connections: Arc<Connections>,
     /// Which web sites may use the JSON API, and the questions about new
     /// ones waiting for the streamer's answer.
@@ -317,6 +321,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/preview/events", get(preview::events))
         .route("/theme/{*path}", get(theme_file))
         .route("/themes/{name}/{*path}", get(named_theme_file))
+        .route("/fonts/{file}", get(font_file))
         .route("/events", get(events))
         .route("/avatar/{key}", get(avatars::avatar))
         .route("/api/v1/ws", get(api::ws))
@@ -430,7 +435,14 @@ async fn theme_file(
     UrlPath(path): UrlPath<String>,
     RawQuery(raw_query): RawQuery,
 ) -> Response {
-    serve_theme_file(&state, state.current_theme(), &path, raw_query.as_deref()).await
+    serve_theme_file(
+        &state,
+        state.current_theme(),
+        &path,
+        raw_query.as_deref(),
+        "../fonts/",
+    )
+    .await
 }
 
 /// A pinned theme's files (`/?theme=<name>`), the same way: its CSS's
@@ -444,9 +456,46 @@ async fn named_theme_file(
 ) -> Response {
     match state.choose_theme(Some(&name)).await {
         ThemeChoice::Pinned { source, .. } => {
-            serve_theme_file(&state, source, &path, raw_query.as_deref()).await
+            serve_theme_file(&state, source, &path, raw_query.as_deref(), "../../fonts/").await
         }
         ThemeChoice::App => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Serves one imported font file from `fonts_dir` (`/fonts/<file>`).
+/// Validates the filename and canonicalizes against `fonts_dir` so symlinks
+/// and traversal attempts can never escape the folder.
+async fn font_file(State(state): State<ServerState>, UrlPath(file): UrlPath<String>) -> Response {
+    let Some(dir) = state.fonts_dir.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !chat_render::fonts::is_valid_filename(&file) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(path) = inside(dir, &file) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let (Ok(canon_dir), Ok(canon_file)) = (
+        tokio::fs::canonicalize(dir).await,
+        tokio::fs::canonicalize(&path).await,
+    ) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !canon_file.starts_with(&canon_dir) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tokio::fs::read(&canon_file).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, content_type(&path)),
+                NO_CACHE,
+                NO_SNIFF,
+                (header::CONTENT_SECURITY_POLICY, "script-src 'none'"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -457,9 +506,12 @@ async fn serve_theme_file(
     source: ThemeSource,
     path: &str,
     raw_query: Option<&str>,
+    font_base: &str,
 ) -> Response {
     if path == chat_render::CSS_FILE {
-        return overlay_css(state, source, raw_query).await.into_response();
+        return overlay_css(state, source, raw_query, font_base)
+            .await
+            .into_response();
     }
     let Some(dir) = source.folder() else {
         return StatusCode::NOT_FOUND.into_response(); // built-in themes have no files
@@ -500,6 +552,7 @@ async fn overlay_css(
     state: &ServerState,
     source: ThemeSource,
     raw_query: Option<&str>,
+    font_base: &str,
 ) -> impl IntoResponse {
     let key = source.key();
     let (mut css, manifest) = match source {
@@ -535,8 +588,8 @@ async fn overlay_css(
             .or_else(|| lookup_theme_values(&overlay.theme_options, &key));
         manifest.resolve_overrides(values)
     };
-    if !overrides.vars.is_empty() {
-        css.push_str(&overrides.to_css());
+    if !overrides.vars.is_empty() || !overrides.fonts.is_empty() {
+        css.push_str(&overrides.to_css_with_font_base(font_base));
     }
     (
         [
@@ -773,18 +826,38 @@ mod tests {
         themes_dir: Option<PathBuf>,
         origins: ApiOrigins,
     ) -> TestServer {
-        start_full(theme_dir, themes_dir, None, origins).await
+        start_full(theme_dir, themes_dir, None, None, origins).await
     }
 
     /// With a widgets folder (`widgets_dir`) as well.
     pub(crate) async fn start_with_widgets(widgets_dir: PathBuf) -> TestServer {
-        start_full(None, None, Some(widgets_dir), ApiOrigins::new([], false)).await
+        start_full(
+            None,
+            None,
+            Some(widgets_dir),
+            None,
+            ApiOrigins::new([], false),
+        )
+        .await
+    }
+
+    /// With an imported fonts folder (`fonts_dir`).
+    pub(crate) async fn start_with_fonts(fonts_dir: PathBuf) -> TestServer {
+        start_full(
+            None,
+            None,
+            None,
+            Some(fonts_dir),
+            ApiOrigins::new([], false),
+        )
+        .await
     }
 
     async fn start_full(
         theme_dir: Option<PathBuf>,
         themes_dir: Option<PathBuf>,
         widgets_dir: Option<PathBuf>,
+        fonts_dir: Option<PathBuf>,
         origins: ApiOrigins,
     ) -> TestServer {
         let origins = Arc::new(origins);
@@ -811,6 +884,7 @@ mod tests {
             api: api_rx,
             themes_dir,
             widgets_dir,
+            fonts_dir,
             connections: connections.clone(),
             origins: origins.clone(),
             avatars: avatars.clone(),
@@ -1388,5 +1462,83 @@ mod tests {
             !seen.contains("event: style"),
             "URL-pinned overlay must not receive profile style updates: {seen}"
         );
+    }
+
+    #[tokio::test]
+    async fn serves_imported_fonts_and_emits_font_face_rules() {
+        use chat_render::options::ThemeValue;
+        let root = std::env::temp_dir().join(format!("chat-server-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fonts_dir = root.join("fonts");
+        std::fs::create_dir_all(&fonts_dir).unwrap();
+        std::fs::write(fonts_dir.join("Comic Hero.woff2"), b"wOF2test-font").unwrap();
+        std::fs::write(fonts_dir.join("notes.txt"), b"not a font").unwrap();
+
+        let server = start_with_fonts(fonts_dir.clone()).await;
+        let base = format!("http://{}", server.addr);
+
+        // Valid imported font is served with font MIME type and nosniff.
+        let resp = reqwest::get(format!("{base}/fonts/Comic%20Hero.woff2"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "font/woff2");
+        assert_eq!(resp.bytes().await.unwrap().as_ref(), b"wOF2test-font");
+
+        // Non-font extensions and traversal attempts are refused.
+        let bad_ext = reqwest::get(format!("{base}/fonts/notes.txt"))
+            .await
+            .unwrap();
+        assert_eq!(bad_ext.status(), StatusCode::NOT_FOUND);
+        let traversal = reqwest::get(format!("{base}/fonts/..%2Fsecret.ttf"))
+            .await
+            .unwrap();
+        assert_eq!(traversal.status(), StatusCode::NOT_FOUND);
+
+        // App stylesheet and pinned theme stylesheet use matching relative paths.
+        server.overlay.send_modify(|o| {
+            let mut opts = ThemeValues::new();
+            opts.insert(
+                "font".into(),
+                ThemeValue::Text("file:Comic Hero.woff2".into()),
+            );
+            o.theme_options.insert("default".into(), opts);
+        });
+        let (_, css) = get_text(format!("{base}/theme/overlay.css")).await;
+        assert!(
+            css.contains(r#"src: url("../fonts/Comic%20Hero.woff2");"#),
+            "{css}"
+        );
+        let (_, pinned_css) = get_text(format!(
+            "{base}/themes/comic/overlay.css?font=file%3AComic%20Hero.woff2"
+        ))
+        .await;
+        assert!(
+            pinned_css.contains(r#"src: url("../../fonts/Comic%20Hero.woff2");"#),
+            "{pinned_css}"
+        );
+
+        // Live SSE style update carries the `fonts` array for FontFace loading.
+        let mut sse = reqwest::get(format!("{base}/events")).await.unwrap();
+        eventually(|| server.connections.overlays() == 1).await;
+        server.overlay.send_modify(|o| {
+            let mut opts = ThemeValues::new();
+            opts.insert("font".into(), ThemeValue::Text("system:Fira Sans".into()));
+            o.theme_options.insert("default".into(), opts);
+        });
+        let mut seen = String::new();
+        read_until(&mut sse, &mut seen, "Fira Sans").await;
+
+        server.overlay.send_modify(|o| {
+            let mut opts = ThemeValues::new();
+            opts.insert(
+                "font".into(),
+                ThemeValue::Text("file:Comic Hero.woff2".into()),
+            );
+            o.theme_options.insert("default".into(), opts);
+        });
+        read_until(&mut sse, &mut seen, r#""file":"Comic Hero.woff2""#).await;
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

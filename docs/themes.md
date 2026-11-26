@@ -67,7 +67,10 @@ Click **Customize…** next to the theme picker to open the **Themes** window:
   and suggests three contrast-checked color palettes you can apply in one click.
 - **Colors, typography, motion, and elements** update connected OBS overlays
   **live without reloading** (and are saved per profile and per theme under
-  `[overlay.theme_options.<theme>]`).
+  `[overlay.theme_options.<theme>]`). Under **Font**, you can pick one of the
+  theme's built-in font stacks, search your installed system fonts, or click
+  **Import…** to copy a `.ttf`, `.otf`, `.woff2`, or `.woff` file into the
+  app's `fonts/` folder and serve it straight to OBS.
 - **Preview** opens a local browser preview (`/preview?theme=…`) with sample
   messages, switchable light/dark/checkerboard backdrops, width presets, and a
   live animation drip mode so you can style your chat before going live.

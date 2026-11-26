@@ -128,6 +128,11 @@ pub(crate) async fn frame(
         ThemeChoice::App => r#"href="../theme/overlay.css""#.to_string(),
     };
     page = page.replacen(r#"href="theme/overlay.css""#, &css_href, 1);
+    page = page.replacen(
+        r#"data-fonts-base="fonts/""#,
+        r#"data-fonts-base="../fonts/""#,
+        1,
+    );
 
     (
         [

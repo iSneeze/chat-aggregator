@@ -89,6 +89,10 @@ pub struct EngineConfig {
     /// served at `/widgets/<name>` after the built-in ones. `None`: only
     /// the built-in widgets.
     pub widgets_dir: Option<PathBuf>,
+    /// The folder of imported font files (`fonts/` next to `config.toml`),
+    /// served at `/fonts/<file>` for custom theme fonts. `None`: no imported
+    /// font files served.
+    pub fonts_dir: Option<PathBuf>,
     /// Whether other sites wait for the streamer's answer (the app shows
     /// the question, see `Status::api_requests`) or are refused right away
     /// (headless mode: nobody to ask).
@@ -119,6 +123,7 @@ impl Default for EngineConfig {
             old_layout: false,
             themes_dir: None,
             widgets_dir: None,
+            fonts_dir: None,
             ask_api_origins: false,
             emoji_cache_dir: None,
             save_to: None,
@@ -366,6 +371,7 @@ impl Engine {
             api: api_rx,
             themes_dir: config.themes_dir.clone(),
             widgets_dir: config.widgets_dir.clone(),
+            fonts_dir: config.fonts_dir.clone(),
             connections: connections.clone(),
             origins: origins.clone(),
             avatars: Arc::new(Avatars::new()),

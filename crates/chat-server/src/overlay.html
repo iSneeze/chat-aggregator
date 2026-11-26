@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="theme/overlay.css">
 </head>
 <body>
-<main class="chat" role="log" aria-live="polite" data-newest="bottom" data-style-classes=""></main>
+<main class="chat" role="log" aria-live="polite" data-newest="bottom" data-style-classes="" data-fonts-base="fonts/"></main>
 <script>
 "use strict";
 // The server sends ready-rendered, escaped HTML for each message; this
@@ -63,6 +63,25 @@
     for (let i = 0; i < shown.length - maxMessages; i++) shown[i].remove();
   }
 
+  // Load imported fonts on demand via the browser FontFace API so live SSE
+  // style updates can switch to newly imported font files without a reload.
+  const fontsBase = chat.dataset.fontsBase || "fonts/";
+  const loadedFonts = new Map();
+  function ensureFonts(fonts) {
+    if (!Array.isArray(fonts) || !fonts.length || typeof FontFace === "undefined") return;
+    for (const f of fonts) {
+      if (!f || !f.family || !f.file || loadedFonts.has(f.family)) continue;
+      const url = fontsBase + encodeURIComponent(f.file);
+      const face = new FontFace(f.family, `url("${url}")`);
+      const loading = face.load().then((loaded) => {
+        document.fonts.add(loaded);
+      }).catch(() => {
+        loadedFonts.delete(f.family);
+      });
+      loadedFonts.set(f.family, loading);
+    }
+  }
+
   // Track vars and modifier classes controlled by theme options so live
   // updates and resets cleanly replace them without touching chat--newest-top.
   let appliedVars = new Set();
@@ -70,6 +89,7 @@
     (chat.dataset.styleClasses || "").split(" ").filter(Boolean)
   );
   function applyStyle(update) {
+    ensureFonts(update && update.fonts);
     const rootStyle = document.documentElement.style;
     const nextVars = update && update.vars ? update.vars : {};
     for (const name of appliedVars) {

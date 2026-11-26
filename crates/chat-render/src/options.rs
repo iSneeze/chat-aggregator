@@ -21,6 +21,7 @@ use std::fmt::Write as _;
 use anyhow::{Context, bail};
 
 use crate::Builtin;
+use crate::fonts::{self, FontSelection};
 
 /// File name of a theme's customization manifest inside a theme folder.
 pub const MANIFEST_FILE: &str = "theme.toml";
@@ -109,6 +110,13 @@ pub enum OptionKind {
         default: String,
         options: Vec<String>,
     },
+    /// A font selector: curated theme font stacks (like `Choice`), plus any
+    /// installed OS font (`system:<Family>`) or imported font file
+    /// (`file:<filename>`).
+    Font {
+        default: String,
+        options: Vec<String>,
+    },
 }
 
 /// Where an option's resolved value lands in the overlay DOM/CSS.
@@ -133,14 +141,27 @@ pub struct OptionTarget {
     pub class_values: BTreeMap<String, String>,
 }
 
-/// Concrete CSS custom properties and `.chat` classes resolved from a theme's
-/// manifest and saved values.
+/// One imported font file that must be loaded via `@font-face` / `FontFace`
+/// before CSS variables reference its `family` name.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ResolvedFontFace {
+    /// CSS `font-family` identifier used inside `--chat-font` (etc.).
+    pub family: String,
+    /// Validated filename inside the server's `fonts/` directory.
+    pub file: String,
+}
+
+/// Concrete CSS custom properties, `.chat` classes, and imported font faces
+/// resolved from a theme's manifest and saved values.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct ResolvedStyle {
     /// `--var-name` -> CSS value.
     pub vars: BTreeMap<String, String>,
     /// Modifier classes active on `<main class="chat">`.
     pub classes: Vec<String>,
+    /// Imported font files referenced by `vars`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fonts: Vec<ResolvedFontFace>,
 }
 
 /// Theme options parsed from an overlay URL's query string (`?preset=…` and/or
@@ -162,20 +183,38 @@ pub struct UrlThemeOptions {
 
 impl ResolvedStyle {
     pub fn is_empty(&self) -> bool {
-        self.vars.is_empty() && self.classes.is_empty()
+        self.vars.is_empty() && self.classes.is_empty() && self.fonts.is_empty()
     }
 
-    /// Formats `vars` as a `:root { … }` override block suitable for appending
-    /// to `overlay.css`. Returns an empty string when there are no variables.
+    /// Formats `fonts` (`@font-face`) and `vars` (`:root { … }`) as an override
+    /// block suitable for appending to `/theme/overlay.css`.
     pub fn to_css(&self) -> String {
-        if self.vars.is_empty() {
+        self.to_css_with_font_base("../fonts/")
+    }
+
+    /// Like [`Self::to_css`], using `font_base` (e.g. `"../fonts/"` from
+    /// `/theme/overlay.css` or `"../../fonts/"` from `/themes/<name>/overlay.css`)
+    /// for `@font-face` `src` URLs.
+    pub fn to_css_with_font_base(&self, font_base: &str) -> String {
+        if self.vars.is_empty() && self.fonts.is_empty() {
             return String::new();
         }
-        let mut out = String::from("\n/* theme options */\n:root {\n");
-        for (var, val) in &self.vars {
-            let _ = writeln!(out, "  {var}: {val};");
+        let mut out = String::from("\n/* theme options */\n");
+        for face in &self.fonts {
+            let encoded = encode_query_value(&face.file);
+            let _ = writeln!(
+                out,
+                "@font-face {{\n  font-family: \"{}\";\n  src: url(\"{font_base}{encoded}\");\n  font-display: swap;\n}}",
+                face.family
+            );
         }
-        out.push_str("}\n");
+        if !self.vars.is_empty() {
+            out.push_str(":root {\n");
+            for (var, val) in &self.vars {
+                let _ = writeln!(out, "  {var}: {val};");
+            }
+            out.push_str("}\n");
+        }
         out
     }
 }
@@ -189,7 +228,9 @@ impl ThemeOption {
             ),
             OptionKind::Number { default, .. } => ThemeValue::Number(*default),
             OptionKind::Bool { default } => ThemeValue::Bool(*default),
-            OptionKind::Choice { default, .. } => ThemeValue::Text(default.clone()),
+            OptionKind::Choice { default, .. } | OptionKind::Font { default, .. } => {
+                ThemeValue::Text(default.clone())
+            }
         }
     }
 
@@ -204,12 +245,19 @@ impl ThemeOption {
             (OptionKind::Choice { options, .. }, ThemeValue::Text(s)) => {
                 options.iter().any(|o| o == s)
             }
+            (OptionKind::Font { options, .. }, ThemeValue::Text(s)) => {
+                match fonts::parse_selection(s) {
+                    FontSelection::Preset(p) => options.iter().any(|o| o == p),
+                    FontSelection::System(family) => fonts::is_valid_system_font(family),
+                    FontSelection::File(file) => fonts::is_valid_filename(file),
+                }
+            }
             _ => false,
         }
     }
 
-    /// Normalizes a valid value (e.g. hex color casing) so equality against
-    /// [`Self::default_value`] is consistent.
+    /// Normalizes a valid value (e.g. hex color casing or font prefix spacing)
+    /// so equality against [`Self::default_value`] is consistent.
     pub fn normalize(&self, value: &ThemeValue) -> Option<ThemeValue> {
         if !self.accepts(value) {
             return None;
@@ -218,14 +266,21 @@ impl ThemeOption {
             (OptionKind::Color { .. }, ThemeValue::Text(s)) => {
                 normalize_hex_color(s).map(ThemeValue::Text)
             }
+            (OptionKind::Font { .. }, ThemeValue::Text(s)) => match fonts::parse_selection(s) {
+                FontSelection::Preset(_) => Some(value.clone()),
+                FontSelection::System(family) => {
+                    Some(ThemeValue::Text(fonts::format_system_value(family)))
+                }
+                FontSelection::File(file) => Some(ThemeValue::Text(fonts::format_file_value(file))),
+            },
             _ => Some(value.clone()),
         }
     }
 
     /// Parses a single URL query parameter value according to this option's
     /// type and bounds. Accepts bare hex colors (`ff85b3`) in addition to
-    /// `#ff85b3`, `1`/`0`/`true`/`false` for booleans, and case-insensitive
-    /// choice labels.
+    /// `#ff85b3`, `1`/`0`/`true`/`false` for booleans, case-insensitive
+    /// choice labels, and `system:<Family>` / `file:<filename>` for fonts.
     pub fn parse_query_value(&self, raw: &str) -> Option<ThemeValue> {
         let trimmed = raw.trim();
         match &self.kind {
@@ -252,6 +307,17 @@ impl ThemeOption {
                 .or_else(|| options.iter().find(|o| o.eq_ignore_ascii_case(trimmed)))
                 .cloned()
                 .map(ThemeValue::Text),
+            OptionKind::Font { options, .. } => match fonts::parse_selection(trimmed) {
+                FontSelection::System(_) | FontSelection::File(_) => {
+                    self.normalize(&ThemeValue::Text(trimmed.to_string()))
+                }
+                FontSelection::Preset(_) => options
+                    .iter()
+                    .find(|o| o.as_str() == trimmed)
+                    .or_else(|| options.iter().find(|o| o.eq_ignore_ascii_case(trimmed)))
+                    .cloned()
+                    .map(ThemeValue::Text),
+            },
         }
     }
 
@@ -311,6 +377,40 @@ impl ThemeOption {
                     && !out.classes.iter().any(|c| c == cls)
                 {
                     out.classes.push(cls.clone());
+                }
+            }
+            (OptionKind::Font { .. }, ThemeValue::Text(picked)) => {
+                let Some(var) = &self.target.css_var else {
+                    return;
+                };
+                match fonts::parse_selection(picked) {
+                    FontSelection::Preset(choice) => {
+                        if let Some(val) = self.target.css_values.get(choice) {
+                            out.vars.insert(var.clone(), val.clone());
+                        }
+                        if let Some(cls) = self.target.class_values.get(choice)
+                            && !cls.is_empty()
+                            && !out.classes.iter().any(|c| c == cls)
+                        {
+                            out.classes.push(cls.clone());
+                        }
+                    }
+                    FontSelection::System(family) if fonts::is_valid_system_font(family) => {
+                        out.vars
+                            .insert(var.clone(), format!(r#""{family}", system-ui, sans-serif"#));
+                    }
+                    FontSelection::File(file) if fonts::is_valid_filename(file) => {
+                        let family = fonts::css_family_name(file);
+                        out.vars
+                            .insert(var.clone(), format!(r#""{family}", system-ui, sans-serif"#));
+                        if !out.fonts.iter().any(|f| f.family == family) {
+                            out.fonts.push(ResolvedFontFace {
+                                family,
+                                file: file.to_string(),
+                            });
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -610,6 +710,7 @@ impl ThemeManifest {
             }
 
             // Validate kind-specific constraints.
+            let is_font = matches!(opt.kind, OptionKind::Font { .. });
             match &mut opt.kind {
                 OptionKind::Color { default } => {
                     let Some(norm) = normalize_hex_color(default) else {
@@ -671,25 +772,38 @@ impl ThemeManifest {
                         );
                     }
                 }
-                OptionKind::Choice { default, options } => {
-                    if options.len() < 2 {
+                OptionKind::Choice { default, options } | OptionKind::Font { default, options } => {
+                    if is_font && opt.target.css_var.is_none() {
+                        bail!("font option {:?} must set css_var", opt.name);
+                    }
+                    let min_options = if is_font { 1 } else { 2 };
+                    if options.len() < min_options {
                         bail!(
-                            "choice option {:?} must have at least two options",
+                            "option {:?} must have at least {min_options} option(s)",
                             opt.name
                         );
                     }
                     let mut choices = BTreeSet::new();
                     for item in options.iter() {
                         if item.trim().is_empty() {
-                            bail!("choice option {:?} has an empty choice", opt.name);
+                            bail!("option {:?} has an empty choice", opt.name);
+                        }
+                        if is_font
+                            && (item.starts_with(fonts::SYSTEM_FONT_PREFIX)
+                                || item.starts_with(fonts::FILE_FONT_PREFIX))
+                        {
+                            bail!(
+                                "font option {:?}: curated choice {item:?} cannot use reserved prefix",
+                                opt.name
+                            );
                         }
                         if !choices.insert(item.as_str()) {
-                            bail!("choice option {:?} has duplicate choice {item:?}", opt.name);
+                            bail!("option {:?} has duplicate choice {item:?}", opt.name);
                         }
                     }
                     if !choices.contains(default.as_str()) {
                         bail!(
-                            "choice option {:?}: default {default:?} is not in options",
+                            "option {:?}: default {default:?} is not in options",
                             opt.name
                         );
                     }
@@ -697,7 +811,7 @@ impl ThemeManifest {
                         for item in options.iter() {
                             if !opt.target.css_values.contains_key(item) {
                                 bail!(
-                                    "choice option {:?}: css_values is missing entry for {item:?}",
+                                    "option {:?}: css_values is missing entry for {item:?}",
                                     opt.name
                                 );
                             }
@@ -706,7 +820,7 @@ impl ThemeManifest {
                     for key in opt.target.css_values.keys() {
                         if !choices.contains(key.as_str()) {
                             bail!(
-                                "choice option {:?}: css_values has unknown choice {key:?}",
+                                "option {:?}: css_values has unknown choice {key:?}",
                                 opt.name
                             );
                         }
@@ -714,7 +828,7 @@ impl ThemeManifest {
                     for key in opt.target.class_values.keys() {
                         if !choices.contains(key.as_str()) {
                             bail!(
-                                "choice option {:?}: class_values has unknown choice {key:?}",
+                                "option {:?}: class_values has unknown choice {key:?}",
                                 opt.name
                             );
                         }
@@ -1215,5 +1329,89 @@ Two = "2px"
                 }
             }
         }
+    }
+
+    #[test]
+    fn font_option_supports_curated_system_and_imported_files() {
+        let toml = r##"
+[[options]]
+name = "font"
+label = "Font"
+type = "font"
+default = "Sans"
+options = ["Sans", "Serif"]
+css_var = "--chat-font"
+[options.css_values]
+Sans = '"Inter", system-ui, sans-serif'
+Serif = '"Georgia", serif'
+"##;
+        let manifest = ThemeManifest::parse(toml).unwrap();
+
+        // System font resolves to quoted CSS family and round-trips through URL query.
+        let mut sys = ThemeValues::new();
+        sys.insert(
+            "font".into(),
+            ThemeValue::Text("system:  Fira Sans ".into()),
+        );
+        let resolved = manifest.resolve_overrides(Some(&sys));
+        assert_eq!(
+            resolved.vars.get("--chat-font").unwrap(),
+            r#""Fira Sans", system-ui, sans-serif"#
+        );
+        assert!(resolved.fonts.is_empty());
+        let encoded = encode_query_string(&manifest.encode_query_options(&sys));
+        let reparsed = manifest
+            .parse_query_options(&parse_raw_query(&encoded))
+            .unwrap();
+        assert_eq!(
+            reparsed.values.get("font"),
+            Some(&ThemeValue::Text("system:Fira Sans".into()))
+        );
+
+        // Imported font emits @font-face with proper base path and round-trips through URL query.
+        let mut imported = ThemeValues::new();
+        imported.insert(
+            "font".into(),
+            ThemeValue::Text("file:My Comic.woff2".into()),
+        );
+        let resolved = manifest.resolve_overrides(Some(&imported));
+        assert_eq!(
+            resolved.vars.get("--chat-font").unwrap(),
+            r#""chat-font-My Comic.woff2", system-ui, sans-serif"#
+        );
+        assert_eq!(
+            resolved.fonts,
+            vec![ResolvedFontFace {
+                family: "chat-font-My Comic.woff2".into(),
+                file: "My Comic.woff2".into(),
+            }]
+        );
+        let css = resolved.to_css_with_font_base("../../fonts/");
+        assert!(
+            css.contains(r#"font-family: "chat-font-My Comic.woff2";"#),
+            "{css}"
+        );
+        assert!(
+            css.contains(r#"src: url("../../fonts/My%20Comic.woff2");"#),
+            "{css}"
+        );
+        let encoded = encode_query_string(&manifest.encode_query_options(&imported));
+        let reparsed = manifest
+            .parse_query_options(&parse_raw_query(&encoded))
+            .unwrap();
+        assert_eq!(
+            reparsed.values.get("font"),
+            Some(&ThemeValue::Text("file:My Comic.woff2".into()))
+        );
+
+        // Unsafe system font names and path-traversal filenames are ignored.
+        let mut unsafe_vals = ThemeValues::new();
+        unsafe_vals.insert(
+            "font".into(),
+            ThemeValue::Text("system:Bad\"; } body { display: none".into()),
+        );
+        assert!(manifest.resolve_overrides(Some(&unsafe_vals)).is_empty());
+        unsafe_vals.insert("font".into(), ThemeValue::Text("file:../secret.ttf".into()));
+        assert!(manifest.resolve_overrides(Some(&unsafe_vals)).is_empty());
     }
 }

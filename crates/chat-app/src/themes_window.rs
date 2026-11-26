@@ -18,7 +18,7 @@ use chat_engine::theme_options::{
     lookup_theme_values,
 };
 use chat_engine::{Builtin, EngineHandle, ThemeSource};
-use chat_render::themes;
+use chat_render::{fonts, themes};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, StepAction};
 use gpui_kit::component::notification::Notification;
@@ -67,6 +67,23 @@ fn builtin_entries() -> Vec<Entry> {
         .collect()
 }
 
+/// Collects installed OS font family names (Windows DirectWrite / Linux
+/// fontconfig via GPUI), deduplicated and sorted case-insensitively.
+fn installed_system_fonts(cx: &App) -> Vec<String> {
+    let mut seen = std::collections::BTreeMap::<String, String>::new();
+    for name in cx.text_system().all_font_names() {
+        let trimmed = name.trim();
+        // Skip internal dot-prefixed UI fonts and any name that isn't safe
+        // inside a CSS font-family declaration.
+        if trimmed.starts_with('.') || !fonts::is_valid_system_font(trimmed) {
+            continue;
+        }
+        seen.entry(trimmed.to_lowercase())
+            .or_insert_with(|| trimmed.to_string());
+    }
+    seen.into_values().collect()
+}
+
 /// Scans built-in themes plus folders in `themes_dir` off the UI thread.
 fn scan(themes_dir: &Path) -> Vec<Entry> {
     let custom = themes::list(themes_dir).into_iter().map(|name| {
@@ -110,6 +127,10 @@ pub struct ThemesWindow {
     new_theme: Option<NewThemeForm>,
     /// Temporary palette suggestions extracted from a user-picked image.
     extracted_palettes: Vec<SuggestedPalette>,
+    /// Installed OS font families (cached once when the window opens).
+    system_fonts: Vec<String>,
+    /// Valid font filenames found in `fonts/` (refreshed during `rescan`).
+    imported_fonts: Vec<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -149,6 +170,7 @@ impl ThemesWindow {
 
         Self::watch_server(&engine, window, cx);
 
+        let system_fonts = installed_system_fonts(cx);
         let mut view = Self {
             engine,
             config,
@@ -162,6 +184,8 @@ impl ThemesWindow {
             debounce: Debouncer::default(),
             new_theme: None,
             extracted_palettes: Vec::new(),
+            system_fonts,
+            imported_fonts: Vec::new(),
             _subscriptions: subscriptions,
         };
         // Keep the requested key even if it's a custom folder not scanned yet:
@@ -215,6 +239,10 @@ impl ThemesWindow {
         self.config.read(cx).themes_dir()
     }
 
+    fn fonts_dir(&self, cx: &App) -> PathBuf {
+        self.config.read(cx).fonts_dir()
+    }
+
     fn active_theme_key(&self, cx: &App) -> String {
         let config = self.config.read(cx);
         let dir = config.themes_dir();
@@ -253,8 +281,17 @@ impl ThemesWindow {
             .find(|entry| entry.key == self.selected)
             .and_then(|entry| entry.manifest.as_ref().ok())
             .cloned();
-        self.form = manifest
-            .map(|manifest| Form::new(self.selected.clone(), manifest, &values, window, cx));
+        self.form = manifest.map(|manifest| {
+            Form::new(
+                self.selected.clone(),
+                manifest,
+                &values,
+                &self.system_fonts,
+                &self.imported_fonts,
+                window,
+                cx,
+            )
+        });
         cx.notify();
     }
 
@@ -262,20 +299,29 @@ impl ThemesWindow {
         self.scan_gen += 1;
         let scan_gen = self.scan_gen;
         let dir = self.themes_dir(cx);
-        let scanning = cx.background_executor().spawn(async move { scan(&dir) });
+        let fonts_dir = self.fonts_dir(cx);
+        let scanning = cx
+            .background_executor()
+            .spawn(async move { (scan(&dir), fonts::list(&fonts_dir)) });
         cx.spawn_in(window, async move |this, cx| {
-            let entries = scanning.await;
+            let (entries, imported_fonts) = scanning.await;
             let _ = this.update_in(cx, |view, window, cx| {
                 if view.scan_gen != scan_gen {
                     return;
                 }
-                view.apply_scanned(entries, window, cx);
+                view.apply_scanned(entries, imported_fonts, window, cx);
             });
         })
         .detach();
     }
 
-    fn apply_scanned(&mut self, entries: Vec<Entry>, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_scanned(
+        &mut self,
+        entries: Vec<Entry>,
+        imported_fonts: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let prev_manifest = self
             .entries
             .iter()
@@ -285,8 +331,10 @@ impl ThemesWindow {
             .iter()
             .find(|e| e.key == self.selected)
             .map(|e| e.manifest.clone());
-        let unchanged = entries == self.entries;
+        let entries_unchanged = entries == self.entries;
+        let fonts_unchanged = imported_fonts == self.imported_fonts;
         self.entries = entries;
+        self.imported_fonts = imported_fonts;
 
         if next_manifest.is_none() {
             let fallback = self
@@ -298,7 +346,7 @@ impl ThemesWindow {
             return;
         }
 
-        if unchanged {
+        if entries_unchanged && fonts_unchanged {
             return;
         }
 
@@ -312,6 +360,9 @@ impl ThemesWindow {
             };
             self.open_form(values, window, cx);
         } else {
+            if !fonts_unchanged && let Some(form) = &self.form {
+                form.refresh_fonts(&self.system_fonts, &self.imported_fonts, window, cx);
+            }
             cx.notify();
         }
     }
@@ -407,7 +458,7 @@ impl ThemesWindow {
                 set(&mut form.values, opt, value);
             }
         }
-        form.sync_controls(window, cx);
+        form.sync_controls(&self.system_fonts, &self.imported_fonts, window, cx);
         self.debounce.cancel();
         self.apply(cx);
         cx.notify();
@@ -468,7 +519,7 @@ impl ThemesWindow {
                 set(&mut form.values, opt, value);
             }
         }
-        form.sync_controls(window, cx);
+        form.sync_controls(&self.system_fonts, &self.imported_fonts, window, cx);
         self.debounce.cancel();
         self.apply(cx);
         cx.notify();
@@ -645,6 +696,114 @@ impl ThemesWindow {
         self.debounce.cancel();
         self.apply(cx);
         cx.notify();
+    }
+
+    /// Selects a curated font stack button, clearing any custom font dropdown
+    /// selection for that option.
+    pub(super) fn pick_font_preset(
+        &mut self,
+        index: usize,
+        value: ThemeValue,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = &mut self.form
+            && let Some(opt) = form.manifest.options.get(index)
+        {
+            set(&mut form.values, opt, value);
+            if let Some(select) = form.font_selects.get(index).and_then(Option::as_ref) {
+                select.update(cx, |state, cx| state.set_selected_index(None, window, cx));
+            }
+            self.debounce.cancel();
+            self.apply(cx);
+            cx.notify();
+        }
+    }
+
+    /// Resets a font option back to its default curated stack (triggered by
+    /// clearing the custom font dropdown).
+    pub(super) fn reset_font_option(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let default = self
+            .form
+            .as_ref()
+            .and_then(|f| f.manifest.options.get(index))
+            .map(|opt| opt.default_value());
+        if let Some(default) = default {
+            self.pick_font_preset(index, default, window, cx);
+        }
+    }
+
+    /// Opens a native file dialog to import a `.ttf`/`.otf`/`.woff2`/`.woff`
+    /// file into `fonts/`, then selects it for option `index` and applies live.
+    pub(super) fn import_font_for_option(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let theme_key = self.selected.clone();
+        let fonts_dir = self.fonts_dir(cx);
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import a font file (.ttf, .otf, .woff2, .woff)".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = paths.await;
+            let path = match result {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) | Err(_) => None,
+                Ok(Err(e)) => {
+                    let _ = this.update_in(cx, |_, window, cx| {
+                        report(window, cx, format!("Couldn't open the file dialog ({e})."));
+                    });
+                    None
+                }
+            };
+            let Some(path) = path else {
+                return;
+            };
+            let importing = cx.background_executor().spawn(async move {
+                let filename = fonts::import(&fonts_dir, &path)?;
+                let all = fonts::list(&fonts_dir);
+                Ok::<_, anyhow::Error>((filename, all))
+            });
+            let outcome = importing.await;
+            let _ = this.update_in(cx, |view, window, cx| match outcome {
+                Ok((filename, imported_fonts)) => {
+                    view.imported_fonts = imported_fonts;
+                    let label = fonts::display_name(&filename);
+                    let value = ThemeValue::Text(fonts::format_file_value(&filename));
+                    if let Some(form) = &mut view.form
+                        && form.theme_key == theme_key
+                    {
+                        if let Some(opt) = form.manifest.options.get(index) {
+                            set(&mut form.values, opt, value);
+                        }
+                        form.refresh_fonts(&view.system_fonts, &view.imported_fonts, window, cx);
+                        view.debounce.cancel();
+                        view.apply(cx);
+                    }
+                    window.push_notification(
+                        Notification::success(format!("Imported font \"{label}\"")),
+                        cx,
+                    );
+                    cx.notify();
+                }
+                Err(e) => report(window, cx, format!("Couldn't import font: {e:#}")),
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn open_fonts_folder(&self, window: &mut Window, cx: &mut Context<Self>) {
+        open_folder(&self.fonts_dir(cx), window, cx);
     }
 
     pub(super) fn pick_color(&mut self, index: usize, hex: String, cx: &mut Context<Self>) {
@@ -1047,6 +1206,7 @@ mod tests {
         let mut engine_cfg = EngineConfig::default();
         engine_cfg.settings.server.port = 0;
         engine_cfg.themes_dir = Some(ConfigFile::themes_dir(&settings_dir));
+        engine_cfg.fonts_dir = Some(ConfigFile::fonts_dir(&settings_dir));
         engine_cfg.save_to = Some(settings_dir.join("config.toml"));
         let engine = runtime.block_on(Engine::start(engine_cfg)).unwrap();
         let handle = engine.handle();
@@ -1227,5 +1387,99 @@ mod tests {
         wait_until(cx, |cx| {
             ui.view.read_with(cx, |v, _| v.selected == "Cozy Minimal")
         });
+    }
+
+    #[gpui_kit::test]
+    fn custom_system_and_imported_fonts_save_and_copy_url(cx: &mut TestAppContext) {
+        let ui = open(cx);
+        let handle = ui.engine.handle();
+
+        // Drop a valid imported font into `fonts/` and trigger a rescan.
+        let fonts_dir = ConfigFile::fonts_dir(&ui.settings_dir);
+        std::fs::create_dir_all(&fonts_dir).unwrap();
+        std::fs::write(fonts_dir.join("DeadlockDisplay.woff2"), b"wOF2dummy").unwrap();
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            ui.view.update(cx, |view, cx| view.rescan(window, cx));
+        })
+        .unwrap();
+        wait_until(cx, |cx| {
+            ui.view
+                .read_with(cx, |v, _| v.imported_fonts == vec!["DeadlockDisplay.woff2"])
+        });
+
+        // Locate the `font` option index on Default and select the imported font.
+        let font_idx = ui.view.read_with(cx, |v, _| {
+            v.form
+                .as_ref()
+                .unwrap()
+                .manifest
+                .options
+                .iter()
+                .position(|o| o.name == "font")
+                .expect("Default theme has a font option")
+        });
+        cx.update_window(ui.window.into(), |_, _, cx| {
+            ui.view.update(cx, |view, cx| {
+                view.pick(
+                    font_idx,
+                    ThemeValue::Text("file:DeadlockDisplay.woff2".into()),
+                    cx,
+                );
+            });
+        })
+        .unwrap();
+        wait_until(cx, |_| {
+            handle
+                .settings()
+                .borrow()
+                .profile
+                .overlay
+                .theme_options
+                .get("default")
+                .and_then(|v| v.get("font"))
+                == Some(&ThemeValue::Text("file:DeadlockDisplay.woff2".into()))
+        });
+
+        // Copy URL includes the imported font cleanly.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            window.click("theme-copy-url", cx);
+        })
+        .unwrap();
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("URL copied");
+        assert!(
+            copied.ends_with("/?theme=default&font=file%3ADeadlockDisplay.woff2"),
+            "unexpected URL: {copied}"
+        );
+
+        // Picking a curated preset button switches back and clears the custom select.
+        cx.update_window(ui.window.into(), |_, window, cx| {
+            ui.view.update(cx, |view, cx| {
+                view.pick_font_preset(font_idx, ThemeValue::Text("Serif".into()), window, cx);
+            });
+        })
+        .unwrap();
+        wait_until(cx, |_| {
+            handle
+                .settings()
+                .borrow()
+                .profile
+                .overlay
+                .theme_options
+                .get("default")
+                .and_then(|v| v.get("font"))
+                == Some(&ThemeValue::Text("Serif".into()))
+        });
+        let select_val = ui.view.read_with(cx, |v, cx| {
+            v.form.as_ref().unwrap().font_selects[font_idx]
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .selected_value()
+                .cloned()
+        });
+        assert_eq!(select_val, None);
     }
 }
